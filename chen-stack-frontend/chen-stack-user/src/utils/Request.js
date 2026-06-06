@@ -13,7 +13,7 @@ import { useUserStore } from '@/stores/userStore.js'
 // 创建axios
 const request = axios.create({
   // 后端地址
-  baseURL: import.meta.env.VITE_BACKEND_SERVER,
+  baseURL: import.meta.env.VITE_BACKEND_SERVER || 'http://localhost:5000',
   withCredentials: false, // 用于配置请求接口跨域时是否需要凭证
   timeout: 30000, // 增加超时时间到30秒
   headers: {

@@ -22,7 +22,7 @@
 
 <div align="center">
 
-**说明**: 本项目为本地实习项目改造版本，线上演示地址后续补充
+**说明**: 辰栈是一个基于 Spring Boot 3 + Vue 3 的 AI 辅助技术博客管理系统。
 
 </div>
 
@@ -164,11 +164,14 @@
 ```
 zcx-chen-stack/
 ├── script/                                         # 部署脚本和配置
-│   ├── prod/                                       #   生产环境配置
-│   │   ├── jenkins/                                #     Jenkins CI/CD 配置
-│   │   ├── ssl/                                    #     HTTPS SSL 证书配置
-│   │   └── dev/                                    #     Docker Compose 配置
-│   └── dev/                                        #   开发环境配置
+│   ├── dev/                                        #   本地开发/部署配置
+│   │   ├── .env.example                            #     环境变量示例
+│   │   ├── docker-compose-service.yml              #     基础依赖服务
+│   │   ├── docker-compose-apps.yml                 #     后端 + 管理端 + 用户端
+│   │   └── docker-compose.yml                      #     完整本地编排
+│   └── prod/                                       #   生产环境配置
+│       ├── jenkins/                                #     Jenkins CI/CD 配置
+│       └── ssl/                                    #     HTTPS SSL 证书配置
 │
 ├── chen-stack-backend/                            # 后端服务 (Spring Boot + Java 21)
 │   └── src/main/java/com/zcx/chenstack/   # 当前后端包名已统一为 com.zcx.chenstack
@@ -325,45 +328,47 @@ zcx-chen-stack/
 | MinIO | RELEASE.2025-06-05+ | 对象存储 |
 | Docker | 20.0+ | 容器化部署 (推荐) |
 
-### 🔧 后端启动
+### 🪟 本地启动步骤（Windows 推荐）
 
-```bash
-# 克隆项目
-git clone <repository-url>
-cd <project-root>/chen-stack-backend
+```powershell
+# 1. 克隆项目并进入根目录
+git clone https://github.com/zcxzzz188/zcx-chen-stack.git
+cd zcx-chen-stack
 
-# 复制环境配置
-cp .env.example .env
-# 编辑 .env 文件配置数据库、Redis、RabbitMQ 等
+# 2. 复制本地开发环境变量文件
+Copy-Item .\script\dev\.env.example .\script\dev\.env
 
-# 启动后端 (使用 dotenv)
-mvn clean install
-dotenv -- mvn spring-boot:run
+# 3. 默认使用 3308 作为 MySQL 外部端口；如需改端口，可修改 .\script\dev\.env 中的 MYSQL_PORT
 
-# 或使用 IDE 直接运行 Main.java
-```
+# 4. 启动基础依赖服务
+docker compose --env-file .\script\dev\.env -f .\script\dev\docker-compose-service.yml up -d --build
 
-### 🎨 前端启动
+# 5. 等待 MySQL、Redis、RabbitMQ、MinIO 都显示 healthy
+docker compose --env-file .\script\dev\.env -f .\script\dev\docker-compose-service.yml ps
 
-```bash
-# 用户端
-cd chen-stack-frontend/chen-stack-user
-npm install && npm run dev
-# 访问 http://localhost:7000
+# 6. 打包后端
+cd chen-stack-backend
+mvn -DskipTests clean package
+cd ..
 
-# 管理端
-cd chen-stack-frontend/chen-stack-admin
-npm install && npm run dev
-# 访问 http://localhost:8000
+# 7. 构建管理端
+cd chen-stack-frontend\chen-stack-admin
+npm install
+npm run build
+cd ..\..
 
-```
+# 8. 构建用户端
+cd chen-stack-frontend\chen-stack-user
+npm install
+npm run build
+cd ..\..
 
-### 🐳 Docker 方式 (推荐)
+# 9. 启动应用容器
+docker compose --env-file .\script\dev\.env -f .\script\dev\docker-compose-apps.yml up -d --build
 
-```bash
-# 一键启动所有服务
-cd script/dev && ./start.bat    # Windows
-# cd script/dev && ./start.sh   # Linux/Mac
+# 10. 查看服务状态
+docker compose --env-file .\script\dev\.env -f .\script\dev\docker-compose-service.yml ps
+docker compose --env-file .\script\dev\.env -f .\script\dev\docker-compose-apps.yml ps
 ```
 
 ### 🌐 访问地址
@@ -380,32 +385,11 @@ cd script/dev && ./start.bat    # Windows
 
 ## 🐳 部署指南
 
-### 🤖 自动化部署 (推荐)
+### 🧩 进阶部署
 
-项目支持 **Jenkins + GitHub** CI/CD 自动化部署。
+如果需要生产环境、Jenkins 或 HTTPS，请参考仓库中的 `Jenkinsfile`、`script/prod/` 和 `script/prod/ssl/`。
 
-### 💻 生产环境部署
-
-```bash
-# Docker Compose 一键部署
-cd script/prod
-cp .env.example .env
-vim .env  # 配置生产环境参数
-./start.sh
-```
-
-### 📦 传统方式部署
-
-```bash
-# 后端
-cd chen-stack-backend
-mvn clean package -DskipTests
-java -jar target/zcx-chen-stack-backend-1.0-SNAPSHOT.jar
-
-# 前端
-cd chen-stack-frontend/chen-stack-user && npm run build
-cd chen-stack-frontend/chen-stack-admin && npm run build
-```
+本地快速开始请以 `script/dev/` 下的 Docker Compose 流程为准。
 
 ---
 

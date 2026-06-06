@@ -14,7 +14,7 @@ services:
       - "${MYSQL_PORT:-3306}:3306"
     volumes:
       - mysql_data:/var/lib/mysql
-      - ../sql/chen_stack.sql:/docker-entrypoint-initdb.d/init.sql
+      - ../../sql/chen_stack.sql:/docker-entrypoint-initdb.d/init.sql
     networks:
       - chen-stack-network
     healthcheck:
@@ -104,7 +104,7 @@ services:
   # 后端服务
   backend:
     build:
-      context: ../chen-stack-backend
+      context: ../../chen-stack-backend
       dockerfile: Dockerfile
     image: chen-stack-backend
     container_name: chen-stack-backend
@@ -142,6 +142,10 @@ services:
       RABBITMQ_PORT: 5672
       RABBITMQ_USERNAME: ${RABBITMQ_DEFAULT_USER:-guest}
       RABBITMQ_PASSWORD: ${RABBITMQ_DEFAULT_PASS:-guest}
+
+      # 本地开发默认关闭邮件健康检查，避免占位邮箱导致 actuator health DOWN
+
+      MANAGEMENT_HEALTH_MAIL_ENABLED: false
 
       # AI 配置
       SPRING_AI_OPENAI_API_KEY: ${SPRING_AI_OPENAI_API_KEY:-your-deepseek-api-key}
@@ -181,7 +185,7 @@ services:
   # 前端管理端
   frontend-admin:
     build:
-      context: ../chen-stack-frontend/chen-stack-admin
+      context: ../../chen-stack-frontend/chen-stack-admin
       dockerfile: Dockerfile
     image: chen-stack-admin
     container_name: chen-stack-admin
@@ -196,7 +200,7 @@ services:
   # 前端用户端
   frontend-user:
     build:
-      context: ../chen-stack-frontend/chen-stack-user
+      context: ../../chen-stack-frontend/chen-stack-user
       dockerfile: Dockerfile
     image: chen-stack-user
     container_name: chen-stack-user
