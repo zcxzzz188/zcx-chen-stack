@@ -1,0 +1,131 @@
+package com.zcx.chenstack.controller;
+
+import com.zcx.chenstack.aspect.OperationLog;
+import com.zcx.chenstack.aspect.RateLimit;
+import com.zcx.chenstack.domain.dto.SysVisitorLogQueryDto;
+import com.zcx.chenstack.domain.enums.OperationTypeEnum;
+import com.zcx.chenstack.domain.result.Result;
+import com.zcx.chenstack.domain.vo.PageVo;
+import com.zcx.chenstack.domain.vo.SysVisitorLogVo;
+import com.zcx.chenstack.domain.vo.VisitorStatisticsVo;
+import com.zcx.chenstack.domain.vo.VisitorTrendVo;
+import com.zcx.chenstack.service.SysVisitorLogService;
+import jakarta.annotation.Resource;
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.NotEmpty;
+import jakarta.validation.constraints.NotNull;
+import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.validation.annotation.Validated;
+import org.springframework.web.bind.annotation.*;
+
+import java.util.List;
+
+/**
+ * @author zcx
+ * @since 2025-10-06
+ */
+@RateLimit(30)
+@Validated
+@RestController
+@RequestMapping("/visitorLog")
+public class SysVisitorLogController {
+
+    @Resource
+    private SysVisitorLogService sysVisitorLogService;
+
+    /**
+     * 查询所有访客日志（按时间倒序）
+     *
+     * @return 访客日志列表
+     */
+    @OperationLog(module = "访客日志管理", type = OperationTypeEnum.SELECT, description = "管理员获取访客日志列表")
+    @PreAuthorize("hasAuthority('system:visitorLog:list')")
+    @GetMapping("/admin/list")
+    public Result<PageVo<List<SysVisitorLogVo>>> getVisitorLogList(
+            @RequestParam(defaultValue = "1") @Min(value = 1, message = "页码不能小于 1") Integer pageNum,
+            @RequestParam(defaultValue = "10") @Min(value = 1, message = "每页大小不能小于 1")
+            @Max(value = 100, message = "每页大小不能超过 100") Integer pageSize) {
+        PageVo<List<SysVisitorLogVo>> result = sysVisitorLogService.getVisitorLogList(pageNum, pageSize);
+        return Result.success(result);
+    }
+
+    /**
+     * 搜索访客日志
+     *
+     * @param queryDto 查询条件
+     * @return 访客日志列表
+     */
+    @OperationLog(module = "访客日志管理", type = OperationTypeEnum.SEARCH, description = "管理员搜索访客日志")
+    @PreAuthorize("hasAuthority('system:visitorLog:search')")
+    @PostMapping("/admin/search")
+    public Result<PageVo<List<SysVisitorLogVo>>> searchVisitorLog(@RequestBody @Valid SysVisitorLogQueryDto queryDto) {
+        PageVo<List<SysVisitorLogVo>> result = sysVisitorLogService.searchVisitorLog(queryDto);
+        return Result.success(result);
+    }
+
+    /**
+     * 批量删除访客日志
+     *
+     * @param ids 访客日志ID列表
+     * @return 操作结果
+     */
+    @OperationLog(module = "访客日志管理", type = OperationTypeEnum.DELETE, description = "管理员批量删除访客日志")
+    @PreAuthorize("hasAuthority('system:visitorLog:delete')")
+    @DeleteMapping("/admin/batch")
+    public Result<Void> deleteVisitorLogs(@RequestBody @NotEmpty List<Integer> ids) {
+        sysVisitorLogService.deleteVisitorLogs(ids);
+        return Result.success();
+    }
+
+    /**
+     * 获取访客统计数据
+     * 仅管理员可访问
+     */
+    @OperationLog(module = "访客日志管理", type = OperationTypeEnum.GET, description = "管理员获取访客统计数据")
+    @PreAuthorize("hasAuthority('system:visitorLog:list')")
+    @GetMapping("/statistics")
+    public Result<VisitorStatisticsVo> getStatistics() {
+        VisitorStatisticsVo statistics = sysVisitorLogService.getVisitorStatistics();
+        return Result.success(statistics);
+    }
+
+    /**
+     * 获取访客趋势（最近N天）
+     * 仅管理员可访问
+     *
+     * @param days 天数，默认7天
+     */
+    @OperationLog(module = "访客日志管理", type = OperationTypeEnum.GET, description = "管理员获取访客趋势数据")
+    @PreAuthorize("hasAuthority('system:visitorLog:list')")
+    @GetMapping("/trend")
+    public Result<List<VisitorTrendVo>> getTrend(
+            @RequestParam(defaultValue = "7") @NotNull(message = "天数不能为空") Integer days) {
+        List<VisitorTrendVo> trend = sysVisitorLogService.getVisitorTrend(days);
+        return Result.success(trend);
+    }
+
+    /**
+     * 获取今日访问量
+     */
+    @OperationLog(module = "访客日志管理", type = OperationTypeEnum.GET, description = "管理员获取今日访问量")
+    @PreAuthorize("hasAuthority('system:visitorLog:list')")
+    @GetMapping("/today/count")
+    public Result<Long> getTodayCount() {
+        Long count = sysVisitorLogService.getTodayVisitorCount();
+        return Result.success(count);
+    }
+
+    /**
+     * 获取总访问量
+     */
+    @OperationLog(module = "访客日志管理", type = OperationTypeEnum.GET, description = "管理员获取总访问量")
+    @PreAuthorize("hasAuthority('system:visitorLog:list')")
+    @GetMapping("/total/count")
+    public Result<Long> getTotalCount() {
+        Long count = sysVisitorLogService.getTotalVisitorCount();
+        return Result.success(count);
+    }
+
+}

@@ -1,0 +1,178 @@
+package com.zcx.chenstack.service.impl;
+
+import cn.hutool.core.bean.BeanUtil;
+import cn.hutool.core.util.ObjectUtil;
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import com.zcx.chenstack.domain.constants.BlogConstants;
+import com.zcx.chenstack.domain.dto.SysLoginLogQueryDto;
+import com.zcx.chenstack.domain.entity.SysLoginLog;
+import com.zcx.chenstack.domain.enums.LoginStatusEnum;
+import com.zcx.chenstack.domain.enums.RegisterOrLoginTypeEnum;
+import com.zcx.chenstack.domain.vo.PageVo;
+import com.zcx.chenstack.domain.vo.SysLoginLogVo;
+import com.zcx.chenstack.exception.BlogException;
+import com.zcx.chenstack.mapper.SysLoginLogMapper;
+import com.zcx.chenstack.service.SysLoginLogService;
+import com.zcx.chenstack.utils.IpUtils;
+import com.zcx.chenstack.utils.MyThreadFactory;
+import jakarta.annotation.Resource;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.stereotype.Service;
+
+import java.util.Date;
+import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
+
+/**
+ * <p>
+ * 登录日志服务实现类
+ * </p>
+ *
+ * @author zcx
+ * @since 2025-10-06
+ */
+@Service
+@Slf4j
+public class SysLoginLogServiceImpl extends ServiceImpl<SysLoginLogMapper, SysLoginLog> implements SysLoginLogService {
+
+    @Resource
+    private SysLoginLogMapper sysLoginLogMapper;
+
+    @Resource
+    private IpUtils ipUtils;
+
+    // 创建线程池
+    private final ExecutorService executorService = new ThreadPoolExecutor(
+            2,
+            4,
+            0L,
+            TimeUnit.MILLISECONDS,
+            new LinkedBlockingQueue<>(500),
+            new MyThreadFactory("SysLoginLogServiceImpl")
+    );
+
+    /**
+     * 异步记录登录日志
+     */
+    @Override
+    public void recordLoginLog(Integer userId, String username, Integer loginType, String loginIp, Integer status) {
+        // 使用线程池异步执行
+        executorService.execute(() -> {
+            try {
+                // 构建锁的key：userId + username + loginType + loginIp + status
+                String lockKey = "loginLog:" + userId + ":" + username + ":" + loginType + ":" + loginIp + ":" + status;
+
+                // 使用 synchronized 锁定该登录记录的操作，防止并发插入重复数据 intern() 确保相同字符串使用同一个对象实例作为锁
+                synchronized (lockKey.intern()) {
+                    // 计算一个小时前的时间
+                    Date oneHourAgo = new Date(System.currentTimeMillis() - 60 * 60 * 1000);
+                    
+                    // 查询一个小时内是否有相同的登录日志
+                    LambdaQueryWrapper<SysLoginLog> qw = new LambdaQueryWrapper<SysLoginLog>()
+                            .eq(SysLoginLog::getUserId, userId)
+                            .eq(SysLoginLog::getUsername, username)
+                            .eq(SysLoginLog::getLoginType, loginType)
+                            .eq(SysLoginLog::getLoginIp, loginIp)
+                            .eq(SysLoginLog::getStatus, status)
+                            .ge(SysLoginLog::getLoginTime, oneHourAgo)
+                            .orderByDesc(SysLoginLog::getLoginTime)
+                            .last("LIMIT 1");
+                    
+                    SysLoginLog existingLog = sysLoginLogMapper.selectOne(qw);
+                    
+                    if (ObjectUtil.isNotEmpty(existingLog)) {
+                        // 如果存在，更新登录时间
+                        existingLog.setLoginTime(new Date());
+                        sysLoginLogMapper.updateById(existingLog);
+                    } else {
+                        // 如果不存在，插入新记录
+                        SysLoginLog loginLog = new SysLoginLog();
+                        loginLog.setUserId(userId);
+                        loginLog.setUsername(username);
+                        loginLog.setLoginType(loginType);
+                        loginLog.setLoginIp(loginIp);
+                        loginLog.setLoginAddress(ipUtils.getAddress(loginIp));
+                        loginLog.setStatus(status);
+                        loginLog.setLoginTime(new Date());
+
+                        sysLoginLogMapper.insert(loginLog);
+                    }
+                }
+            } catch (Exception e) {
+                log.error("记录或更新登录日志失败：用户ID={}, 用户名={}, 登录IP={}, 错误信息={}", userId, username, loginIp, e.getMessage(), e);
+            }
+        });
+    }
+
+    /**
+     * 查询所有登录日志（按时间倒序）
+     */
+    @Override
+    public PageVo<List<SysLoginLogVo>> getLoginLogList(Integer pageNum, Integer pageSize) {
+        Page<SysLoginLog> page = new Page<>(pageNum, pageSize);
+        LambdaQueryWrapper<SysLoginLog> queryWrapper = new LambdaQueryWrapper<SysLoginLog>()
+                .orderByDesc(SysLoginLog::getLoginTime);
+        Page<SysLoginLog> logPage = sysLoginLogMapper.selectPage(page, queryWrapper);
+        return new PageVo<>(convertToVo(logPage.getRecords()), logPage.getTotal());
+    }
+
+    /**
+     * 搜索登录日志
+     */
+    @Override
+    public PageVo<List<SysLoginLogVo>> searchLoginLog(SysLoginLogQueryDto queryDto) {
+        Page<SysLoginLog> page = new Page<>(queryDto.getPageNum(), queryDto.getPageSize());
+        LambdaQueryWrapper<SysLoginLog> queryWrapper = new LambdaQueryWrapper<SysLoginLog>()
+                .eq(ObjectUtil.isNotEmpty(queryDto.getUserId()), SysLoginLog::getUserId, queryDto.getUserId())
+                .eq(ObjectUtil.isNotEmpty(queryDto.getLoginType()), SysLoginLog::getLoginType, queryDto.getLoginType())
+                .eq(ObjectUtil.isNotEmpty(queryDto.getStatus()), SysLoginLog::getStatus, queryDto.getStatus())
+                .ge(ObjectUtil.isNotEmpty(queryDto.getLoginTimeStart()), SysLoginLog::getLoginTime, queryDto.getLoginTimeStart())
+                .le(ObjectUtil.isNotEmpty(queryDto.getLoginTimeEnd()), SysLoginLog::getLoginTime, queryDto.getLoginTimeEnd())
+                .orderByDesc(SysLoginLog::getLoginTime);
+        Page<SysLoginLog> logPage = sysLoginLogMapper.selectPage(page, queryWrapper);
+        return new PageVo<>(convertToVo(logPage.getRecords()), logPage.getTotal());
+    }
+
+    /**
+     * 批量删除登录日志
+     */
+    @Override
+    public void deleteLoginLogs(List<Integer> ids) {
+        if (ObjectUtil.isEmpty(ids)) {
+            throw new BlogException(BlogConstants.LoginLogIdsRequired);
+        }
+
+        int result = sysLoginLogMapper.deleteByIds(ids);
+        if (result == 0) {
+            throw new BlogException(BlogConstants.DeleteLoginLogError);
+        }
+
+    }
+
+    /**
+     * 转换为VO
+     */
+    private List<SysLoginLogVo> convertToVo(List<SysLoginLog> loginLogs) {
+        return loginLogs.stream().map(loginLog -> {
+            SysLoginLogVo vo = BeanUtil.copyProperties(loginLog, SysLoginLogVo.class);
+
+            // 设置登录方式描述
+            vo.setLoginTypeDesc(RegisterOrLoginTypeEnum.getType(loginLog.getLoginType()));
+
+            // 设置登录状态描述
+            if (loginLog.getStatus().equals(LoginStatusEnum.SUCCESS.getCode())) {
+                vo.setStatusDesc(LoginStatusEnum.SUCCESS.getDescription());
+            } else {
+                vo.setStatusDesc(LoginStatusEnum.FAIL.getDescription());
+            }
+
+            return vo;
+        }).collect(Collectors.toList());
+    }
+}

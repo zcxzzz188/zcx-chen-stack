@@ -1,0 +1,96 @@
+package com.zcx.chenstack.service;
+
+import com.zcx.chenstack.domain.vo.ContentActivityVo;
+import com.zcx.chenstack.domain.vo.DashboardAllVo;
+import com.zcx.chenstack.domain.vo.DashboardStatisticsVo;
+import com.zcx.chenstack.domain.vo.ExamineCountVo;
+import com.zcx.chenstack.domain.vo.InteractionTrendVo;
+import com.zcx.chenstack.domain.vo.UserDistributionVo;
+import com.zcx.chenstack.domain.vo.VisitorTrendVo;
+import com.zcx.chenstack.domain.vo.WeeklyTrendVo;
+
+import java.util.List;
+
+/**
+ * 管理端首页 Dashboard 统计服务
+ *
+ * @author zcx
+ * @since 2026-03-15
+ */
+public interface DashboardService {
+
+    /**
+     * 获取管理端首页统计数据（带 Redis 缓存，默认 7 天趋势）
+     *
+     * @return Dashboard 统计数据
+     */
+    DashboardStatisticsVo getDashboardStatistics();
+
+    /**
+     * 获取管理端首页统计数据（自定义趋势天数）
+     *
+     * @param trendDays 趋势天数（7/14/30）
+     * @return Dashboard 统计数据
+     */
+    DashboardStatisticsVo getDashboardStatistics(Integer trendDays);
+
+    /**
+     * 刷新 Dashboard 缓存
+     * 当数据发生变化时（如新增用户、文章等）调用此方法
+     */
+    void refreshDashboardCache();
+
+    /**
+     * 获取近7天文章和用户增长趋势
+     *
+     * @return 周趋势数据列表
+     */
+    List<WeeklyTrendVo> getWeeklyTrend();
+
+    /**
+     * 获取用户角色分布
+     *
+     * @return 用户分布数据列表
+     */
+    List<UserDistributionVo> getUserDistribution();
+
+    /**
+     * 获取内容模块活跃度
+     *
+     * @return 内容活跃度数据列表
+     */
+    List<ContentActivityVo> getContentActivity();
+
+    /**
+     * 获取待审核数量统计
+     *
+     * @return 待审核数量（文章、评论、图片）
+     */
+    ExamineCountVo getExamineCount();
+
+    /**
+     * 获取访客趋势数据
+     *
+     * @param days 天数（7/14/30）
+     * @return 访客趋势数据列表
+     */
+    List<VisitorTrendVo> getVisitorTrendByDays(Integer days);
+
+    /**
+     * 获取近7天互动趋势（评论数、点赞数、收藏数）
+     *
+     * @return 互动趋势数据列表
+     */
+    List<InteractionTrendVo> getInteractionTrend();
+
+    /**
+     * 获取管理端首页完整数据（聚合接口）
+     * 一次性返回所有 Dashboard 数据，减少前端请求次数
+     * 内部使用 CompletableFuture 并行查询各数据源
+     *
+     * @param trendDays 访客趋势天数（默认7天）
+     * @return 完整的 Dashboard 数据
+     */
+    DashboardAllVo getDashboardAll(Integer trendDays);
+
+}

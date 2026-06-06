@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <!-- 同步设置主题 class，避免加载动画闪烁 -->
+    <script>
+      ;(function () {
+        var stored = localStorage.getItem('darkMode')
+        var prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches
+        var isDark = stored !== null ? JSON.parse(stored) : prefersDark
+        document.documentElement.classList.add(isDark ? 'dark' : 'light')
+      })()
+    </script>
+    <link rel="icon" href="/favicon.ico" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="referrer" content="no-referrer" />
+    <!-- SEO 基础 Meta -->
+    <meta
+      name="description"
+      content="辰栈是一个面向技术创作者的 AI 辅助技术博客管理系统，支持文章创作、专栏管理、评论互动与内容审核。"
+    />
+    <meta name="keywords" content="辰栈, zcx-chen-stack, 技术博客, 程序员, 前端, 后端, 全栈, 编程, 开发者社区" />
+    <meta name="author" content="zcx-chen-stack" />
+    <meta name="robots" content="index, follow" />
+    <!-- Open Graph -->
+    <meta property="og:site_name" content="辰栈" />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="辰栈" />
+    <meta
+      property="og:description"
+      content="辰栈是一个面向技术创作者的 AI 辅助技术博客管理系统，支持文章创作、专栏管理、评论互动与内容审核。"
+    />
+    <meta property="og:locale" content="zh_CN" />
+    <!-- Twitter Card -->
+    <meta name="twitter:card" content="summary" />
+    <meta name="twitter:title" content="辰栈" />
+    <meta
+      name="twitter:description"
+      content="辰栈是一个面向技术创作者的 AI 辅助技术博客管理系统，支持文章创作、专栏管理、评论互动与内容审核。"
+    />
+    <!-- PWA meta 标签 -->
+    <!-- 预加载关键资源，减少 LCP 延迟 -->
+    <link rel="preload" as="style" href="/src/assets/scss/base.scss" />
+    <link rel="preload" as="style" href="/src/main.js" />
+    <meta name="theme-color" content="#ffffff" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <!-- 预连接后端 API，减少连接建立时间 -->
+    <link rel="preconnect" href="http://localhost:5000" crossorigin />
+    <link rel="dns-prefetch" href="http://localhost:5000" />
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+    <link rel="manifest" href="/icons/site.webmanifest" />
+    <title>辰栈</title>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.js"></script>
+    <style>
+      #app-loading {
+        position: fixed;
+        inset: 0;
+        z-index: 9999;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 20px;
+        background: #000000;
+        transition: opacity 400ms ease-out;
+      }
+      #app-loading .brand {
+        font-size: 28px;
+        font-weight: 700;
+        color: #f1f5f9;
+        letter-spacing: -0.5px;
+        animation: breathe 2s ease-in-out infinite;
+      }
+      #app-loading .bar {
+        width: 120px;
+        height: 3px;
+        background: #334155;
+        border-radius: 2px;
+        overflow: hidden;
+      }
+      #app-loading .bar-fill {
+        height: 100%;
+        background: linear-gradient(90deg, #409eff, #79b8ff);
+        border-radius: 2px;
+        animation: load 1.2s linear infinite;
+      }
+      #app-loading .text {
+        color: #64748b;
+        font-size: 13px;
+      }
+      @keyframes breathe {
+        0%,
+        100% {
+          transform: scale(1);
+          opacity: 0.7;
+        }
+        50% {
+          transform: scale(1.04);
+          opacity: 1;
+        }
+      }
+      @keyframes load {
+        from {
+          width: 0;
+          margin-left: 0;
+        }
+        to {
+          width: 100%;
+          margin-left: 0;
+        }
+      }
+      html:not(.dark) #app-loading {
+        background: #f8fafc;
+      }
+      html:not(.dark) #app-loading .brand {
+        color: #1e293b;
+      }
+      html:not(.dark) #app-loading .bar {
+        background: #e2e8f0;
+      }
+      html:not(.dark) #app-loading .bar-fill {
+        background: linear-gradient(90deg, #409eff, #1d4ed8);
+      }
+      html:not(.dark) #app-loading .text {
+        color: #94a3b8;
+      }
+      /* JS 控制淡出，CSS 只负责显示 */
+    </style>
+    <div id="app-loading">
+      <span class="brand">辰栈</span>
+      <div class="bar"><div class="bar-fill"></div></div>
+      <span class="text">Loading...</span>
+    </div>
+  </body>
+</html>

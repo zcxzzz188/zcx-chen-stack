@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.zcx.chenstack.mapper.HistoryMapper">
+
+    <!-- 分页查询用户浏览历史（关联文章和作者信息） -->
+    <select id="getUserHistoryList" resultType="com.zcx.chenstack.domain.vo.HistoryVo">
+        SELECT h.id,
+               h.article_id as articleId,
+               h.view_time  as viewTime,
+               a.title,
+               a.cover_url  as coverUrl,
+               u.id         as authorId,
+               u.nickname   as authorNickname,
+               u.avatar     as authorAvatar
+        FROM history h
+                 INNER JOIN
+             article a ON h.article_id = a.id
+                 AND a.examine_status = 1
+                 AND a.edit_status = 0
+                 AND a.is_deleted = 0
+                 INNER JOIN
+             sys_user u ON a.user_id = u.id
+                 AND u.is_deleted = 0
+        WHERE h.user_id = #{userId}
+          AND h.is_deleted = 0
+        ORDER BY h.view_time DESC
+    </select>
+
+    <!-- 统计近7天的文章访问量（按文章ID分组统计） -->
+    <select id="getArticleViewCountLast7Days" resultType="map">
+        SELECT h.article_id                       as articleId,
+               COUNT(DISTINCT h.user_id)          as viewCount
+        FROM history h
+                 INNER JOIN
+             article a ON h.article_id = a.id
+                 AND a.examine_status = 1
+                 AND a.edit_status = 0
+                 AND a.visible_range = 0
+                 AND a.is_deleted = 0
+        WHERE h.is_deleted = 0
+          AND h.view_time >= DATE_SUB(NOW(), INTERVAL 7 DAY)
+        GROUP BY h.article_id
+        HAVING viewCount > 0
+        ORDER BY viewCount DESC
+    </select>
+    
+    <!-- 统计近7天的文章多维度数据（访问量、评论数、点赞数等） -->
+    <select id="getArticleMultiDimStatsLast7Days" resultType="map">
+        SELECT h.article_id                       as articleId,
+               COUNT(DISTINCT h.user_id)          as viewCount,
+               a.comment_count                    as commentCount,
+               a.like_count                       as likeCount,
+               a.collect_count                    as collectCount,
+               a.create_time                      as createTime
+        FROM history h
+                 INNER JOIN
+             article a ON h.article_id = a.id
+                 AND a.examine_status = 1
+                 AND a.edit_status = 0
+                 AND a.visible_range = 0
+                 AND a.is_deleted = 0
+        WHERE h.is_deleted = 0
+          AND h.view_time >= DATE_SUB(NOW(), INTERVAL 7 DAY)
+        GROUP BY h.article_id, a.id
+        HAVING viewCount > 0
+        ORDER BY viewCount DESC
+    </select>
+
+</mapper>

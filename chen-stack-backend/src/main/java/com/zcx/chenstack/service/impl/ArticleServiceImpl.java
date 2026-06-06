@@ -1,0 +1,1450 @@
+package com.zcx.chenstack.service.impl;
+
+import cn.hutool.core.bean.BeanUtil;
+import cn.hutool.core.date.DateUtil;
+import cn.hutool.core.util.ObjectUtil;
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import com.zcx.chenstack.config.ChenStackConfig;
+import com.zcx.chenstack.domain.constants.BlogConstants;
+import com.zcx.chenstack.domain.constants.MessageConstants;
+import com.zcx.chenstack.domain.constants.RabbitMQConstants;
+import com.zcx.chenstack.domain.dto.ArticleAuditDto;
+import com.zcx.chenstack.domain.dto.ArticleDto;
+import com.zcx.chenstack.domain.dto.ArticleStatusDto;
+import com.zcx.chenstack.domain.dto.MessageDto;
+import com.zcx.chenstack.domain.entity.*;
+import com.zcx.chenstack.domain.enums.*;
+import com.zcx.chenstack.domain.result.AuditResult;
+import com.zcx.chenstack.domain.vo.*;
+import com.zcx.chenstack.exception.BlogException;
+import com.zcx.chenstack.mapper.ArticleColumnMapper;
+import com.zcx.chenstack.mapper.ArticleMapper;
+import com.zcx.chenstack.mapper.ColumnMapper;
+import com.zcx.chenstack.mapper.SysUserMapper;
+import com.zcx.chenstack.redis.RedisComponent;
+import com.zcx.chenstack.redis.NotificationThreadPool;
+import com.zcx.chenstack.service.*;
+import com.zcx.chenstack.utils.IpUtils;
+import com.zcx.chenstack.utils.SecurityUtils;
+import com.zcx.chenstack.utils.EmailUtils;
+import com.zcx.chenstack.utils.PageUtils;
+import com.zcx.chenstack.utils.TextAuditUtils;
+import com.zcx.chenstack.utils.UserUtils;
+import com.zcx.chenstack.utils.XssUtils;
+import jakarta.annotation.Resource;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.amqp.rabbit.core.RabbitTemplate;
+import org.springframework.stereotype.Service;
+
+import java.time.LocalDateTime;
+import java.time.LocalTime;
+import java.time.temporal.TemporalAdjusters;
+import java.util.*;
+import java.util.stream.Collectors;
+
+/**
+ * <p>
+ * 服务实现类
+ * </p>
+ *
+ * @author zcx
+ * @since 2025-08-24
+ */
+@Service
+@Slf4j
+public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> implements ArticleService {
+    @Resource
+    private NotificationThreadPool notificationThreadPool;
+    @Resource
+    private ArticleMapper articleMapper;
+    @Resource
+    private ArticleColumnMapper articleColumnMapper;
+    @Resource
+    private ColumnMapper columnMapper;
+    @Resource
+    private TextAuditUtils textAuditUtils;
+    @Resource
+    private ChenStackConfig chenStackConfig;
+    @Resource
+    private MessageService messageService;
+    @Resource
+    private RabbitTemplate rabbitTemplate;
+    @Resource
+    private SysUserMapper sysUserMapper;
+    @Resource
+    private LikeService likeService;
+
+    @Resource
+    private FavoriteService favoriteService;
+
+    @Resource
+    private HistoryService historyService;
+
+    @Resource
+    private IpUtils ipUtils;
+
+    @Resource
+    private RedisComponent redisComponent;
+
+    @Resource
+    private ArticleAccessService articleAccessService;
+
+    @Resource
+    private UserSettingsService userSettingsService;
+
+    @Resource
+    private EmailUtils emailUtils;
+
+    @Override
+    public PageVo<List<ArticleVo>> getAllArticleList(Integer pageNum, Integer pageSize) {
+        Page<Article> page = PageUtils.buildPage(pageNum, pageSize);
+        LambdaQueryWrapper<Article> qw = new LambdaQueryWrapper<Article>()
+                .eq(Article::getExamineStatus, ExamineStatusEnum.PASS.getCode())
+                .eq(Article::getEditStatus, EditStatusEnum.PUBLISHED.getCode())
+                .eq(Article::getVisibleRange, VisibleRangeEnum.ALL.getCode())
+                .orderByDesc(Article::getUpdateTime);
+
+        List<Article> articleList = articleMapper.selectPage(page, qw).getRecords();
+        List<ArticleVo> articleVoList = articleList.stream().map(article -> {
+            ArticleVo articleVo = BeanUtil.copyProperties(article, ArticleVo.class);
+            return articleVo;
+        }).collect(Collectors.toList());
+
+        // 添加用户昵称
+        if (!articleVoList.isEmpty()) {
+            Map<Integer, SysUser> userMap = UserUtils.getUserMap(
+                    articleVoList.stream().map(ArticleVo::getUserId).collect(Collectors.toList()),
+                    sysUserMapper);
+            articleVoList.forEach(articleVo -> {
+                SysUser user = userMap.get(articleVo.getUserId());
+                if (user != null) {
+                    articleVo.setNickname(user.getNickname());
+                    articleVo.setAvatar(user.getAvatar());
+                }
+            });
+        }
+
+        return PageUtils.<ArticleVo>buildPageVo(page, articleVoList);
+    }
+
+    @Override
+    public PageVo<List<ArticleVo>> getUserArticleList(Integer pageNum, Integer pageSize,
+            ArticleStatusDto articleStatusDto) {
+        Integer currentUserId = SecurityUtils.getUserId(); // 当前登录用户ID
+        Integer targetUserId = articleStatusDto.getUserId();
+
+        // 如果未指定用户ID，默认查询当前登录用户的文章
+        if (ObjectUtil.isEmpty(targetUserId)) {
+            targetUserId = currentUserId;
+        }
+
+        Page<Article> page = PageUtils.buildPage(pageNum, pageSize);
+        LambdaQueryWrapper<Article> qw = new LambdaQueryWrapper<Article>()
+                .eq(Article::getUserId, targetUserId);
+
+        // 权限控制：只有查看自己的文章时才能看到私有内容和审核状态
+        if (!currentUserId.equals(targetUserId)) {
+            qw.eq(Article::getExamineStatus, ExamineStatusEnum.PASS.getCode())
+                    .eq(Article::getEditStatus, EditStatusEnum.PUBLISHED.getCode());
+            applyAccessibleVisibleRange(qw, articleStatusDto.getVisibleRange(), targetUserId, currentUserId);
+        } else {
+            // 查看自己文章时，应用用户指定的筛选条件
+            qw.eq(ObjectUtil.isNotEmpty(articleStatusDto.getExamineStatus()), Article::getExamineStatus,
+                    articleStatusDto.getExamineStatus())
+                    .in(ObjectUtil.isNotEmpty(articleStatusDto.getExamineStatusList()), Article::getExamineStatus,
+                            articleStatusDto.getExamineStatusList())
+                    .eq(ObjectUtil.isNotEmpty(articleStatusDto.getEditStatus()), Article::getEditStatus,
+                            articleStatusDto.getEditStatus())
+                    .eq(ObjectUtil.isNotEmpty(articleStatusDto.getVisibleRange()), Article::getVisibleRange,
+                            articleStatusDto.getVisibleRange());
+        }
+
+        // 通用筛选条件（对所有用户都适用）
+        qw.eq(ObjectUtil.isNotEmpty(articleStatusDto.getReprintType()), Article::getReprintType,
+                articleStatusDto.getReprintType())
+                .and(ObjectUtil.isNotEmpty(articleStatusDto.getKeyword()), wrapper -> wrapper
+                        .like(Article::getTag, articleStatusDto.getKeyword()) // 标签
+                        .or()
+                        .like(Article::getTitle, articleStatusDto.getKeyword()) // 标题
+                        .or()
+                        .like(Article::getDescription, articleStatusDto.getKeyword())); // 描述
+
+        if (ObjectUtil.isEmpty(articleStatusDto.getOrderBy()) || articleStatusDto.getOrderBy() == 0) {
+            qw.orderByDesc(Article::getCreateTime);
+        } else {
+            qw.orderByDesc(Article::getReadCount);
+        }
+
+        List<Article> articleList = articleMapper.selectPage(page, qw).getRecords();
+        List<ArticleVo> articleVoList = articleList.stream().map(article -> {
+            ArticleVo articleVo = BeanUtil.copyProperties(article, ArticleVo.class);
+            return articleVo;
+        }).toList();
+
+        // 添加专栏信息
+        if (!articleVoList.isEmpty()) {
+            List<Integer> articleIds = articleVoList.stream().map(ArticleVo::getId).collect(Collectors.toList());
+            List<ArticleColumn> articleColumns = articleColumnMapper.selectList(
+                    new LambdaQueryWrapper<ArticleColumn>().in(ArticleColumn::getArticleId, articleIds));
+            if (ObjectUtil.isNotEmpty(articleColumns)) {
+                List<Integer> columnIds = articleColumns.stream().map(ArticleColumn::getColumnId)
+                        .distinct().collect(Collectors.toList());
+                List<Column> columns = columnMapper.selectBatchIds(columnIds);
+                Map<Integer, ColumnVo> columnIdToColumnMap = columns.stream()
+                        .collect(Collectors.toMap(Column::getId,
+                                column -> BeanUtil.copyProperties(column, ColumnVo.class)));
+
+                // 为每个文章设置专栏信息
+                Map<Integer, List<ColumnVo>> articleIdToColumnsMap = articleColumns.stream()
+                        .collect(Collectors.groupingBy(
+                                ArticleColumn::getArticleId,
+                                Collectors.mapping(ac -> columnIdToColumnMap.get(ac.getColumnId()),
+                                        Collectors.toList())));
+                articleVoList.forEach(articleVo -> articleVo
+                        .setColumns(articleIdToColumnsMap.getOrDefault(articleVo.getId(), new ArrayList<>())));
+            }
+        }
+
+        return PageUtils.<ArticleVo>buildPageVo(page, articleVoList);
+    }
+
+    @Override
+    public PageVo<List<ArticleVo>> getArticleMangeList(Integer pageNum, Integer pageSize,
+            ArticleStatusDto articleStatusDto) {
+        Integer currentUserId = SecurityUtils.getUserId(); // 当前登录用户ID
+        Integer targetUserId = ObjectUtil.isNotEmpty(articleStatusDto.getUserId()) ? articleStatusDto.getUserId()
+                : currentUserId; // 目标用户ID
+
+        Page<Article> page = PageUtils.buildPage(pageNum, pageSize);
+        LambdaQueryWrapper<Article> qw = new LambdaQueryWrapper<Article>()
+                .eq(targetUserId != 0, Article::getUserId, targetUserId);
+
+        // 权限控制：只有查看自己的文章时才能看到私有内容和审核状态
+        if (!currentUserId.equals(targetUserId)) {
+            qw.eq(Article::getExamineStatus, ExamineStatusEnum.PASS.getCode())
+                    .eq(Article::getEditStatus, EditStatusEnum.PUBLISHED.getCode());
+            applyAccessibleVisibleRange(qw, articleStatusDto.getVisibleRange(), targetUserId, currentUserId);
+        } else {
+            // 查看自己文章时，应用用户指定的筛选条件
+            qw.eq(ObjectUtil.isNotEmpty(articleStatusDto.getExamineStatus()), Article::getExamineStatus,
+                    articleStatusDto.getExamineStatus())
+                    .in(ObjectUtil.isNotEmpty(articleStatusDto.getExamineStatusList()), Article::getExamineStatus,
+                            articleStatusDto.getExamineStatusList())
+                    .eq(ObjectUtil.isNotEmpty(articleStatusDto.getEditStatus()), Article::getEditStatus,
+                            articleStatusDto.getEditStatus())
+                    .eq(ObjectUtil.isNotEmpty(articleStatusDto.getVisibleRange()), Article::getVisibleRange,
+                            articleStatusDto.getVisibleRange());
+        }
+
+        // 通用筛选条件（对所有用户都适用）
+        qw.eq(ObjectUtil.isNotEmpty(articleStatusDto.getReprintType()), Article::getReprintType,
+                articleStatusDto.getReprintType())
+                .and(ObjectUtil.isNotEmpty(articleStatusDto.getKeyword()), wrapper -> wrapper
+                        .like(Article::getTag, articleStatusDto.getKeyword()) // 标签
+                        .or()
+                        .like(Article::getTitle, articleStatusDto.getKeyword()) // 标题
+                        .or()
+                        .like(Article::getDescription, articleStatusDto.getKeyword())); // 描述
+
+        // 添加根据年月查询的条件
+        if (ObjectUtil.isNotEmpty(articleStatusDto.getYear()) || ObjectUtil.isNotEmpty(articleStatusDto.getMonth())) {
+            if (ObjectUtil.isNotEmpty(articleStatusDto.getMonth())) {
+                // 确定年份：如果有指定年份则使用，否则使用当前年份
+                int year = ObjectUtil.isNotEmpty(articleStatusDto.getYear()) ? articleStatusDto.getYear()
+                        : LocalDateTime.now().getYear();
+
+                // 查询指定年份的指定月份
+                LocalDateTime firstDayOfMonth = LocalDateTime.of(year, articleStatusDto.getMonth(), 1, 0, 0, 0);
+                LocalDateTime lastDayOfMonth = firstDayOfMonth.with(TemporalAdjusters.lastDayOfMonth())
+                        .with(LocalTime.MAX);
+                qw.between(Article::getCreateTime, firstDayOfMonth, lastDayOfMonth);
+            } else {
+                // 如果只指定了年份，查询整年
+                LocalDateTime firstDayOfYear = LocalDateTime.of(articleStatusDto.getYear(), 1, 1, 0, 0, 0);
+                LocalDateTime lastDayOfYear = LocalDateTime.of(articleStatusDto.getYear(), 12, 31, 23, 59, 59);
+                qw.between(Article::getCreateTime, firstDayOfYear, lastDayOfYear);
+            }
+        } else if (ObjectUtil.isNotEmpty(articleStatusDto.getCreateTime())) {
+            // 兼容原有的createTime参数
+            LocalDateTime dateTime = DateUtil.toLocalDateTime(articleStatusDto.getCreateTime());
+            LocalDateTime firstDayOfMonth = dateTime.with(TemporalAdjusters.firstDayOfMonth()).with(LocalTime.MIN);
+            LocalDateTime lastDayOfMonth = dateTime.with(TemporalAdjusters.lastDayOfMonth()).with(LocalTime.MAX);
+            qw.between(Article::getCreateTime, firstDayOfMonth, lastDayOfMonth);
+        }
+
+        if (ObjectUtil.isEmpty(articleStatusDto.getOrderBy()) || articleStatusDto.getOrderBy() == 0) {
+            qw.orderByDesc(Article::getCreateTime);
+        } else {
+            qw.orderByDesc(Article::getReadCount);
+        }
+
+        List<Article> articleList = articleMapper.selectPage(page, qw).getRecords();
+        List<ArticleVo> articleVoList = articleList.stream().map(article -> {
+            ArticleVo articleVo = BeanUtil.copyProperties(article, ArticleVo.class);
+            return articleVo;
+        }).toList();
+
+        return PageUtils.<ArticleVo>buildPageVo(page, articleVoList);
+    }
+
+    @Override
+    public ArticleStatisticsVo getUserArticleStatistics() {
+        Integer userId = SecurityUtils.getUserId();
+
+        LambdaQueryWrapper<Article> qw = new LambdaQueryWrapper<Article>()
+                .select(Article::getEditStatus, Article::getExamineStatus)
+                .eq(Article::getUserId, userId);
+        List<Article> articles = articleMapper.selectList(qw);
+
+        // 统计各种状态的文章数量
+        long totalCount = articles.size();
+        long publishedCount = articles.stream()
+                .filter(article -> Objects.equals(article.getEditStatus(), EditStatusEnum.PUBLISHED.getCode())
+                        && Objects.equals(article.getExamineStatus(), ExamineStatusEnum.PASS.getCode()))
+                .count();
+        long reviewingCount = articles.stream()
+                .filter(article -> Objects.equals(article.getEditStatus(), EditStatusEnum.PUBLISHED.getCode())
+                        && Objects.equals(article.getExamineStatus(), ExamineStatusEnum.WAIT.getCode()))
+                .count();
+        long draftCount = articles.stream()
+                .filter(article -> Objects.equals(article.getEditStatus(), EditStatusEnum.DRAFT.getCode()))
+                .count();
+        long garbageCount = articles.stream()
+                .filter(article -> Objects.equals(article.getEditStatus(), EditStatusEnum.RECYCLE.getCode()))
+                .count();
+
+        // 构建返回对象
+        ArticleStatisticsVo statisticsVo = new ArticleStatisticsVo();
+        statisticsVo.setTotalCount(totalCount);
+        statisticsVo.setPublishedCount(publishedCount);
+        statisticsVo.setReviewingCount(reviewingCount);
+        statisticsVo.setDraftCount(draftCount);
+        statisticsVo.setGarbageCount(garbageCount);
+
+        return statisticsVo;
+    }
+
+    @Override
+    public ArticleStatisticsVo getUserArticleStatisticsById(Integer userId) {
+        // 只查询已发布且审核通过的文章的阅读量字段
+        List<Article> articles = articleMapper.selectList(
+                new LambdaQueryWrapper<Article>()
+                        .select(Article::getReadCount)
+                        .eq(Article::getUserId, userId)
+                        .eq(Article::getEditStatus, EditStatusEnum.PUBLISHED.getCode())
+                        .eq(Article::getExamineStatus, ExamineStatusEnum.PASS.getCode()));
+
+        // 计算总阅读量
+        Long totalReadCount = articles.stream()
+                .mapToLong(Article::getReadCount)
+                .sum();
+
+        // 构建返回对象
+        ArticleStatisticsVo statisticsVo = new ArticleStatisticsVo();
+        statisticsVo.setTotalReadCount(totalReadCount);
+
+        return statisticsVo;
+    }
+
+    @Override
+    public ArticleVo getArticle(Integer articleId) {
+        Article article = articleMapper.selectById(articleId);
+        if (ObjectUtil.isEmpty(article)) {
+            throw new BlogException(BlogConstants.NotFoundArticle);
+        }
+        Integer currentUserId = SecurityUtils.getUserId();
+        boolean isOwner = currentUserId != null && currentUserId != 0 && Objects.equals(article.getUserId(), currentUserId);
+        if (!isOwner) {
+            // 非作者访问时，先兜底发布态，再按可见范围做统一权限校验。
+            boolean isPublished = Objects.equals(article.getEditStatus(), EditStatusEnum.PUBLISHED.getCode());
+            boolean isPass = Objects.equals(article.getExamineStatus(), ExamineStatusEnum.PASS.getCode());
+            if (!isPublished || !isPass) {
+                throw new BlogException(BlogConstants.NotFoundArticle);
+            }
+            if (!articleAccessService.canAccessArticle(article, currentUserId)) {
+                throw buildArticleAccessException(article.getVisibleRange());
+            }
+        }
+
+        ArticleVo articleVo = BeanUtil.copyProperties(article, ArticleVo.class);
+
+        // 查询文章作者的昵称和头像
+        SysUser author = sysUserMapper.selectById(article.getUserId());
+        if (author != null) {
+            articleVo.setNickname(author.getNickname());
+            articleVo.setAvatar(author.getAvatar());
+        }
+
+        // 查询文章所属的专栏（所有状态的文章都应该能查询到专栏信息）
+        List<ArticleColumn> articleColumns = articleColumnMapper.selectList(
+                new LambdaQueryWrapper<ArticleColumn>().eq(ArticleColumn::getArticleId, article.getId()));
+        if (ObjectUtil.isNotEmpty(articleColumns)) {
+            List<Integer> columnIds = articleColumns.stream().map(ArticleColumn::getColumnId)
+                    .collect(Collectors.toList());
+            List<Column> columns = columnMapper.selectBatchIds(columnIds);
+            articleVo.setColumns(BeanUtil.copyToList(columns, ColumnVo.class));
+        }
+
+        Boolean isLiked = likeService.isLiked(LikeTypeEnum.ARTICLE.getCode(), articleId);
+        articleVo.setIsLiked(isLiked);
+
+        Boolean isCollected = favoriteService.isCollected(articleId);
+        articleVo.setIsCollected(isCollected);
+
+        // 只有真正对外可见的文章才累计阅读量，避免草稿和受限文章被刷读数。
+        if (Objects.equals(article.getEditStatus(), EditStatusEnum.PUBLISHED.getCode())
+                && Objects.equals(article.getExamineStatus(), ExamineStatusEnum.PASS.getCode())) {
+            Integer userId = currentUserId == 0 ? null : currentUserId;
+            String ipAddress = ipUtils.getIp();
+            this.incrReadCount(articleId, userId, ipAddress);
+        }
+
+        return articleVo;
+    }
+
+    /**
+     * 查看他人文章列表时，只允许拼出当前用户真实可访问的可见范围条件。
+     */
+    private void applyAccessibleVisibleRange(LambdaQueryWrapper<Article> qw, Integer requestedVisibleRange,
+            Integer authorId, Integer currentUserId) {
+        boolean canAccessFans = articleAccessService.canAccessFansContent(authorId, currentUserId);
+        if (ObjectUtil.isNotEmpty(requestedVisibleRange)) {
+            if (Objects.equals(requestedVisibleRange, VisibleRangeEnum.ALL.getCode())) {
+                qw.eq(Article::getVisibleRange, VisibleRangeEnum.ALL.getCode());
+                return;
+            }
+            if (Objects.equals(requestedVisibleRange, VisibleRangeEnum.FANS.getCode()) && canAccessFans) {
+                qw.eq(Article::getVisibleRange, VisibleRangeEnum.FANS.getCode());
+                return;
+            }
+            qw.eq(Article::getId, -1);
+            return;
+        }
+
+        qw.and(wrapper -> {
+            wrapper.eq(Article::getVisibleRange, VisibleRangeEnum.ALL.getCode());
+            if (canAccessFans) {
+                wrapper.or().eq(Article::getVisibleRange, VisibleRangeEnum.FANS.getCode());
+            }
+        });
+    }
+
+    /**
+     * 按可见范围返回更准确的业务异常，方便前端渲染粉丝引导。
+     */
+    private BlogException buildArticleAccessException(Integer visibleRange) {
+        if (Objects.equals(visibleRange, VisibleRangeEnum.ME.getCode())) {
+            return new BlogException(BlogConstants.ArticlePrivateOnly);
+        }
+        if (Objects.equals(visibleRange, VisibleRangeEnum.FANS.getCode())) {
+            return new BlogException(BlogConstants.ArticleFansOnly);
+        }
+        return new BlogException(BlogConstants.NotFoundArticle);
+    }
+
+    /**
+     * 批量补齐作者昵称和头像，避免列表页出现空作者信息。
+     */
+    private void fillArticleUserInfo(List<ArticleVo> articleVoList) {
+        if (ObjectUtil.isEmpty(articleVoList)) {
+            return;
+        }
+        List<Integer> userIds = articleVoList.stream()
+                .map(ArticleVo::getUserId)
+                .filter(Objects::nonNull)
+                .distinct()
+                .collect(Collectors.toList());
+        if (userIds.isEmpty()) {
+            return;
+        }
+        // 使用UserUtils批量获取用户信息
+        Map<Integer, SysUser> userMap = UserUtils.getUserMap(userIds, sysUserMapper);
+        articleVoList.forEach(articleVo -> {
+            SysUser user = userMap.get(articleVo.getUserId());
+            if (user != null) {
+                articleVo.setNickname(ObjectUtil.defaultIfNull(user.getNickname(), ""));
+                articleVo.setAvatar(ObjectUtil.defaultIfNull(user.getAvatar(), ""));
+            }
+        });
+    }
+
+    /**
+     * 将文章和专栏关系一次性批量映射到返回结果里。
+     */
+    private void fillArticleColumns(List<ArticleVo> articleVoList) {
+        if (ObjectUtil.isEmpty(articleVoList)) {
+            return;
+        }
+        List<Integer> articleIds = articleVoList.stream().map(ArticleVo::getId).collect(Collectors.toList());
+        List<ArticleColumn> articleColumns = articleColumnMapper.selectList(
+                new LambdaQueryWrapper<ArticleColumn>().in(ArticleColumn::getArticleId, articleIds));
+        if (ObjectUtil.isEmpty(articleColumns)) {
+            return;
+        }
+        List<Integer> columnIds = articleColumns.stream().map(ArticleColumn::getColumnId)
+                .distinct().collect(Collectors.toList());
+        List<Column> columns = columnMapper.selectBatchIds(columnIds);
+        Map<Integer, ColumnVo> columnIdToColumnMap = columns.stream()
+                .collect(Collectors.toMap(Column::getId,
+                        column -> BeanUtil.copyProperties(column, ColumnVo.class)));
+        Map<Integer, List<ColumnVo>> articleIdToColumnsMap = articleColumns.stream()
+                .collect(Collectors.groupingBy(
+                        ArticleColumn::getArticleId,
+                        Collectors.mapping(ac -> columnIdToColumnMap.get(ac.getColumnId()),
+                                Collectors.toList())));
+        articleVoList.forEach(articleVo -> articleVo
+                .setColumns(articleIdToColumnsMap.getOrDefault(articleVo.getId(), new ArrayList<>())));
+    }
+
+    // 异步增加阅读量
+    private void incrReadCount(Integer articleId, Integer userId, String ipAddress) {
+        notificationThreadPool.getNotificationPool("article").execute(() -> {
+            try {
+                // 检查并记录浏览，如果用户/访客已浏览过，则不增加阅读量
+                boolean shouldIncrement = historyService.checkAndRecordRead(articleId, userId, ipAddress);
+
+                if (shouldIncrement) {
+                    // 用户/访客首次阅读，增加阅读量（使用原子自增操作）
+                    boolean updateResult = this.lambdaUpdate()
+                            .eq(Article::getId, articleId)
+                            .setIncrBy(Article::getReadCount, 1)
+                            .update();
+
+                    if (!updateResult) {
+                        log.error("更新文章阅读量失败，文章ID: {}", articleId);
+                        throw new BlogException(BlogConstants.UpdateArticleReadCountError);
+                    }
+                }
+            } catch (Exception e) {
+                log.error("异步增加文章阅读量失败，文章ID: {}, 错误: {}", articleId, e.getMessage(), e);
+            }
+        });
+    }
+
+    @Override
+    public PageVo<List<ArticleVo>> searchArticleByTitle(String title, Integer pageNum, Integer pageSize) {
+        Page<Article> page = PageUtils.buildPage(pageNum, pageSize);
+        LambdaQueryWrapper<Article> qw = new LambdaQueryWrapper<Article>()
+                .select(Article.class, info -> !info.getColumn().equals("content")) // 排除 content 字段
+                .like(Article::getTitle, title)
+                .eq(Article::getExamineStatus, ExamineStatusEnum.PASS.getCode())
+                .eq(Article::getEditStatus, EditStatusEnum.PUBLISHED.getCode())
+                .eq(Article::getVisibleRange, VisibleRangeEnum.ALL.getCode())
+                .orderByDesc(Article::getUpdateTime);
+
+        List<Article> articles = articleMapper.selectPage(page, qw).getRecords();
+
+        // 转换为 ArticleVo 并填充用户信息
+        List<ArticleVo> articleVos = articles.stream()
+                .map(article -> {
+                    ArticleVo articleVo = BeanUtil.copyProperties(article, ArticleVo.class);
+                    // 查询作者信息
+                    SysUser author = sysUserMapper.selectById(article.getUserId());
+                    if (ObjectUtil.isNotEmpty(author)) {
+                        articleVo.setNickname(author.getNickname());
+                        articleVo.setAvatar(author.getAvatar());
+                    }
+                    return articleVo;
+                })
+                .collect(Collectors.toList());
+
+        return PageUtils.<ArticleVo>buildPageVo(page, articleVos);
+    }
+
+    @Override
+    public PageVo<List<ArticleVo>> searchArticleByTag(String tag, Integer pageNum, Integer pageSize) {
+        Page<Article> page = PageUtils.buildPage(pageNum, pageSize);
+        LambdaQueryWrapper<Article> qw = new LambdaQueryWrapper<Article>()
+                .select(Article.class, info -> !info.getColumn().equals("content")) // 排除 content 字段
+                .like(Article::getTag, tag)
+                .eq(Article::getExamineStatus, ExamineStatusEnum.PASS.getCode())
+                .eq(Article::getEditStatus, EditStatusEnum.PUBLISHED.getCode())
+                .eq(Article::getVisibleRange, VisibleRangeEnum.ALL.getCode())
+                .orderByDesc(Article::getUpdateTime);
+
+        List<Article> articles = articleMapper.selectPage(page, qw).getRecords();
+
+        // 转换为 ArticleVo 并填充用户信息
+        List<ArticleVo> articleVos = articles.stream()
+                .map(article -> {
+                    ArticleVo articleVo = BeanUtil.copyProperties(article, ArticleVo.class);
+                    // 查询作者信息
+                    SysUser author = sysUserMapper.selectById(article.getUserId());
+                    if (ObjectUtil.isNotEmpty(author)) {
+                        articleVo.setNickname(author.getNickname());
+                        articleVo.setAvatar(author.getAvatar());
+                    }
+                    return articleVo;
+                })
+                .collect(Collectors.toList());
+
+        return PageUtils.<ArticleVo>buildPageVo(page, articleVos);
+    }
+
+    @Override
+    public PageVo<List<ArticleVo>> searchArticleByAuthor(String author, Integer pageNum, Integer pageSize) {
+        // 1. 先根据作者昵称或用户名查询用户 ID
+        LambdaQueryWrapper<SysUser> userQuery = new LambdaQueryWrapper<SysUser>()
+                .select(SysUser::getId)
+                .and(q -> q.like(SysUser::getNickname, author).or().like(SysUser::getUsername, author))
+                .eq(SysUser::getIsDeleted, 0);
+        List<SysUser> users = sysUserMapper.selectList(userQuery);
+
+        if (users.isEmpty()) {
+            // 没有找到该用户，返回空结果
+            return new PageVo<>(new ArrayList<>(), 0L);
+        }
+
+        // 2. 获取用户 ID 列表
+        List<Integer> userIds = users.stream().map(SysUser::getId).collect(Collectors.toList());
+
+        // 3. 查询这些用户发布的文章
+        Page<Article> page = PageUtils.buildPage(pageNum, pageSize);
+        LambdaQueryWrapper<Article> articleQuery = new LambdaQueryWrapper<Article>()
+                .select(Article.class, info -> !info.getColumn().equals("content")) // 排除 content 字段
+                .in(Article::getUserId, userIds)
+                .eq(Article::getExamineStatus, ExamineStatusEnum.PASS.getCode())
+                .eq(Article::getEditStatus, EditStatusEnum.PUBLISHED.getCode())
+                .eq(Article::getVisibleRange, VisibleRangeEnum.ALL.getCode())
+                .orderByDesc(Article::getUpdateTime);
+
+        List<Article> articles = articleMapper.selectPage(page, articleQuery).getRecords();
+
+        // 4. 转换为 ArticleVo 并填充用户信息
+        List<ArticleVo> articleVos = articles.stream()
+                .map(article -> BeanUtil.copyProperties(article, ArticleVo.class))
+                .collect(Collectors.toList());
+
+        // 填充作者昵称和头像信息
+        fillArticleUserInfo(articleVos);
+
+        return PageUtils.<ArticleVo>buildPageVo(page, articleVos);
+    }
+
+    @Override
+    public List<String> getTitleSuggestions(String keyword) {
+        // 查询标题包含关键字的文章，只返回标题，最多10条
+        LambdaQueryWrapper<Article> qw = new LambdaQueryWrapper<Article>()
+                .select(Article::getTitle)
+                .like(Article::getTitle, keyword)
+                .eq(Article::getExamineStatus, ExamineStatusEnum.PASS.getCode())
+                .eq(Article::getEditStatus, EditStatusEnum.PUBLISHED.getCode())
+                .eq(Article::getVisibleRange, VisibleRangeEnum.ALL.getCode())
+                .orderByDesc(Article::getUpdateTime)
+                .last("LIMIT 10");
+
+        List<Article> articles = articleMapper.selectList(qw);
+
+        // 返回标题列表
+        return articles.stream()
+                .map(Article::getTitle)
+                .distinct()
+                .collect(Collectors.toList());
+    }
+
+    @Override
+    public List<String> getTagSuggestions(String keyword) {
+        // 查询标签包含关键字的文章，只返回标签，最多返回相关标签
+        LambdaQueryWrapper<Article> qw = new LambdaQueryWrapper<Article>()
+                .select(Article::getTag)
+                .like(Article::getTag, keyword)
+                .eq(Article::getExamineStatus, ExamineStatusEnum.PASS.getCode())
+                .eq(Article::getEditStatus, EditStatusEnum.PUBLISHED.getCode())
+                .eq(Article::getVisibleRange, VisibleRangeEnum.ALL.getCode())
+                .isNotNull(Article::getTag)
+                .ne(Article::getTag, "")
+                .last("LIMIT 50");
+
+        List<Article> articles = articleMapper.selectList(qw);
+
+        // 解析所有标签并去重，返回匹配关键字的标签
+        return articles.stream()
+                .map(Article::getTag)
+                .filter(ObjectUtil::isNotEmpty)
+                .flatMap(tagString -> {
+                    // 标签是逗号分隔的字符串，需要拆分
+                    String[] tags = tagString.split(",");
+                    return java.util.Arrays.stream(tags);
+                })
+                .map(String::trim)
+                .filter(tag -> tag.contains(keyword))
+                .distinct()
+                .limit(10)
+                .collect(Collectors.toList());
+    }
+
+    @Override
+    public void addArticle(ArticleDto articleDto) {
+        Article article = BeanUtil.copyProperties(articleDto, Article.class);
+        Integer userId = SecurityUtils.getUserId();
+        article.setUserId(userId);
+
+        // XSS 过滤文章内容，防止 XSS 攻击
+        article.setTitle(XssUtils.cleanPlainText(article.getTitle()));
+        article.setContent(XssUtils.cleanRichText(article.getContent()));
+        article.setDescription(XssUtils.cleanPlainText(article.getDescription()));
+
+        // 如果前端没有设置editStatus，默认为已发布状态
+        if (article.getEditStatus() == null) {
+            article.setEditStatus(EditStatusEnum.PUBLISHED.getCode());
+        }
+        if (!articleMapper.insertOrUpdate(article)) {
+            throw new BlogException(BlogConstants.AddArticleError);
+        }
+        articleDto.setId(article.getId()); // 回显id
+        articleDto.setUserId(userId);
+        auditArticle(articleDto);
+    }
+
+    // 文章审核
+    private void auditArticle(ArticleDto articleDto) {
+        notificationThreadPool.getNotificationPool("article").execute(() -> {
+
+            MessageDto messageDto = new MessageDto();
+            messageDto.setType(MessageTypeEnum.SYSTEM.getCode());
+            // 先更新文章的审核状态
+            Article updateArticle = new Article();
+            updateArticle.setId(articleDto.getId());
+            // 进行自动审核
+            if (chenStackConfig.isArticleAutoAudit()) {
+                AuditResult auditResult = textAuditUtils
+                        .auditTextWithDetailsSplit(articleDto.getTitle() + " " + articleDto.getContent());
+
+                if (auditResult.getStatus().equals(ExamineStatusEnum.PASS.getCode())) {
+                    // 文字审核通过，更新审核状态为通过
+                    updateArticle.setExamineStatus(ExamineStatusEnum.PASS.getCode());
+                    updateArticle.setTag(articleDto.getTag());
+
+                    // 更新文章所属的专栏
+                    if (ObjectUtil.isNotEmpty(articleDto.getColumnIds())) {
+                        List<Integer> columnIds = articleDto.getColumnIds();
+                        columnIds.forEach(columnId -> {
+                            ArticleColumn articleColumn = articleColumnMapper
+                                    .selectOne(new LambdaQueryWrapper<ArticleColumn>().select(ArticleColumn::getSort)
+                                            .eq(ArticleColumn::getColumnId, columnId)
+                                            .orderByDesc(ArticleColumn::getSort).last("limit 1"));
+                            Integer sort = articleColumn == null ? 0 : articleColumn.getSort();
+                            ArticleColumn newArticleColumn = new ArticleColumn();
+                            newArticleColumn.setArticleId(articleDto.getId());
+                            newArticleColumn.setColumnId(columnId);
+                            newArticleColumn.setSort(sort + 1); // 最大排序值加1
+                            articleColumnMapper.insert(newArticleColumn);
+
+                            // 增加专栏的文章数量
+                            Column column = columnMapper.selectById(columnId);
+                            if (column != null) {
+                                column.setArticleCount(column.getArticleCount() + 1);
+                                columnMapper.updateById(column);
+                            }
+                        });
+                    }
+                    articleMapper.updateById(updateArticle);
+                } else if (auditResult.getStatus().equals(ExamineStatusEnum.NO_PASS.getCode())) {
+                    // 文字审核不通过，更新审核状态为不通过，并记录原因，并发送消息给用户
+                    updateArticle.setExamineStatus(ExamineStatusEnum.NO_PASS.getCode());
+                    articleMapper.updateById(updateArticle);
+                    log.error("文章审核不通过，ID: {}，标题: {}，原因: {}", articleDto.getId(), articleDto.getTitle(),
+                            auditResult.getErrorMessage());
+
+                    messageDto.setContent(MessageConstants.ArticleAuditNotPass(articleDto.getId(),
+                            articleDto.getTitle(), auditResult.getErrorMessage()));
+                    messageDto.setReceiverId(articleDto.getUserId());
+                    messageService.sendToUser(messageDto);
+                } else if (auditResult.getStatus().equals(ExamineStatusEnum.WAIT.getCode())) {
+                    // 需要人工审核，更新审核状态为待审核，并记录原因，并发送消息给管理员
+                    updateArticle.setExamineStatus(ExamineStatusEnum.WAIT.getCode());
+                    articleMapper.updateById(updateArticle);
+                    log.error("文章需要人工审核，ID: {}", articleDto.getId());
+
+                    messageDto.setContent(MessageConstants.ArticleNeedReview(articleDto.getId(), articleDto.getTitle(),
+                            auditResult.getErrorMessage()));
+                    messageService.sendToAdmin(messageDto);
+
+                    HashMap<String, Object> sendEmail = new HashMap<>();
+                    sendEmail.put("text", String.format(MessageConstants.ARTICLE_NEED_REVIEW, articleDto.getId(),
+                            auditResult.getErrorMessage()));
+                    rabbitTemplate.convertAndSend(RabbitMQConstants.Examine_Exchange,
+                            RabbitMQConstants.Examine_Routing_Key, sendEmail);
+                }
+            } else {
+                updateArticle.setExamineStatus(ExamineStatusEnum.WAIT.getCode());
+                articleMapper.updateById(updateArticle);
+                // 没有开启自动审核, 需要人工审核，发送消息给管理员
+                messageDto.setContent(
+                        MessageConstants.ArticleNeedReview(articleDto.getId(), articleDto.getTitle(), null));
+                messageService.sendToAdmin(messageDto);
+
+                HashMap<String, Object> sendEmail = new HashMap<>();
+                sendEmail.put("text", String.format(MessageConstants.ARTICLE_NEED_REVIEW, articleDto.getId(), null));
+                rabbitTemplate.convertAndSend(RabbitMQConstants.Examine_Exchange, RabbitMQConstants.Examine_Routing_Key,
+                        sendEmail);
+            }
+        });
+    }
+
+    // 保存草稿
+    @Override
+    public void saveDraft(ArticleDto articleDto) {
+        Article article = BeanUtil.copyProperties(articleDto, Article.class);
+        article.setUserId(SecurityUtils.getUserId());
+        article.setEditStatus(EditStatusEnum.DRAFT.getCode());
+        articleMapper.insertOrUpdate(article);
+        // 将生成的ID回写到DTO中，供前端使用
+        articleDto.setId(article.getId());
+    }
+
+    @Override
+    public void updateArticle(ArticleDto articleDto) {
+        Article userArticle = articleMapper.selectById(articleDto.getId());
+        if (ObjectUtil.isEmpty(userArticle)) {
+            throw new BlogException(BlogConstants.NotFoundArticle);
+        }
+        if (userArticle.getUserId() != SecurityUtils.getUserId()) {
+            throw new BlogException(BlogConstants.CannotHandleOthersArticle);
+        }
+
+        // 如果是创作中心删除文章, 会携带 editStatus 参数
+        if (ObjectUtil.isNotEmpty(articleDto.getEditStatus())) {
+            if (articleDto.getEditStatus().equals(EditStatusEnum.DRAFT.getCode())
+                    || articleDto.getEditStatus().equals(EditStatusEnum.RECYCLE.getCode())) {
+                // 如果设置草稿箱和回收站,则删除专栏文章关联
+                List<ArticleColumn> existingColumns = articleColumnMapper.selectList(
+                        new LambdaQueryWrapper<ArticleColumn>().eq(ArticleColumn::getArticleId, articleDto.getId()));
+
+                if (ObjectUtil.isNotEmpty(existingColumns)) {
+                    // 减少专栏文章数量
+                    existingColumns.forEach(articleColumn -> {
+                        Column column = columnMapper.selectById(articleColumn.getColumnId());
+                        if (column != null && column.getArticleCount() > 0) {
+                            column.setArticleCount(column.getArticleCount() - 1);
+                            columnMapper.updateById(column);
+                        }
+                    });
+
+                    // 删除专栏文章关联
+                    articleColumnMapper.delete(
+                            new LambdaQueryWrapper<ArticleColumn>().eq(ArticleColumn::getArticleId,
+                                    articleDto.getId()));
+                }
+            }
+        }
+        // 更新文章, 处理专栏关联
+        handleColumnAssociation(articleDto);
+
+        Article article = BeanUtil.copyProperties(articleDto, Article.class);
+        // XSS 过滤文章内容，防止 XSS 攻击
+        article.setTitle(XssUtils.cleanPlainText(article.getTitle()));
+        article.setContent(XssUtils.cleanRichText(article.getContent()));
+        article.setDescription(XssUtils.cleanPlainText(article.getDescription()));
+
+        if (articleMapper.updateById(article) < 1) {
+            throw new BlogException(BlogConstants.UpdateArticleError);
+        }
+    }
+
+    /**
+     * 处理专栏文章关联
+     * 
+     * @param articleDto 文章DTO
+     */
+    private void handleColumnAssociation(ArticleDto articleDto) {
+        // 先删除现有的专栏关联
+        List<ArticleColumn> existingColumns = articleColumnMapper.selectList(
+                new LambdaQueryWrapper<ArticleColumn>().eq(ArticleColumn::getArticleId, articleDto.getId()));
+
+        if (ObjectUtil.isNotEmpty(existingColumns)) {
+            // 减少原有专栏的文章数量
+            existingColumns.forEach(articleColumn -> {
+                Column column = columnMapper.selectById(articleColumn.getColumnId());
+                if (column != null && column.getArticleCount() > 0) {
+                    column.setArticleCount(column.getArticleCount() - 1);
+                    columnMapper.updateById(column);
+                }
+            });
+
+            // 删除现有专栏关联
+            articleColumnMapper.delete(
+                    new LambdaQueryWrapper<ArticleColumn>().eq(ArticleColumn::getArticleId, articleDto.getId()));
+        }
+
+        // 如果有新的专栏ID，添加新的专栏关联
+        if (ObjectUtil.isNotEmpty(articleDto.getColumnIds())) {
+            List<Integer> columnIds = articleDto.getColumnIds();
+            columnIds.forEach(columnId -> {
+                // 检查专栏是否存在
+                Column column = columnMapper.selectById(columnId);
+                if (column != null) {
+                    // 获取该专栏的最大排序值
+                    ArticleColumn maxSortColumn = articleColumnMapper
+                            .selectOne(new LambdaQueryWrapper<ArticleColumn>()
+                                    .select(ArticleColumn::getSort)
+                                    .eq(ArticleColumn::getColumnId, columnId)
+                                    .orderByDesc(ArticleColumn::getSort)
+                                    .last("limit 1"));
+
+                    Integer sort = maxSortColumn == null ? 0 : maxSortColumn.getSort();
+
+                    // 创建新的专栏文章关联
+                    ArticleColumn newArticleColumn = new ArticleColumn();
+                    newArticleColumn.setArticleId(articleDto.getId());
+                    newArticleColumn.setColumnId(columnId);
+                    newArticleColumn.setSort(sort + 1); // 最大排序值加1
+                    articleColumnMapper.insert(newArticleColumn);
+
+                    // 增加专栏的文章数量
+                    column.setArticleCount(column.getArticleCount() + 1);
+                    columnMapper.updateById(column);
+                }
+            });
+        }
+    }
+
+    @Override
+    public void deleteArticle(Integer articleId) {
+        Article article = articleMapper.selectById(articleId);
+        if (article == null) {
+            throw new BlogException(BlogConstants.NotFoundArticle);
+        }
+        if (article.getUserId() != SecurityUtils.getUserId()) {
+            throw new BlogException(BlogConstants.CannotHandleOthersArticle);
+        }
+
+        // 如果文章已审核通过，需要减少相关专栏的文章数量
+        if (article.getExamineStatus().equals(ExamineStatusEnum.PASS.getCode())) {
+            List<ArticleColumn> articleColumns = articleColumnMapper.selectList(
+                    new LambdaQueryWrapper<ArticleColumn>().eq(ArticleColumn::getArticleId, articleId));
+
+            // 减少每个专栏的文章数量
+            articleColumns.forEach(articleColumn -> {
+                Column column = columnMapper.selectById(articleColumn.getColumnId());
+                if (column != null && column.getArticleCount() > 0) {
+                    column.setArticleCount(column.getArticleCount() - 1);
+                    columnMapper.updateById(column);
+                }
+            });
+        }
+
+        articleMapper.deleteById(articleId);
+        articleColumnMapper.delete(new LambdaQueryWrapper<ArticleColumn>().in(ArticleColumn::getArticleId, articleId));
+
+        // 清除文章的所有浏览记录
+        redisComponent.clearArticleReads(articleId);
+    }
+
+    @Override
+    public PageVo<List<ArticleVo>> adminGetArticleList(Integer pageNum, Integer pageSize) {
+        Page<Article> page = PageUtils.buildPage(pageNum, pageSize);
+        LambdaQueryWrapper<Article> qw = new LambdaQueryWrapper<Article>()
+                .orderByDesc(Article::getCreateTime);
+        List<Article> articleList = articleMapper.selectPage(page, qw).getRecords();
+        List<ArticleVo> articleVoList = BeanUtil.copyToList(articleList, ArticleVo.class);
+
+        // 使用UserUtils批量获取用户昵称
+        if (!articleVoList.isEmpty()) {
+            Map<Integer, SysUser> userMap = UserUtils.getUserMap(
+                    articleVoList.stream().map(ArticleVo::getUserId).filter(Objects::nonNull).distinct().collect(Collectors.toList()),
+                    sysUserMapper);
+            articleVoList.forEach(articleVo -> {
+                if (articleVo.getUserId() != null) {
+                    SysUser user = userMap.get(articleVo.getUserId());
+                    articleVo.setNickname(user != null ? user.getNickname() : null);
+                }
+            });
+        }
+
+        return PageUtils.<ArticleVo>buildPageVo(page, articleVoList);
+    }
+
+    @Override
+    public PageVo<List<ArticleVo>> adminGetArticlesByUserId(Integer userId, Integer pageNum, Integer pageSize) {
+        Page<Article> page = PageUtils.buildPage(pageNum, pageSize);
+        // 构建查询条件：根据用户ID查询该用户的所有文章
+        LambdaQueryWrapper<Article> queryWrapper = new LambdaQueryWrapper<>();
+        queryWrapper.eq(Article::getUserId, userId)
+                .orderByDesc(Article::getId);
+
+        List<Article> articles = articleMapper.selectPage(page, queryWrapper).getRecords();
+        List<ArticleVo> articleVos = BeanUtil.copyToList(articles, ArticleVo.class);
+
+        if (!articleVos.isEmpty()) {
+            // 使用UserUtils批量获取用户信息
+            Map<Integer, SysUser> userMap = UserUtils.getUserMap(
+                    articleVos.stream().map(ArticleVo::getUserId).distinct().collect(Collectors.toList()),
+                    sysUserMapper);
+
+            // 设置用户昵称
+            articleVos.forEach(articleVo -> {
+                SysUser user = userMap.get(articleVo.getUserId());
+                articleVo.setNickname(user != null ? user.getNickname() : null);
+            });
+
+            // 获取专栏信息
+            List<Integer> articleIds = articleVos.stream()
+                    .map(ArticleVo::getId)
+                    .collect(Collectors.toList());
+
+            List<ArticleColumn> articleColumns = articleColumnMapper.selectList(
+                    new LambdaQueryWrapper<ArticleColumn>().in(ArticleColumn::getArticleId, articleIds));
+
+            if (!articleColumns.isEmpty()) {
+                List<Integer> columnIds = articleColumns.stream()
+                        .map(ArticleColumn::getColumnId)
+                        .distinct()
+                        .collect(Collectors.toList());
+
+                List<Column> columns = columnMapper.selectList(
+                        new LambdaQueryWrapper<Column>().in(Column::getId, columnIds));
+
+                Map<Integer, ColumnVo> columnMap = columns.stream()
+                        .collect(Collectors.toMap(Column::getId,
+                                column -> BeanUtil.copyProperties(column, ColumnVo.class)));
+
+                // 使用 groupingBy 来处理一个文章可能对应多个专栏的情况
+                Map<Integer, List<Integer>> articleColumnMap = articleColumns.stream()
+                        .collect(Collectors.groupingBy(
+                                ArticleColumn::getArticleId,
+                                Collectors.mapping(ArticleColumn::getColumnId, Collectors.toList())));
+
+                // 设置专栏信息
+                articleVos.forEach(articleVo -> {
+                    List<Integer> articleColumnIds = articleColumnMap.get(articleVo.getId());
+                    if (articleColumnIds != null && !articleColumnIds.isEmpty()) {
+                        List<ColumnVo> columnList = articleColumnIds.stream()
+                                .map(columnMap::get)
+                                .filter(columnVo -> columnVo != null)
+                                .collect(Collectors.toList());
+                        if (!columnList.isEmpty()) {
+                            articleVo.setColumns(columnList);
+                        }
+                    }
+                });
+            }
+        }
+
+        return PageUtils.<ArticleVo>buildPageVo(page, articleVos);
+    }
+
+    @Override
+    public ArticleVo adminGetArticle(Integer articleId) {
+        Article article = articleMapper.selectById(articleId);
+        if (article == null) {
+            throw new BlogException(BlogConstants.NotFoundArticle);
+        }
+        ArticleVo articleVo = BeanUtil.copyProperties(article, ArticleVo.class);
+
+        // 获取用户信息
+        if (article.getUserId() != null) {
+            SysUser user = sysUserMapper.selectById(article.getUserId());
+            if (user != null) {
+                articleVo.setNickname(user.getNickname());
+            }
+        }
+
+        // 获取专栏信息
+        List<ArticleColumn> articleColumns = articleColumnMapper
+                .selectList(new LambdaQueryWrapper<ArticleColumn>().eq(ArticleColumn::getArticleId, article.getId()));
+        if (ObjectUtil.isNotEmpty(articleColumns)) {
+            List<Integer> columnIds = articleColumns.stream().map(ArticleColumn::getColumnId)
+                    .collect(Collectors.toList());
+            List<Column> columns = columnMapper.selectByIds(columnIds);
+            articleVo.setColumns(BeanUtil.copyToList(columns, ColumnVo.class));
+        }
+        return articleVo;
+    }
+
+    @Override
+    public void adminUpdateArticle(ArticleDto articleDto) {
+        Article article = BeanUtil.copyProperties(articleDto, Article.class);
+        if (articleMapper.updateById(article) < 1) {
+            throw new BlogException(BlogConstants.UpdateArticleError);
+        }
+    }
+
+    // 管理员搜索文章
+    @Override
+    public PageVo<List<ArticleVo>> adminSearchArticle(ArticleDto articleDto) {
+        Page<Article> page = PageUtils.buildPage(articleDto.getPageNum(), articleDto.getPageSize());
+        LambdaQueryWrapper<Article> queryWrapper = new LambdaQueryWrapper<>();
+        queryWrapper.eq(ObjectUtil.isNotEmpty(articleDto.getUserId()), Article::getUserId, articleDto.getUserId())
+                .like(ObjectUtil.isNotEmpty(articleDto.getTitle()), Article::getTitle, articleDto.getTitle())
+                .like(ObjectUtil.isNotEmpty(articleDto.getDescription()), Article::getDescription,
+                        articleDto.getDescription())
+                .like(ObjectUtil.isNotEmpty(articleDto.getTag()), Article::getTag, articleDto.getTag())
+                .eq(ObjectUtil.isNotEmpty(articleDto.getExamineStatus()), Article::getExamineStatus,
+                        articleDto.getExamineStatus())
+                .eq(ObjectUtil.isNotEmpty(articleDto.getEditStatus()), Article::getEditStatus,
+                        articleDto.getEditStatus())
+                .eq(ObjectUtil.isNotEmpty(articleDto.getVisibleRange()), Article::getVisibleRange,
+                        articleDto.getVisibleRange())
+                .eq(ObjectUtil.isNotEmpty(articleDto.getReprintType()), Article::getReprintType,
+                        articleDto.getReprintType())
+                .ge(ObjectUtil.isNotEmpty(articleDto.getCreateTimeStart()), Article::getCreateTime,
+                        articleDto.getCreateTimeStart())
+                .le(ObjectUtil.isNotEmpty(articleDto.getCreateTimeEnd()), Article::getCreateTime,
+                        articleDto.getCreateTimeEnd())
+                .orderByDesc(Article::getCreateTime);
+
+        List<Article> articles = articleMapper.selectPage(page, queryWrapper).getRecords();
+        List<ArticleVo> articleVos = BeanUtil.copyToList(articles, ArticleVo.class);
+
+        // 使用UserUtils批量获取用户昵称
+        Map<Integer, SysUser> userMap = UserUtils.getUserMap(
+                articleVos.stream().map(ArticleVo::getUserId).collect(Collectors.toList()),
+                sysUserMapper);
+        articleVos.forEach(articleVo -> {
+            SysUser user = userMap.get(articleVo.getUserId());
+            if (user != null) {
+                articleVo.setNickname(user.getNickname());
+            }
+        });
+
+        return PageUtils.<ArticleVo>buildPageVo(page, articleVos);
+    }
+
+    @Override
+    public void adminExamineArticle(ArticleAuditDto articleAuditDto) {
+
+        Article article = articleMapper.selectOne(
+                new LambdaQueryWrapper<Article>()
+                        .select(Article::getUserId, Article::getTitle)
+                        .eq(Article::getId, articleAuditDto.getArticleId()));
+
+        if (ObjectUtil.isEmpty(article)) {
+            throw new BlogException(BlogConstants.NotFoundArticle);
+        }
+        Integer examineStatus = articleAuditDto.getExamineStatus();
+        String examineReason = articleAuditDto.getExamineReason();
+
+        // 更新文章审核状态
+        Article updateArticle = new Article();
+        updateArticle.setId(articleAuditDto.getArticleId());
+        updateArticle.setExamineStatus(examineStatus);
+        articleMapper.updateById(updateArticle);
+
+        // 发送消息给用户
+        MessageDto messageDto = new MessageDto();
+        messageDto.setReceiverId(article.getUserId());
+
+        // 根据审核状态发送不同的消息
+        if (examineStatus.equals(ExamineStatusEnum.PASS.getCode())) {
+            // 审核通过
+            messageDto
+                    .setContent(MessageConstants.ArticleAuditPass(articleAuditDto.getArticleId(), article.getTitle()));
+        } else if (examineStatus.equals(ExamineStatusEnum.NO_PASS.getCode())) {
+            // 审核不通过
+            messageDto.setContent(MessageConstants.ArticleAuditNotPass(articleAuditDto.getArticleId(),
+                    article.getTitle(), examineReason));
+        }
+
+        messageService.sendToUser(messageDto);
+
+        // 发送系统邮件通知
+        emailUtils.sendSystemEmailNotification(
+                article.getUserId(),
+                examineStatus.equals(ExamineStatusEnum.PASS.getCode()) ? "文章审核通过" : "文章审核未通过",
+                examineStatus.equals(ExamineStatusEnum.PASS.getCode())
+                        ? "您的文章《" + article.getTitle() + "》已通过审核，现在可以被其他用户查看了。"
+                        : "您的文章《" + article.getTitle() + "》未通过审核，原因：" + examineReason,
+                null,
+                null,
+                null);
+    }
+
+    @Override
+    public void adminExamineBatchArticle(List<ArticleAuditDto> articleAuditDtos) {
+        if (ObjectUtil.isEmpty(articleAuditDtos)) {
+            return;
+        }
+
+        // 提取所有文章ID
+        List<Integer> articleIds = articleAuditDtos.stream()
+                .map(ArticleAuditDto::getArticleId)
+                .toList();
+
+        // 批量查询文章信息（只查询需要的字段）
+        List<Article> articles = articleMapper.selectList(new LambdaQueryWrapper<Article>()
+                .select(Article::getId, Article::getUserId, Article::getTitle)
+                .in(Article::getId, articleIds));
+
+        if (articles.size() != articleIds.size()) {
+            throw new BlogException(BlogConstants.NotFoundArticle);
+        }
+
+        // 创建文章ID到文章的映射
+        Map<Integer, Article> articleMap = articles.stream()
+                .collect(Collectors.toMap(Article::getId, article -> article));
+
+        // 准备批量更新的数据
+        List<Article> updateArticles = new ArrayList<>();
+        List<MessageDto> messages = new ArrayList<>();
+
+        for (ArticleAuditDto auditDto : articleAuditDtos) {
+            Article article = articleMap.get(auditDto.getArticleId());
+            Integer examineStatus = auditDto.getExamineStatus();
+            String examineReason = auditDto.getExamineReason();
+
+            // 准备更新的文章对象
+            Article updateArticle = new Article();
+            updateArticle.setId(auditDto.getArticleId());
+            updateArticle.setExamineStatus(examineStatus);
+            updateArticles.add(updateArticle);
+
+            // 准备消息通知
+            String messageContent;
+            if (examineStatus.equals(ExamineStatusEnum.PASS.getCode())) {
+                messageContent = MessageConstants.ArticleAuditPass(auditDto.getArticleId(), article.getTitle());
+            } else if (examineStatus.equals(ExamineStatusEnum.NO_PASS.getCode())) {
+                messageContent = MessageConstants.ArticleAuditNotPass(auditDto.getArticleId(), article.getTitle(),
+                        examineReason);
+            } else {
+                continue; // 跳过无效状态
+            }
+
+            MessageDto messageDto = new MessageDto();
+            messageDto.setContent(messageContent);
+            messageDto.setReceiverId(article.getUserId());
+            messages.add(messageDto);
+        }
+
+        // 批量更新文章状态
+        this.updateBatchById(updateArticles);
+
+        // 批量发送所有消息
+        if (!messages.isEmpty()) {
+            messageService.sendBatchToUsers(messages);
+        }
+    }
+
+    @Override
+    public void adminDeleteArticle(Integer articleId) {
+        // 获取文章信息
+        Article article = articleMapper.selectById(articleId);
+
+        // 如果文章已审核通过，需要减少相关专栏的文章数量
+        if (article != null && article.getExamineStatus().equals(ExamineStatusEnum.PASS.getCode())) {
+            List<ArticleColumn> articleColumns = articleColumnMapper.selectList(
+                    new LambdaQueryWrapper<ArticleColumn>().eq(ArticleColumn::getArticleId, articleId));
+
+            // 减少每个专栏的文章数量
+            articleColumns.forEach(articleColumn -> {
+                Column column = columnMapper.selectById(articleColumn.getColumnId());
+                if (column != null && column.getArticleCount() > 0) {
+                    column.setArticleCount(column.getArticleCount() - 1);
+                    columnMapper.updateById(column);
+                }
+            });
+        }
+
+        if (articleMapper.deleteById(articleId) < 1) {
+            throw new BlogException(BlogConstants.DeleteArticleError);
+        }
+
+        // 删除文章与专栏的关联关系
+        articleColumnMapper.delete(new LambdaQueryWrapper<ArticleColumn>().eq(ArticleColumn::getArticleId, articleId));
+
+        // 清除文章的所有浏览记录
+        redisComponent.clearArticleReads(articleId);
+    }
+
+    @Override
+    public void adminDeleteBatchArticle(List<Integer> articleIds) {
+        // 批量处理专栏文章数量
+        articleIds.forEach(articleId -> {
+            Article article = articleMapper.selectById(articleId);
+
+            // 如果文章已审核通过，需要减少相关专栏的文章数量
+            if (article != null && article.getExamineStatus().equals(ExamineStatusEnum.PASS.getCode())) {
+                List<ArticleColumn> articleColumns = articleColumnMapper.selectList(
+                        new LambdaQueryWrapper<ArticleColumn>().eq(ArticleColumn::getArticleId, articleId));
+
+                // 减少每个专栏的文章数量
+                articleColumns.forEach(articleColumn -> {
+                    Column column = columnMapper.selectById(articleColumn.getColumnId());
+                    if (column != null && column.getArticleCount() > 0) {
+                        column.setArticleCount(column.getArticleCount() - 1);
+                        columnMapper.updateById(column);
+                    }
+                });
+            }
+        });
+
+        // 批量删除文章
+        this.removeByIds(articleIds);
+
+        // 删除文章与专栏的关联关系
+        articleColumnMapper.delete(new LambdaQueryWrapper<ArticleColumn>().in(ArticleColumn::getArticleId, articleIds));
+
+        // 批量清除文章的所有浏览记录
+        redisComponent.batchClearArticleReads(articleIds);
+    }
+
+    @Override
+    public ArticleStatisticsVo getAdminStatistics() {
+        // 查询所有文章总数
+        Long totalCount = this.count();
+
+        // 查询已发布数量 (已发布 && 审核通过)
+        Long publishedCount = this.count(new LambdaQueryWrapper<Article>()
+                .eq(Article::getEditStatus, EditStatusEnum.PUBLISHED.getCode())
+                .eq(Article::getExamineStatus, ExamineStatusEnum.PASS.getCode()));
+
+        // 查询审核中数量 (已发布 && 待审核)
+        Long reviewingCount = this.count(new LambdaQueryWrapper<Article>()
+                .eq(Article::getEditStatus, EditStatusEnum.PUBLISHED.getCode())
+                .eq(Article::getExamineStatus, ExamineStatusEnum.WAIT.getCode()));
+
+        // 查询草稿箱数量
+        Long draftCount = this.count(new LambdaQueryWrapper<Article>()
+                .eq(Article::getEditStatus, EditStatusEnum.DRAFT.getCode()));
+
+        // 查询回收站数量
+        Long garbageCount = this.count(new LambdaQueryWrapper<Article>()
+                .eq(Article::getEditStatus, EditStatusEnum.RECYCLE.getCode()));
+
+        ArticleStatisticsVo statisticsVo = new ArticleStatisticsVo();
+        statisticsVo.setTotalCount(totalCount);
+        statisticsVo.setPublishedCount(publishedCount);
+        statisticsVo.setReviewingCount(reviewingCount);
+        statisticsVo.setDraftCount(draftCount);
+        statisticsVo.setGarbageCount(garbageCount);
+
+        return statisticsVo;
+    }
+
+    @Override
+    public CreationStatisticsVo getCreationStatistics() {
+        Integer userId = SecurityUtils.getUserId();
+
+        // 获取文章统计信息
+        ArticleStatisticsVo articleStatistics = getUserArticleStatistics();
+
+        // 获取专栏数量
+        Long columnCount = columnMapper.selectCount(new LambdaQueryWrapper<Column>().eq(Column::getUserId, userId));
+
+        // 一次性查询获取该用户所有已审核通过的文章
+        List<Article> articles = articleMapper.selectList(
+                new LambdaQueryWrapper<Article>()
+                        .eq(Article::getUserId, userId)
+                        .eq(Article::getExamineStatus, ExamineStatusEnum.PASS.getCode())
+                        .select(Article::getReadCount, Article::getLikeCount, Article::getCommentCount));
+
+        // 同时计算总阅读量和总点赞量
+        Long totalReadCount = 0L;
+        Long totalLikeCount = 0L;
+        Long totalCommentCount = 0L;
+        if (!articles.isEmpty()) {
+            totalReadCount = articles.stream().mapToLong(Article::getReadCount).sum();
+            totalLikeCount = articles.stream().mapToLong(Article::getLikeCount).sum();
+            totalCommentCount = articles.stream().mapToLong(Article::getCommentCount).sum();
+        }
+
+        // 获取用户信息
+        SysUser user = sysUserMapper.selectOne(
+                new LambdaQueryWrapper<SysUser>()
+                        .eq(SysUser::getId, userId)
+                        .select(SysUser::getId, SysUser::getFansCount, SysUser::getFollowCount));
+
+        Long fansCount = user.getFansCount().longValue();
+        Long followCount = user.getFollowCount().longValue();
+
+        // 构建返回对象
+        CreationStatisticsVo creationStatistics = new CreationStatisticsVo();
+        creationStatistics.setArticleStatistics(articleStatistics);
+        creationStatistics.setColumnCount(columnCount);
+        creationStatistics.setCommentCount(totalCommentCount);
+        creationStatistics.setTotalReadCount(totalReadCount);
+        creationStatistics.setTotalLikeCount(totalLikeCount);
+        creationStatistics.setFansCount(fansCount);
+        creationStatistics.setFollowCount(followCount);
+
+        return creationStatistics;
+    }
+
+    @Override
+    public PageVo<List<HotArticleVo>> getHotArticleList(Integer pageNum, Integer pageSize) {
+        try {
+            // 1. 从Redis获取热门文章ID列表（按访问量倒序）
+            // 计算要获取的数据范围，确保有足够的文章用于分页
+            int totalNeeded = pageNum * pageSize;
+            List<Integer> hotArticleIds = redisComponent.getHotArticles(totalNeeded);
+
+            // 如果Redis中没有数据，返回空结果
+            if (ObjectUtil.isEmpty(hotArticleIds)) {
+                log.error("Redis中暂无热门文章数据");
+                return new PageVo<>(new ArrayList<>(), 0L);
+            }
+
+            // 2. 计算分页范围
+            int startIndex = (pageNum - 1) * pageSize;
+            int endIndex = Math.min(startIndex + pageSize, hotArticleIds.size());
+
+            // 如果起始索引超出范围，返回空结果
+            if (startIndex >= hotArticleIds.size()) {
+                return new PageVo<>(new ArrayList<>(), (long) hotArticleIds.size());
+            }
+
+            // 3. 获取当前页的文章ID列表
+            List<Integer> currentPageIds = hotArticleIds.subList(startIndex, endIndex);
+
+            // 4. 根据文章ID列表查询热门文章核心信息
+            List<Article> articles = articleMapper.selectList(
+                    new LambdaQueryWrapper<Article>()
+                            // 只查询需要的字段
+                            .select(Article::getId, Article::getUserId, Article::getTitle, Article::getReadCount)
+                            // 根据ID列表查询
+                            .in(Article::getId, currentPageIds)
+                            // 审核状态为通过
+                            .eq(Article::getExamineStatus, ExamineStatusEnum.PASS.getCode())
+                            // 编辑状态为已发布
+                            .eq(Article::getEditStatus, 0)
+                            // 可见范围为公开
+                            .eq(Article::getVisibleRange, 0)
+                            // 未删除
+                            .eq(Article::getIsDeleted, 0));
+
+            // 如果查询结果为空，返回空结果
+            if (ObjectUtil.isEmpty(articles)) {
+                return new PageVo<>(new ArrayList<>(), (long) hotArticleIds.size());
+            }
+
+            // 5. 转换为Map，方便按ID查找
+            Map<Integer, Article> articleDataMap = articles.stream()
+                    .collect(Collectors.toMap(Article::getId, article -> article));
+
+            // 6. 批量获取热度分数
+            Map<Integer, Double> hotScoreMap = redisComponent.batchGetArticleHotScore(currentPageIds);
+
+            // 7. 按照Redis中的顺序组装结果（保持热度排序）
+            List<HotArticleVo> hotArticleVos = new ArrayList<>();
+            for (Integer articleId : currentPageIds) {
+                Article article = articleDataMap.get(articleId);
+                if (article == null) {
+                    continue;
+                }
+
+                // 创建 HotArticleVo
+                HotArticleVo hotArticleVo = new HotArticleVo();
+                hotArticleVo.setId(article.getId());
+                hotArticleVo.setUserId(article.getUserId());
+                hotArticleVo.setTitle(article.getTitle());
+                hotArticleVo.setReadCount(article.getReadCount());
+
+                // 添加热度分数
+                Double hotScore = hotScoreMap.get(articleId);
+                hotArticleVo.setHotScore(hotScore != null ? hotScore.longValue() : 0L);
+
+                hotArticleVos.add(hotArticleVo);
+            }
+
+            // 8. 返回分页结果
+            return new PageVo<>(hotArticleVos, (long) hotArticleIds.size());
+
+        } catch (Exception e) {
+            log.error("获取热门文章列表失败: {}", e.getMessage(), e);
+            throw new BlogException(BlogConstants.GetHotArticleListError);
+        }
+    }
+
+}

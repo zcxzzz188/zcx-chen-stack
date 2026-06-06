@@ -1,0 +1,234 @@
+package com.zcx.chenstack.controller;
+
+import com.zcx.chenstack.aspect.OperationLog;
+import com.zcx.chenstack.aspect.RateLimit;
+import com.zcx.chenstack.domain.dto.CommentAuditDto;
+import com.zcx.chenstack.domain.dto.CommentDto;
+import com.zcx.chenstack.domain.dto.CommentFilterDto;
+import com.zcx.chenstack.domain.dto.CommentSearchDto;
+import com.zcx.chenstack.domain.enums.OperationTypeEnum;
+import com.zcx.chenstack.domain.result.Result;
+import com.zcx.chenstack.domain.vo.AdminCommentVo;
+import com.zcx.chenstack.domain.vo.CommentVo;
+import com.zcx.chenstack.domain.vo.PageVo;
+import com.zcx.chenstack.domain.vo.UserCommentManageVo;
+import com.zcx.chenstack.service.CommentService;
+import jakarta.annotation.Resource;
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.NotNull;
+import org.springframework.boot.actuate.endpoint.OperationType;
+import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.validation.annotation.Validated;
+import org.springframework.web.bind.annotation.*;
+
+import java.util.List;
+
+/**
+ * @author zcx
+ * @since 2025-09-15
+ */
+@RateLimit(30)
+@Validated
+@RestController
+@RequestMapping("/comment")
+public class CommentController {
+
+    @Resource
+    private CommentService commentService;
+
+    /**
+     * 发表评论
+     *
+     * @param commentDto 评论信息
+     * @return 评论id
+     */
+    @PostMapping("/add")
+    public Result<Integer> addComment(@RequestBody @Valid CommentDto commentDto) {
+        Integer commentId = commentService.addComment(commentDto);
+        return Result.success(commentId);
+    }
+
+    /**
+     * 删除评论（用户删除自己的评论）
+     *
+     * @param commentId 评论id
+     * @return 操作结果
+     */
+    @DeleteMapping("/{commentId}")
+    public Result<Void> deleteComment(@PathVariable @NotNull(message = "评论ID不能为空") Integer commentId) {
+        commentService.deleteComment(commentId);
+        return Result.success();
+    }
+
+    /**
+     * 获取文章评论列表
+     *
+     * @param articleId 文章id
+     * @param pageNum   页码
+     * @param pageSize  页大小
+     * @return 评论列表
+     */
+    @RateLimit
+    @GetMapping("/list")
+    public Result<PageVo<List<CommentVo>>> getCommentList(
+            @RequestParam @NotNull(message = "文章ID不能为空") Integer articleId,
+            @RequestParam(defaultValue = "1") @NotNull(message = "页码不能为空") Integer pageNum,
+            @RequestParam(defaultValue = "10") @NotNull(message = "每页大小不能为空") Integer pageSize) {
+        PageVo<List<CommentVo>> commentList = commentService.getCommentList(articleId, pageNum, pageSize);
+        return Result.success(commentList);
+    }
+
+    /**
+     * 获取用户评论列表(评论管理)
+     *
+     * @param pageNum          页码
+     * @param pageSize         页大小
+     * @param commentFilterDto 评论筛选条件
+     * @return 用户评论列表
+     */
+    @RateLimit
+    @PostMapping("/manage/list")
+    public Result<PageVo<List<UserCommentManageVo>>> getUserCommentManageList(
+            @RequestParam(defaultValue = "1") @NotNull(message = "页码不能为空") Integer pageNum,
+            @RequestParam(defaultValue = "10") @NotNull(message = "每页大小不能为空") Integer pageSize,
+            @RequestBody @Valid CommentFilterDto commentFilterDto) {
+        PageVo<List<UserCommentManageVo>> commentList = commentService.getUserCommentManageList(pageNum, pageSize,
+                commentFilterDto);
+        return Result.success(commentList);
+    }
+
+    /**
+     * 获取评论的回复列表
+     *
+     * @param commentId 评论id
+     * @param pageNum   页码
+     * @param pageSize  页大小
+     * @return 回复列表
+     */
+    @RateLimit
+    @GetMapping("/reply/list")
+    public Result<PageVo<List<CommentVo>>> getReplyList(@RequestParam @NotNull(message = "评论ID不能为空") Integer commentId,
+            @RequestParam(defaultValue = "1") @NotNull(message = "页码不能为空") Integer pageNum,
+            @RequestParam(defaultValue = "10") @NotNull(message = "每页大小不能为空") Integer pageSize) {
+        PageVo<List<CommentVo>> replyList = commentService.getReplyList(commentId, pageNum, pageSize);
+        return Result.success(replyList);
+    }
+
+    // 管理端
+
+    /**
+     * 管理员获取所有评论列表
+     *
+     * @return 评论列表
+     */
+    @OperationLog(module = "评论管理", type = OperationTypeEnum.GET, description = "管理员获取所有评论列表")
+    @PreAuthorize("hasAuthority('comment:list')")
+    @GetMapping("/admin/list")
+    public Result<PageVo<List<AdminCommentVo>>> adminGetCommentList(
+            @RequestParam(defaultValue = "1") @NotNull(message = "页码不能为空") Integer pageNum,
+            @RequestParam(defaultValue = "10") @NotNull(message = "每页大小不能为空") Integer pageSize) {
+        PageVo<List<AdminCommentVo>> commentList = commentService.adminGetCommentList(pageNum, pageSize);
+        return Result.success(commentList);
+    }
+
+    /**
+     * 管理员根据用户ID获取评论列表
+     *
+     * @param userId 用户ID
+     * @return 用户评论列表
+     */
+    @OperationLog(module = "评论管理", type = OperationTypeEnum.SELECT, description = "管理员根据用户ID获取评论列表")
+    @PreAuthorize("hasAuthority('comment:list')")
+    @GetMapping("/admin/user/{userId}")
+    public Result<PageVo<List<AdminCommentVo>>> adminGetCommentsByUserId(
+            @PathVariable @NotNull(message = "用户ID不能为空") Integer userId,
+            @RequestParam(defaultValue = "1") @NotNull(message = "页码不能为空") Integer pageNum,
+            @RequestParam(defaultValue = "10") @NotNull(message = "每页大小不能为空") Integer pageSize) {
+        PageVo<List<AdminCommentVo>> commentList = commentService.adminGetCommentsByUserId(userId, pageNum, pageSize);
+        return Result.success(commentList);
+    }
+
+    /**
+     * 管理员搜索评论
+     *
+     * @param commentSearchDto 搜索条件
+     * @return 搜索结果
+     */
+    @OperationLog(module = "评论管理", type = OperationTypeEnum.SEARCH, description = "管理员搜索评论")
+    @PreAuthorize("hasAuthority('comment:search')")
+    @PostMapping("/admin/search")
+    public Result<PageVo<List<AdminCommentVo>>> adminSearchComment(@RequestBody @Valid CommentSearchDto commentSearchDto) {
+        PageVo<List<AdminCommentVo>> commentList = commentService.adminSearchComment(commentSearchDto);
+        return Result.success(commentList);
+    }
+
+    /**
+     * 管理员审核评论
+     *
+     * @param commentAuditDto 评论审核信息
+     * @return 操作结果
+     */
+    @OperationLog(module = "评论管理", type = OperationTypeEnum.AUDIT, description = "管理员审核评论")
+    @PreAuthorize("hasAuthority('comment:examine')")
+    @PutMapping("/admin/examine")
+    public Result<Void> adminExamineComment(@RequestBody @Valid CommentAuditDto commentAuditDto) {
+        commentService.adminExamineComment(commentAuditDto);
+        return Result.success();
+    }
+
+    /**
+     * 管理员批量审核评论
+     *
+     * @param commentAuditDtos 评论审核信息列表
+     * @return 操作结果
+     */
+    @OperationLog(module = "评论管理", type = OperationTypeEnum.AUDIT, description = "管理员批量审核评论")
+    @PreAuthorize("hasAuthority('comment:examine')")
+    @PutMapping("/admin/examine/batch")
+    public Result<Void> adminExamineBatchComment(@RequestBody @Valid List<CommentAuditDto> commentAuditDtos) {
+        commentService.adminExamineBatchComment(commentAuditDtos);
+        return Result.success();
+    }
+
+    /**
+     * 管理员删除评论
+     *
+     * @param commentId 评论id
+     * @return 操作结果
+     */
+    @OperationLog(module = "评论管理", type = OperationTypeEnum.DELETE, description = "管理员删除评论")
+    @PreAuthorize("hasAuthority('comment:delete')")
+    @DeleteMapping("/admin/{commentId}")
+    public Result<Void> adminDeleteComment(@PathVariable @NotNull(message = "评论ID不能为空") Integer commentId) {
+        commentService.adminDeleteComment(commentId);
+        return Result.success();
+    }
+
+    /**
+     * 管理员批量删除评论
+     *
+     * @param commentIds 评论ID列表
+     * @return 操作结果
+     */
+    @OperationLog(module = "评论管理", type = OperationTypeEnum.DELETE, description = "管理员批量删除评论")
+    @PreAuthorize("hasAuthority('comment:delete')")
+    @DeleteMapping("/admin/delete/batch")
+    public Result<Void> adminDeleteBatchComment(
+            @RequestBody @NotNull(message = "评论ID列表不能为空") List<Integer> commentIds) {
+        commentService.adminDeleteBatchComment(commentIds);
+        return Result.success();
+    }
+
+    /**
+     * 管理员获取评论总数统计
+     *
+     * @return 评论总数
+     */
+    @OperationLog(module = "评论管理", type = OperationTypeEnum.GET, description = "管理员获取评论总数统计")
+    @GetMapping("/admin/statistics")
+    public Result<Long> getCommentStatistics() {
+        Long totalCount = commentService.getCommentTotalCount();
+        return Result.success(totalCount);
+    }
+
+}

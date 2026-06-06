@@ -1,0 +1,137 @@
+import request from '@/utils/Request'
+
+// 登录
+export function login(data) {
+  return request({
+    url: '/user/login',
+    method: 'post',
+    data: data,
+  })
+}
+
+// 发送验证码
+export function checkCode() {
+  return request({
+    url: '/user/checkCode',
+    method: 'get',
+  })
+}
+
+// 注册
+export function register(data) {
+  return request({
+    url: '/user/register',
+    method: 'post',
+    data: data,
+  })
+}
+
+// 发送邮箱验证码
+export function sendEmail(data) {
+  return request({
+    url: '/user/sendEmail',
+    method: 'post',
+    data: data,
+  })
+}
+
+// 重置密码时校验邮箱验证码
+export function verifyResetPassword(data) {
+  return request({
+    url: '/user/verifyResetPassword',
+    method: 'post',
+    data: data,
+  })
+}
+
+// 重置密码时校验邮箱验证码
+export function resetPassword(data) {
+  return request({
+    url: '/user/resetPassword',
+    method: 'post',
+    data: data,
+  })
+}
+
+// 获取用户信息
+export function info() {
+  return request({
+    url: '/user/info',
+    method: 'get',
+  })
+}
+
+// 根据用户ID获取用户信息
+export function getUserInfoById(userId) {
+  return request({
+    url: `/user/info/${userId}`,
+    method: 'get',
+  })
+}
+
+// 更新当前用户信息
+export function updateUserInfo(data) {
+  return request({
+    url: '/user/info',
+    method: 'put',
+    data: data,
+  })
+}
+
+// 修改邮箱时校验邮箱验证码
+export function verifyResetEmail(data) {
+  return request({
+    url: '/user/verifyResetEmail',
+    method: 'post',
+    data: data,
+  })
+}
+
+// 修改邮箱
+export function updateEmail(data) {
+  return request({
+    url: '/user/resetEmail',
+    method: 'put',
+    data: data,
+  })
+}
+
+// 更新用户设置 - 评论邮件通知
+export function updateCommentEmailSetting(isReceive) {
+  return request({
+    url: `/user/settings/comment_email?isReceive=${isReceive}`,
+    method: 'put',
+  })
+}
+
+// 更新用户设置 - 系统邮件通知
+export function updateSystemEmailSetting(isReceive) {
+  return request({
+    url: `/user/settings/system_email?isReceive=${isReceive}`,
+    method: 'put',
+  })
+}
+
+// 获取推荐作者列表（活跃作者）
+export function getRecommendedAuthors(limit) {
+  return request({
+    url: `/user/authors/recommended?limit=${limit || 10}`,
+    method: 'get',
+  })
+}
+
+// 获取社区统计数据
+export function getCommunityStats() {
+  return request({
+    url: '/user/community/stats',
+    method: 'get',
+  })
+}
+
+// 获取热门搜索列表
+export function getHotSearches(limit) {
+  return request({
+    url: `/user/search/hot?limit=${limit || 10}`,
+    method: 'get',
+  })
+}

@@ -1,0 +1,106 @@
+package com.zcx.chenstack.service;
+
+import com.baomidou.mybatisplus.extension.service.IService;
+import com.zcx.chenstack.domain.dto.ArticleAuditDto;
+import com.zcx.chenstack.domain.dto.ArticleDto;
+import com.zcx.chenstack.domain.dto.ArticleStatusDto;
+import com.zcx.chenstack.domain.entity.Article;
+import com.zcx.chenstack.domain.vo.ArticleStatisticsVo;
+import com.zcx.chenstack.domain.vo.ArticleVo;
+import com.zcx.chenstack.domain.vo.CreationStatisticsVo;
+import com.zcx.chenstack.domain.vo.HotArticleVo;
+import com.zcx.chenstack.domain.vo.PageVo;
+
+import java.util.List;
+
+/**
+ * <p>
+ * 服务类
+ * </p>
+ *
+ * @author zcx
+ * @since 2025-08-24
+ */
+public interface ArticleService extends IService<Article> {
+
+    // 获取全部已发布审核通过全部人可见的文章列表（按更新时间倒序）
+    PageVo<List<ArticleVo>> getAllArticleList(Integer pageNum, Integer pageSize);
+
+    // 获取用户文章列表
+    PageVo<List<ArticleVo>> getUserArticleList(Integer pageNum, Integer pageSize, ArticleStatusDto articleStatusDto);
+
+    // 获取文章列表(文章管理)
+    PageVo<List<ArticleVo>> getArticleMangeList(Integer pageNum, Integer pageSize, ArticleStatusDto articleStatusDto);
+
+    // 获取用户文章状态统计
+    ArticleStatisticsVo getUserArticleStatistics();
+
+    // 获取指定用户的文章统计
+    ArticleStatisticsVo getUserArticleStatisticsById(Integer userId);
+
+    // 获取文章详情
+    ArticleVo getArticle(Integer articleId);
+
+    // 根据标题搜索文章
+    PageVo<List<ArticleVo>> searchArticleByTitle(String title, Integer pageNum, Integer pageSize);
+
+    // 根据标签搜索文章
+    PageVo<List<ArticleVo>> searchArticleByTag(String tag, Integer pageNum, Integer pageSize);
+
+    // 根据作者搜索文章（按作者昵称/用户名搜索）
+    PageVo<List<ArticleVo>> searchArticleByAuthor(String author, Integer pageNum, Integer pageSize);
+
+    // 获取标题搜索建议（自动补全）
+    List<String> getTitleSuggestions(String keyword);
+
+    // 获取标签搜索建议（自动补全）
+    List<String> getTagSuggestions(String keyword);
+
+    // 新增文章
+    void addArticle(ArticleDto articleDto);
+
+    // 保存草稿
+    void saveDraft(ArticleDto articleDto);
+
+    // 更新文章
+    void updateArticle(ArticleDto articleDto);
+
+    // 删除文章
+    void deleteArticle(Integer articleId);
+
+    // 管理员获取文章列表
+    PageVo<List<ArticleVo>> adminGetArticleList(Integer pageNum, Integer pageSize);
+
+    // 管理员根据用户ID获取文章列表
+    PageVo<List<ArticleVo>> adminGetArticlesByUserId(Integer userId, Integer pageNum, Integer pageSize);
+
+    // 管理员获取文章详情
+    ArticleVo adminGetArticle(Integer articleId);
+
+    // 管理员更新文章
+    void adminUpdateArticle(ArticleDto articleDto);
+
+    // 管理员搜索文章
+    PageVo<List<ArticleVo>> adminSearchArticle(ArticleDto articleDto);
+
+    // 管理员审核文章
+    void adminExamineArticle(ArticleAuditDto articleAuditDto);
+
+    // 管理员批量审核文章
+    void adminExamineBatchArticle(List<ArticleAuditDto> articleAuditDtos);
+
+    // 管理员删除文章
+    void adminDeleteArticle(Integer articleId);
+
+    // 管理员批量删除文章
+    void adminDeleteBatchArticle(List<Integer> articleIds);
+
+    // 管理员获取文章统计数据
+    ArticleStatisticsVo getAdminStatistics();
+
+    // 获取创作中心统计数据
+    CreationStatisticsVo getCreationStatistics();
+
+    // 获取热门文章列表（近7天访问量排序，精简版）
+    PageVo<List<HotArticleVo>> getHotArticleList(Integer pageNum, Integer pageSize);
+}

@@ -1,0 +1,72 @@
+package com.zcx.chenstack.domain.constants;
+
+/**
+ * @author zcx
+ * @since 2025-07-08
+ */
+public class SecurityConstants {
+
+    /**
+     * 可选认证接口（有 token 就认证，没有 token 就跳过，认证失败也放行）
+     * 包括：不需要登录的公开接口 + 可选登录的接口
+     */
+    public static final String[] Optional_Auth_Urls = {
+            // 用户相关
+            "/user/login",
+            "/user/checkCode",
+            "/user/register",
+            "/user/sendEmail",
+            "/user/verifyResetPassword",
+            "/user/resetPassword",
+            "/user/admin/login",
+            "/user/info",
+            "/user/info/{userId:\\d+}",
+            "/user/community/stats",
+            "/user/search/hot",
+            "/user/authors/recommended",
+
+            // 文章相关
+            "/article/listAll",
+            "/article/user/list",
+            "/article/user/{userId:\\d+}/statistics",
+            "/article/get/{articleId:\\d+}",
+            "/article/incrReadCount/{articleId:\\d+}",
+            "/article/hot",
+            "/article/creation/statistics",
+            "/article/search",
+
+            // 评论相关
+            "/comment/list",
+            "/comment/reply/list",
+
+            // 专栏相关
+            "/column/list/{userId:\\d+}",
+            "/column/detail/{columnId:\\d+}",
+            "/column/search",
+
+            // 收藏相关
+            "/favorite/listByUser",
+            "/favorite/articles",
+
+            // 关注相关
+            "/follow/followList/{userId:\\d+}",
+            "/follow/fansList/{userId:\\d+}",
+
+            // AI 相关
+            "/ai/customer-service",
+
+            // 标签相关
+            "/tag/hot",
+            "/tag/list",
+
+            // 其他
+            "/favicon.ico",
+
+            // 私信
+            "/ws/message",
+
+            // actuator 监控端点
+            "/actuator/**",
+    };
+
+}

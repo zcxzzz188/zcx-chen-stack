@@ -1,0 +1,92 @@
+package com.zcx.chenstack.controller;
+
+
+import com.zcx.chenstack.aspect.OperationLog;
+import com.zcx.chenstack.aspect.RateLimit;
+import com.zcx.chenstack.domain.dto.CategorySortDto;
+import com.zcx.chenstack.domain.dto.TagDto;
+import com.zcx.chenstack.domain.entity.Tag;
+import com.zcx.chenstack.domain.result.Result;
+import com.zcx.chenstack.domain.enums.OperationTypeEnum;
+import com.zcx.chenstack.service.TagService;
+import jakarta.annotation.Resource;
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.NotNull;
+import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.validation.annotation.Validated;
+import org.springframework.web.bind.annotation.*;
+
+import java.util.List;
+import java.util.Map;
+
+/**
+ * @author zcx
+ * @since 2025-08-24
+ */
+@RateLimit(30)
+@Validated
+@RestController
+@RequestMapping("/tag")
+public class TagController {
+
+    @Resource
+    private TagService tagService;
+
+
+    /**
+     * 新增标签
+     */
+    @OperationLog(module = "标签管理", type = OperationTypeEnum.INSERT, description = "管理员新增标签")
+    @PreAuthorize("hasAuthority('tag:add')")
+    @PostMapping("/add")
+    public Result addTag(@RequestBody @Valid TagDto tagDto) {
+        tagService.addTag(tagDto);
+        return Result.success();
+    }
+
+    /**
+     * 查看所有标签
+     */
+    @GetMapping("/list")
+    public Result listTag() {
+        Map<String, List<Tag>> tagVos = tagService.listTag();
+        return Result.success(tagVos);
+    }
+
+    /**
+     * 获取热门标签列表（按文章数量排序，取前 N 个）
+     * @param limit 返回数量限制，默认 10
+     * @return 热门标签列表
+     */
+    @RateLimit
+    @GetMapping("/hot")
+    public Result getHotTags(@RequestParam(defaultValue = "10") Integer limit) {
+        List<Tag> hotTags = tagService.getHotTags(limit);
+        return Result.success(hotTags);
+    }
+
+    /**
+     * 调整分类排序
+     * 说明：调整某个分类的排序值，该分类下所有标签的 sort 值都会更新，并自动处理排序冲突
+     */
+    @OperationLog(module = "标签管理", type = OperationTypeEnum.UPDATE, description = "管理员调整标签分类排序")
+    @PreAuthorize("hasAuthority('tag:update')")
+    @PutMapping("/sort/category")
+    public Result updateCategorySort(@RequestBody @Valid CategorySortDto categorySortDto) {
+        tagService.updateCategorySort(categorySortDto);
+        return Result.success();
+    }
+
+    /**
+     * 批量删除标签
+     */
+    @OperationLog(module = "标签管理", type = OperationTypeEnum.DELETE, description = "管理员批量删除标签")
+    @PreAuthorize("hasAuthority('tag:delete')")
+    @DeleteMapping("/delete")
+    public Result deleteTag(@RequestBody @NotNull(message = "标签ID列表不能为空") List<Integer> ids) {
+        tagService.deleteTags(ids);
+        return Result.success();
+    }
+
+
+}

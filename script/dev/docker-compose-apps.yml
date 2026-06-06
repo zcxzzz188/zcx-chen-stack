@@ -1,0 +1,104 @@
+services:
+  # 后端服务
+  backend:
+    build:
+      context: ../chen-stack-backend
+      dockerfile: Dockerfile
+    image: chen-stack-backend
+    container_name: chen-stack-backend
+    restart: unless-stopped
+    ports:
+      - "${BACKEND_PORT}:5000"
+    environment:
+      # 时区配置
+      TZ: Asia/Shanghai
+
+      # Spring Boot 配置
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE}
+
+      # 数据库配置
+      MYSQL_HOST: mysql
+      MYSQL_PORT: 3306
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      MYSQL_USERNAME: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+
+      # Redis 配置
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_USERNAME: ${REDIS_USERNAME}
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+
+      # MinIO 配置
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_PUBLIC_POINT: ${MINIO_PUBLIC_POINT}
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
+
+      # RabbitMQ 配置
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: 5672
+      RABBITMQ_USERNAME: ${RABBITMQ_DEFAULT_USER}
+      RABBITMQ_PASSWORD: ${RABBITMQ_DEFAULT_PASS}
+
+      # ai 配置
+      SPRING_AI_OPENAI_API_KEY: ${SPRING_AI_OPENAI_API_KEY}
+      SPRING_AI_OPENAI_BASE_URL: ${SPRING_AI_OPENAI_BASE_URL}
+      SPRING_AI_OPENAI_CHAT_OPTIONS_MODEL: ${SPRING_AI_OPENAI_CHAT_OPTIONS_MODEL}
+
+      # 邮件配置
+      MAIL_USERNAME: ${MAIL_USERNAME}
+      MAIL_PASSWORD: ${MAIL_PASSWORD}
+
+      # 前端地址配置
+      FRONTEND_USER_HOST: ${FRONTEND_USER_HOST}
+      FRONTEND_ADMIN_HOST: ${FRONTEND_ADMIN_HOST}
+
+      # 阿里云配置
+      ALIYUN_ACCESS_KEY_ID: ${ALIYUN_ACCESS_KEY_ID}
+      ALIYUN_ACCESS_KEY_SECRET: ${ALIYUN_ACCESS_KEY_SECRET}
+
+      # 自定义配置
+      CHEN_STACK_JWT_SECRET: ${CHEN_STACK_JWT_SECRET}
+      CHEN_STACK_PHOTO_AUTO_AUDIT: ${CHEN_STACK_PHOTO_AUTO_AUDIT}
+      CHEN_STACK_ARTICLE_AUTO_AUDIT: ${CHEN_STACK_ARTICLE_AUTO_AUDIT}
+      CHEN_STACK_COMMENT_AUTO_AUDIT: ${CHEN_STACK_COMMENT_AUTO_AUDIT}
+      CHEN_STACK_RATE_LIMIT_ENABLED: ${CHEN_STACK_RATE_LIMIT_ENABLED}
+    networks:
+      - chen-stack-network
+
+  # 前端管理端
+  frontend-admin:
+    build:
+      context: ../chen-stack-frontend/chen-stack-admin
+      dockerfile: Dockerfile
+    image: chen-stack-admin
+    container_name: chen-stack-admin
+    restart: unless-stopped
+    ports:
+      - "${ADMIN_PORT}:80"
+    depends_on:
+      - backend
+    networks:
+      - chen-stack-network
+
+  # 前端用户端
+  frontend-user:
+    build:
+      context: ../chen-stack-frontend/chen-stack-user
+      dockerfile: Dockerfile
+    image: chen-stack-user
+    container_name: chen-stack-user
+    restart: unless-stopped
+    ports:
+      - "${USER_PORT}:80"
+    depends_on:
+      - backend
+    networks:
+      - chen-stack-network
+
+# 使用外部网络（需要先启动基础服务创建网络）
+networks:
+  chen-stack-network:
+    external: true
+    name: chen-stack-network

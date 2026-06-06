@@ -1,0 +1,19 @@
+User-agent: *
+Allow: /
+Disallow: /creation/
+Disallow: /editor/
+Disallow: /message/
+Disallow: /notification/
+Disallow: /setting/
+Disallow: /account/login
+Disallow: /account/register
+Disallow: /account/reset
+
+# 允许爬取的主要内容
+Allow: /article
+Allow: /user/
+
+# Sitemap
+
+# 爬虫友好提示
+Crawl-delay: 1

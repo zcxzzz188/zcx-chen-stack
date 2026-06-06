@@ -1,0 +1,45 @@
+{
+  "name": "zcx-chen-stack-admin",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vp dev",
+    "build": "vp build",
+    "preview": "vp preview",
+    "check": "vp check",
+    "check:fix": "vp check --fix",
+    "lint": "vp lint",
+    "lint:fix": "vp lint --fix",
+    "fmt": "vp fmt",
+    "test": "vp test",
+    "test:run": "vp test run"
+  },
+  "dependencies": {
+    "@antv/g2": "^5.4.8",
+    "@element-plus/icons-vue": "^2.3.1",
+    "axios": "^1.11.0",
+    "disable-devtool": "^0.3.9",
+    "element-plus": "^2.10.5",
+    "file-saver": "^2.0.5",
+    "pinia": "^3.0.1",
+    "pinia-plugin-persistedstate": "^4.5.0",
+    "vite-plugin-svg-icons": "^2.0.1",
+    "vue": "^3.5.13",
+    "vue-router": "^4.5.0",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "@types/node": "^25.5.2",
+    "@vitejs/plugin-vue": "^5.2.3",
+    "fast-glob": "^3.3.3",
+    "javascript-obfuscator": "^4.2.2",
+    "jsdom": "^25.0.0",
+    "sass-embedded": "^1.89.2",
+    "unplugin-auto-import": "^19.3.0",
+    "unplugin-element-plus": "^0.10.0",
+    "unplugin-vue-components": "^28.8.0",
+    "vite-plugin-vue-devtools": "^7.7.2",
+    "vite-plus": "^0.1.15"
+  }
+}

@@ -1,0 +1,851 @@
+<template>
+  <el-menu
+    :default-active="activeIndex"
+    router
+    class="pc-menu"
+    mode="horizontal"
+    @select="handleSelect"
+    :ellipsis="false"
+    :class="{ hidden: !isVisible }"
+  >
+    <!-- 移动端菜单按钮 -->
+    <div class="mobile-menu-button" @click="toggleMobileMenu">
+      <svg-icon name="menu" width="40px" height="40px" />
+    </div>
+    <router-link class="logo" to="/">
+      <img class="logo-img" src="/favicon.ico" alt="logo" />
+      <el-text size="large" class="logo-text">辰栈</el-text>
+    </router-link>
+    <el-menu-item index="/" class="menu-item">
+      <el-icon><House /></el-icon>
+      <span class="menu-text">首页</span>
+    </el-menu-item>
+    <el-menu-item index="/article" class="menu-item">
+      <el-icon><Message /></el-icon>
+      <span class="menu-text">文章</span>
+    </el-menu-item>
+    <el-menu-item index="/creation" class="menu-item">
+      <el-icon><MagicStick /></el-icon>
+      <span class="menu-text">创作中心</span>
+    </el-menu-item>
+    <div class="right">
+      <div class="search" @click="handleSearch">
+        <el-icon size="29px" color="var(--el-color-info)"><Search /></el-icon>
+      </div>
+      <div class="message-icon" @click="goToMessage" v-if="user">
+        <el-badge
+          :value="messageStore.totalUnreadCount"
+          :max="99"
+          :hidden="messageStore.totalUnreadCount === 0"
+        >
+          <el-icon size="32px" color="var(--el-color-primary)"><ChatLineSquare /></el-icon>
+        </el-badge>
+      </div>
+      <div class="notification-icon" @click="goToNotification" v-if="user">
+        <el-badge
+          :value="notificationUnreadCount"
+          :max="99"
+          :hidden="notificationUnreadCount === 0"
+        >
+          <el-icon size="31px" color="var(--el-color-warning)"><BellFilled /></el-icon>
+        </el-badge>
+      </div>
+      <Dark />
+      <!-- 个人信息弹窗 -->
+      <UserProfilePopover v-model:visible="showUserPopover" :user="user" @logout="handleLogout" />
+      <div v-if="user" class="user-info">
+        <div class="user-name-group" @click="goToUserHomepage">
+          <el-text size="large" class="nickname">{{ user.nickname }}</el-text>
+        </div>
+        <el-avatar
+          class="user-avatar"
+          @click="showUserPopover = true"
+          v-if="user.avatar"
+          :size="40"
+          :src="user.avatar"
+        />
+        <el-avatar
+          class="user-avatar"
+          @click="showUserPopover = true"
+          v-else
+          :size="40"
+          :icon="UserFilled"
+        />
+      </div>
+      <div class="login-btn" v-else @click="handleLoginClick">
+        <el-icon size="14px"><User /></el-icon>
+        <span>登录</span>
+      </div>
+    </div>
+  </el-menu>
+
+  <!-- 移动端菜单 -->
+  <teleport to="body">
+    <transition name="slide-fade">
+      <div v-show="isMobileMenuVisible" class="mobile-menu-overlay" @click="closeMobileMenu">
+        <el-menu class="mobile-menu" router @click.stop @select="closeMobileMenu">
+          <el-menu-item index="/" class="menu-item">
+            <el-icon><House /></el-icon>
+            <span class="menu-text">首页</span>
+          </el-menu-item>
+          <el-menu-item index="/article" class="menu-item">
+            <el-icon><Message /></el-icon>
+            <span class="menu-text">文章</span>
+          </el-menu-item>
+          <el-menu-item index="/creation" class="menu-item">
+            <el-icon><MagicStick /></el-icon>
+            <span class="menu-text">创作中心</span>
+          </el-menu-item>
+        </el-menu>
+      </div>
+    </transition>
+  </teleport>
+</template>
+
+<script setup>
+import Dark from '@/components/Common/Dark.vue'
+import UserProfilePopover from '@/components/User/UserProfilePopover.vue'
+import { useUserStore } from '@/stores/userStore.js'
+import { ref, watch, onMounted, onBeforeUnmount } from 'vue'
+import { storeToRefs } from 'pinia'
+import { useRouter } from 'vue-router'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { GetJwt } from '@/utils/Auth'
+import { info } from '@/api/user'
+import {
+  UserFilled,
+  User,
+  Setting,
+  SwitchButton,
+  ChatLineSquare,
+  BellFilled,
+  Search,
+  Collection,
+} from '@element-plus/icons-vue'
+import { useMessageStore } from '@/stores/messageStore'
+import { getUnreadCount } from '@/api/privateMessage'
+import { getUnreadNotificationCount } from '@/api/notification'
+import WebSocketClient from '@/utils/WebSocketClient'
+
+const userStore = useUserStore()
+const messageStore = useMessageStore()
+const { user } = storeToRefs(userStore)
+const router = useRouter()
+
+// 当前激活的菜单索引
+const activeIndex = ref('/')
+
+// 通知未读数量
+const notificationUnreadCount = ref(0)
+
+// 监听路由变化，更新激活的菜单
+router.afterEach((to) => {
+  activeIndex.value = to.path
+})
+
+// 处理菜单选择事件
+const handleSelect = (index) => {
+  // 对于创作中心路由，使用原生页面跳转以避免白屏问题
+  if (index === '/creation') {
+    if (!GetJwt()) {
+      ElMessage.error('请先登录')
+      router.replace('/login')
+      return
+    }
+    window.location.href = '/creation'
+  } else {
+    // 对于其他路由，使用普通的push方法
+    router.push(index)
+  }
+}
+
+const handleSearch = () => {
+  router.push('/search')
+}
+
+const goToMessage = () => {
+  router.push('/message')
+}
+
+const goToNotification = () => {
+  const isCurrentlyOnNotificationPage = router.currentRoute.value.path === '/notification'
+
+  // 跳转到消息中心
+  router.push('/notification')
+
+  // 触发消息中心的刷新事件（如果当前在消息中心页面，则不延迟执行，如果不在消息中心页面，则延迟100ms确保路由跳转完成）
+  setTimeout(
+    () => {
+      window.dispatchEvent(new CustomEvent('refresh-notifications'))
+    },
+    isCurrentlyOnNotificationPage ? 0 : 100,
+  )
+}
+
+const handleLoginClick = () => {
+  // 直接使用路径跳转，更可靠
+  router.push('/login')
+}
+
+// 获取未读消息数
+const fetchUnreadCount = async () => {
+  if (user.value) {
+    try {
+      const res = await getUnreadCount()
+      messageStore.totalUnreadCount = res.data || 0
+    } catch (error) {
+      // 静默处理
+    }
+  }
+}
+
+// 获取未读通知数量
+const fetchNotificationUnreadCount = async () => {
+  if (user.value) {
+    try {
+      const res = await getUnreadNotificationCount()
+      const data = res.data
+      // 计算总未读数量
+      notificationUnreadCount.value = data.total || 0
+    } catch (error) {
+      // 静默处理
+    }
+  }
+}
+
+// 合并获取未读消息和通知数量，并行请求
+const fetchAllUnreadCounts = async () => {
+  if (!user.value) return
+  try {
+    const [unreadRes, notificationRes] = await Promise.all([
+      getUnreadCount(),
+      getUnreadNotificationCount(),
+    ])
+    messageStore.totalUnreadCount = unreadRes.data || 0
+    notificationUnreadCount.value = notificationRes.data?.total || 0
+  } catch (error) {
+    // 静默处理
+  }
+}
+
+// 新消息处理器（定义在组件级别，便于移除）
+const handleNewMessage = (data) => {
+  messageStore.updateConversation(
+    data.fromUserId,
+    {
+      content: data.content,
+      createTime: data.createTime,
+    },
+    data.unreadCount, // 使用后端返回的最新未读数
+    {
+      nickname: data.fromUserNickname,
+      avatar: data.fromUserAvatar,
+    },
+  )
+}
+
+// 消息撤回处理器
+const handleMessageRevoked = (data) => {
+  // 更新会话列表中的最后一条消息
+  messageStore.updateConversationLastMessage(data.fromUserId, data.content || '撤回了一条消息')
+}
+
+// 新通知处理器
+const handleNewNotification = (data) => {
+  // 收到新通知时，重新获取准确的未读数量
+  fetchNotificationUnreadCount()
+}
+
+// 初始化 WebSocket 连接
+const initWebSocket = () => {
+  if (!user.value) {
+    return
+  }
+
+  // 如果 WebSocket 未连接，则建立连接
+  if (!WebSocketClient.isConnected()) {
+    WebSocketClient.connect()
+  }
+
+  // 移除旧的监听器(避免重复注册)
+  WebSocketClient.off('NEW_MESSAGE', handleNewMessage)
+  WebSocketClient.off('MESSAGE_REVOKED', handleMessageRevoked)
+  WebSocketClient.off('NEW_NOTIFICATION', handleNewNotification)
+  // 注册新消息监听器
+  WebSocketClient.on('NEW_MESSAGE', handleNewMessage)
+  WebSocketClient.on('MESSAGE_REVOKED', handleMessageRevoked)
+  WebSocketClient.on('NEW_NOTIFICATION', handleNewNotification)
+
+  // 监听 WebSocket 重连,重新注册监听器
+  WebSocketClient.off('open', handleWebSocketOpen)
+  WebSocketClient.on('open', handleWebSocketOpen)
+}
+
+// WebSocket 连接成功处理器
+const handleWebSocketOpen = () => {
+  // 重连后重新注册监听器
+  WebSocketClient.off('NEW_MESSAGE', handleNewMessage)
+  WebSocketClient.off('MESSAGE_REVOKED', handleMessageRevoked)
+  WebSocketClient.off('NEW_NOTIFICATION', handleNewNotification)
+  WebSocketClient.on('NEW_MESSAGE', handleNewMessage)
+  WebSocketClient.on('MESSAGE_REVOKED', handleMessageRevoked)
+  WebSocketClient.on('NEW_NOTIFICATION', handleNewNotification)
+}
+
+const getUserInfo = async () => {
+  const res = await info()
+  user.value = res.data
+}
+
+const logout = async () => {
+  try {
+    await ElMessageBox.confirm('确认退出登录吗？', '提示', {
+      confirmButtonText: '确认',
+      cancelButtonText: '取消',
+      type: 'warning',
+    })
+    showUserPopover.value = false
+    userStore.clearUser()
+    router.replace('/login')
+  } catch {
+    // 用户取消退出，不做处理
+  }
+}
+
+// 跳转到用户主页
+const goToUserHomepage = () => {
+  if (user.value?.id) {
+    router.push(`/user/${user.value.id}`)
+  }
+}
+
+// 跳转到个人设置
+const goToSetting = () => {
+  router.push('/setting')
+}
+
+// 头部是否可见
+const isVisible = ref(true)
+// 上次滚动位置
+const lastScrollY = ref(0)
+
+// 个人信息弹窗显示状态
+const showUserPopover = ref(false)
+
+// 处理弹窗中的退出登录
+const handleLogout = () => {
+  logout()
+}
+
+const handleScroll = () => {
+  const currentScrollY = window.scrollY
+  // 向下滚动隐藏头部，向上滚动显示头部
+  // 如果当前滚动位置大于上次记录的位置，并且当前滚动位置超过100px，则隐藏
+  if (currentScrollY > lastScrollY.value && currentScrollY > 100) {
+    isVisible.value = false
+    // 如果当前滚动位置小于上次记录的位置（即向上滚动），则显示
+  } else if (currentScrollY < lastScrollY.value) {
+    isVisible.value = true
+  }
+  // 更新上次记录的位置
+  lastScrollY.value = currentScrollY
+}
+
+// 移动端菜单是否可见
+const isMobileMenuVisible = ref(false)
+// 切换移动端菜单
+const toggleMobileMenu = () => {
+  isMobileMenuVisible.value = !isMobileMenuVisible.value
+}
+
+// 关闭移动端菜单
+const closeMobileMenu = (index) => {
+  isMobileMenuVisible.value = false
+  handleSelect(index)
+}
+
+// 监听用户登录状态变化，自动初始化 WebSocket
+watch(
+  () => user.value,
+  (newUser) => {
+    if (newUser) {
+      // 用户已登录，立即初始化 WebSocket，使用合并的请求
+      fetchAllUnreadCounts()
+      initWebSocket()
+    } else {
+      // 用户已登出，关闭 WebSocket
+      WebSocketClient.close()
+      // 移除监听器
+      WebSocketClient.off('NEW_MESSAGE', handleNewMessage)
+      WebSocketClient.off('MESSAGE_REVOKED', handleMessageRevoked)
+      WebSocketClient.off('NEW_NOTIFICATION', handleNewNotification)
+      WebSocketClient.off('open', handleWebSocketOpen)
+      // 重置未读数量
+      notificationUnreadCount.value = 0
+    }
+  },
+  { immediate: true }, // 立即执行一次，检查当前用户状态
+)
+
+// 监听通知已读事件
+const handleNotificationRead = () => {
+  // 当用户查看通知页面并标记已读后，刷新未读数量
+  fetchNotificationUnreadCount()
+}
+
+// 组件挂载时添加监听滚动事件
+onMounted(() => {
+  window.addEventListener('scroll', handleScroll)
+  window.addEventListener('notification-read', handleNotificationRead)
+  // 如果 pinia 有 userid 再获取用户信息（添加错误处理，避免 info() 失败时覆盖已有数据）
+  if (user.value) {
+    getUserInfo().catch(() => {})
+  }
+})
+
+// 组件销毁时移除监听事件
+onBeforeUnmount(() => {
+  window.removeEventListener('scroll', handleScroll)
+  window.removeEventListener('notification-read', handleNotificationRead)
+  // 移除 WebSocket 监听器
+  WebSocketClient.off('NEW_MESSAGE', handleNewMessage)
+  WebSocketClient.off('MESSAGE_REVOKED', handleMessageRevoked)
+  WebSocketClient.off('NEW_NOTIFICATION', handleNewNotification)
+  WebSocketClient.off('open', handleWebSocketOpen)
+})
+</script>
+
+<style lang="scss" scoped>
+.pc-menu {
+  height: 56px;
+  width: 100%;
+  padding: 0 20px 0 20px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  position: fixed;
+  top: env(safe-area-inset-top, 0px);
+  left: 0;
+  right: 0;
+  z-index: 1000;
+  transition:
+    transform 0.3s ease,
+    background-color 0.3s ease,
+    border-color 0.3s ease;
+  border: none;
+  border-bottom: 1px solid var(--el-border-color);
+
+  /* 毛玻璃效果 */
+  background: rgba(var(--el-bg-color), 0.88);
+  backdrop-filter: blur(16px);
+
+  /* 整体悬浮投影 */
+  box-shadow:
+    0 1px 3px rgba(0, 0, 0, 0.05),
+    0 4px 12px rgba(0, 0, 0, 0.03);
+
+  --el-menu-bg-color: transparent;
+  --el-menu-hover-bg-color: var(--el-fill-color-light);
+
+  &.hidden {
+    transform: translateY(-100%);
+  }
+
+  .logo {
+    margin-right: 32px;
+    font-weight: bold;
+    white-space: nowrap;
+    text-decoration: none;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+
+    /* Logo图标 - 真实项目图标 */
+    .logo-img {
+      width: 30px;
+      height: 30px;
+      border-radius: 8px;
+      object-fit: cover;
+      transition:
+        transform 0.2s ease,
+        box-shadow 0.2s ease;
+
+      &:hover {
+        transform: scale(1.08);
+      }
+    }
+
+    /* Logo文字 - 简洁设计 */
+    .logo-text {
+      font-size: 22px !important;
+      font-weight: 700;
+      color: var(--el-text-color-primary);
+      letter-spacing: -0.5px;
+      transition: color 0.2s ease;
+
+      &:hover {
+        color: var(--el-color-primary);
+      }
+    }
+  }
+
+  .menu-item {
+    padding: 0 12px !important;
+    transition:
+      color 0.2s ease,
+      background-color 0.2s ease;
+    border-radius: 8px;
+    margin: 0 2px;
+    /* 关闭 ElementPlus 默认的激活边框 */
+    border-bottom: none !important;
+
+    /* 选中态：文字下方下划线 */
+    &.is-active {
+      background-color: transparent;
+
+      .menu-text {
+        color: var(--el-color-primary);
+        font-weight: 600;
+      }
+
+      /* 底部下划线 */
+      &::after {
+        content: '';
+        position: absolute;
+        bottom: 8px;
+        left: 50%;
+        transform: translateX(-50%);
+        width: calc(100% - 24px);
+        height: 2px;
+        background: var(--el-color-primary);
+        border-radius: 1px;
+      }
+    }
+
+    .menu-text {
+      font-size: 15px;
+      margin-left: 6px;
+      font-weight: 500;
+    }
+
+    &:not(.is-active):hover {
+      background-color: var(--el-fill-color-light);
+    }
+  }
+
+  /* 头部右侧内容 */
+  .right {
+    display: flex;
+    margin-left: auto;
+    justify-content: center;
+    align-items: center;
+    gap: 4px;
+
+    /* 右侧图标 - 无背景，hover 浮现效果 */
+    .search,
+    .message-icon,
+    .notification-icon {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 36px;
+      height: 36px;
+      border-radius: 8px;
+      cursor: pointer;
+      transition:
+        background-color 0.18s ease,
+        transform 0.15s ease;
+      /* 默认无背景 */
+      background-color: transparent;
+      line-height: 1;
+
+      &:hover {
+        background-color: var(--el-fill-color-light);
+      }
+
+      /* 确保 el-icon 垂直居中 */
+      ::v-deep(.el-icon) {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        line-height: 1;
+        transition: transform 0.15s ease;
+      }
+
+      &:hover ::v-deep(.el-icon) {
+        transform: scale(1.08);
+      }
+    }
+
+    .search {
+      margin-left: 8px;
+    }
+
+    // 徽章样式
+    .message-icon,
+    .notification-icon {
+      ::v-deep(.el-badge__content) {
+        font-size: 11px;
+        top: 4px;
+        right: 6px;
+        border: none;
+      }
+    }
+
+    .user-info {
+      display: flex;
+      align-items: center;
+      margin-left: 8px;
+
+      .user-avatar {
+        cursor: pointer;
+        transition:
+          transform 0.2s ease,
+          box-shadow 0.2s ease;
+        border: 2px solid transparent;
+
+        &:hover {
+          transform: scale(1.05);
+          border-color: var(--el-color-primary-light-5);
+        }
+      }
+
+      .user-name-group {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-left: 12px;
+        margin-right: 4px;
+        cursor: pointer;
+
+        .nickname {
+          font-size: 14px !important;
+          font-weight: 500;
+          color: var(--el-text-color-regular);
+          transition: color 0.2s ease;
+
+          &:hover {
+            color: var(--el-text-color-primary);
+          }
+        }
+
+        @media (max-width: 1314px) {
+          margin-left: 0;
+          display: none;
+        }
+      }
+    }
+
+    .login-btn {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      gap: 6px;
+      height: 34px;
+      padding: 0 14px;
+      margin-left: 8px;
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--el-color-primary);
+      background-color: transparent;
+      border: 1.5px solid var(--el-color-primary-light-5);
+      border-radius: 8px;
+      cursor: pointer;
+      transition:
+        background-color 0.18s ease,
+        border-color 0.18s ease,
+        color 0.18s ease;
+
+      .el-icon {
+        flex-shrink: 0;
+      }
+
+      &:hover {
+        background-color: var(--accent) !important;
+        border-color: var(--accent) !important;
+        color: #fff !important;
+      }
+    }
+  }
+
+  // 移动端菜单按钮
+  .mobile-menu-button {
+    display: none; // 默认隐藏，电脑端不显示
+    cursor: pointer;
+    width: 36px;
+    height: 36px;
+    align-items: center;
+    justify-content: center;
+    border-radius: 8px;
+    transition: background-color 0.2s ease;
+
+    &:hover {
+      background-color: var(--el-fill-color-light);
+    }
+
+    // 确保 SVG 图标垂直居中
+    ::v-deep(svg) {
+      display: block;
+    }
+  }
+}
+
+.user-dropdown-menu {
+  min-width: 200px !important;
+  max-width: 260px !important;
+  padding: 8px !important;
+  border: 1px solid var(--el-border-color) !important;
+  border-radius: 12px !important;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08) !important;
+
+  // 用户信息区域
+  .user-info-section {
+    padding: 8px 4px 12px;
+
+    // 用户名区域
+    .user-name {
+      text-align: center;
+      max-width: 250px;
+
+      .name-row {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+
+        .nickname {
+          font-size: 16px;
+          font-weight: 600;
+          color: var(--el-text-color-primary);
+          word-wrap: break-word;
+          word-break: break-all;
+        }
+      }
+    }
+
+    // 统计数据区域
+    .user-stats {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 40px;
+      padding: 12px 0;
+
+      .stat-item {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 2px;
+
+        .stat-number {
+          font-size: 18px;
+          font-weight: 700;
+          color: var(--el-text-color-primary);
+        }
+
+        .stat-label {
+          font-size: 12px;
+          color: var(--el-text-color-secondary);
+        }
+      }
+    }
+  }
+
+  // 分割线样式调整
+  .el-divider {
+    border-color: var(--el-border-color-lighter);
+  }
+
+  // 操作按钮样式
+  .action-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px;
+    margin: 2px 0;
+    border-radius: 8px;
+    transition: background-color 0.15s ease;
+    cursor: pointer;
+
+    &:hover {
+      background-color: var(--el-fill-color-light);
+    }
+
+    .el-icon {
+      font-size: 16px;
+      color: var(--el-text-color-secondary);
+    }
+
+    span {
+      font-size: 14px;
+      color: var(--el-text-color-regular);
+    }
+  }
+}
+
+// 移动端菜单覆盖层
+.mobile-menu-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: var(--mask);
+  z-index: 999;
+  display: flex;
+
+  .mobile-menu {
+    width: 200px;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-start;
+    padding-top: 60px;
+    background-color: var(--el-bg-color);
+    border-radius: 0 16px 16px 0;
+
+    .el-menu-item {
+      height: 52px;
+      padding-left: 20px !important;
+
+      .menu-text {
+        font-size: 15px;
+        margin-left: 10px;
+      }
+    }
+  }
+}
+
+// 响应式设计 - 平板及以下尺寸
+@media (max-width: 1270px) {
+  .pc-menu {
+    .menu-item {
+      .menu-text {
+        display: none; // 隐藏菜单文字
+      }
+    }
+  }
+}
+
+// 响应式设计 - 移动端
+@media (max-width: 870px) {
+  .pc-menu {
+    padding: 0 12px 0 12px;
+    .menu-item {
+      display: none; // 隐藏PC端菜单
+    }
+    .mobile-menu-button {
+      display: flex; // 显示移动端菜单按钮
+      margin-left: 4px;
+    }
+    .logo {
+      display: none; // 手机端隐藏 logo
+    }
+    .right {
+      .user-info {
+        margin-right: 4px;
+      }
+    }
+  }
+}
+</style>

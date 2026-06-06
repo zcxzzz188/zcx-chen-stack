@@ -1,0 +1,41 @@
+package com.zcx.chenstack.service;
+
+import com.baomidou.mybatisplus.extension.service.IService;
+import com.zcx.chenstack.domain.dto.SysPermissionDto;
+import com.zcx.chenstack.domain.entity.SysPermission;
+import com.zcx.chenstack.domain.vo.PageVo;
+import com.zcx.chenstack.domain.vo.SysPermissionVo;
+
+import java.util.List;
+
+/**
+ * <p>
+ * 服务类
+ * </p>
+ *
+ * @author zcx
+ * @since 2025-08-06
+ */
+public interface SysPermissionService extends IService<SysPermission> {
+
+    // 查询权限列表
+    List<SysPermissionVo> listPermission();
+
+    // 分页查询权限列表
+    PageVo<List<SysPermissionVo>> pagePermission(Integer pageNum, Integer pageSize);
+
+    // 新增权限
+    void add(SysPermissionDto sysPermissionDto);
+
+    // 更新权限
+    void update(SysPermissionDto sysPermissionDto);
+
+    // 删除权限
+    void delete(Integer permissionId);
+
+    // 查找权限
+    List<SysPermissionVo> search(SysPermissionDto sysPermissionDto);
+
+    // 分页查找权限
+    PageVo<List<SysPermissionVo>> searchPage(SysPermissionDto sysPermissionDto);
+}

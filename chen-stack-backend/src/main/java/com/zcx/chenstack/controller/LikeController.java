@@ -1,0 +1,54 @@
+package com.zcx.chenstack.controller;
+
+import com.zcx.chenstack.aspect.RateLimit;
+import com.zcx.chenstack.domain.dto.ToggleLikeDto;
+import com.zcx.chenstack.domain.result.Result;
+import com.zcx.chenstack.service.LikeService;
+import jakarta.annotation.Resource;
+import jakarta.validation.Valid;
+import org.springframework.validation.annotation.Validated;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
+
+/**
+ * @author zcx
+ * @since 2025-09-15
+ */
+@RateLimit(30)
+@Validated
+@RestController
+@RequestMapping("/like")
+public class LikeController {
+
+    @Resource
+    private LikeService likeService;
+
+    /**
+     * 点赞或取消点赞
+     *
+     * @param toggleLikeDto 点赞请求参数
+     * @return 点赞结果
+     */
+    @PostMapping("/toggle")
+    public Result<Void> toggleLike(@RequestBody @Valid ToggleLikeDto toggleLikeDto) {
+        likeService.toggleLike(toggleLikeDto.getType(), toggleLikeDto.getTypeId());
+        return Result.success();
+    }
+
+    /**
+     * 判断当前用户是否已点赞
+     *
+     * @param type   点赞类型 0-文章 1-评论
+     * @param typeId 点赞类型id
+     * @return 是否已点赞
+     */
+    @GetMapping("/isLiked")
+    public Result<Boolean> isLiked(Integer type, Integer typeId) {
+        Boolean isLiked = likeService.isLiked(type, typeId);
+        return Result.success(isLiked);
+    }
+
+}

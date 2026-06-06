@@ -1,0 +1,1477 @@
+<template>
+  <div class="chat-window-page">
+    <div class="container">
+      <div class="chat-window-container">
+        <!-- 聊天窗口头部 -->
+        <div class="chat-header">
+          <el-button :icon="ArrowLeft" circle @click="goBack" />
+          <div class="user-info" v-if="targetUser">
+            <div class="avatar-wrapper" @click="goToUserHomepage(targetUser.id)">
+              <el-avatar :size="40" :src="targetUser.avatar" />
+              <span v-if="isOnline" class="online-indicator"></span>
+            </div>
+            <div class="user-details">
+              <span class="username">{{ targetUser.nickname }}</span>
+              <span class="online-status-text" v-if="isOnline && !messageStore.targetUserTyping"
+                >在线</span
+              >
+              <span class="typing-status" v-if="messageStore.targetUserTyping">
+                <span class="typing-text">正在输入</span>
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 消息列表 -->
+        <div class="message-list" ref="messageContainer" v-loading="loading">
+          <div
+            v-for="msg in messageStore.currentChatMessages"
+            :key="msg.id"
+            class="message-item"
+            :class="{ 'is-mine': msg.fromUserId === currentUserId }"
+            @contextmenu.prevent="handleContextMenu($event, msg)"
+            @touchstart="handleTouchStart($event, msg)"
+            @touchend="handleTouchEnd"
+            @touchmove="handleTouchMove"
+          >
+            <MessageBubble
+              :message="msg"
+              :is-mine="msg.fromUserId === currentUserId"
+              @avatar-click="goToUserHomepage(msg.fromUserId)"
+            />
+          </div>
+
+          <!-- 撤回提示 -->
+          <div v-if="revokeNotification" class="revoke-notification">
+            <span>{{ revokeNotification }}</span>
+          </div>
+
+          <!-- 空状态 -->
+          <el-empty
+            v-if="messageStore.currentChatMessages.length === 0 && !loading"
+            description="暂无消息"
+          />
+        </div>
+
+        <!-- 右键菜单 -->
+        <div
+          v-if="contextMenuVisible"
+          class="context-menu"
+          :style="{ left: contextMenuPosition.x + 'px', top: contextMenuPosition.y + 'px' }"
+        >
+          <div
+            v-if="selectedMessage && selectedMessage.messageType === 1"
+            class="context-menu-item"
+            @click="handleCopy"
+          >
+            <el-icon><DocumentCopy /></el-icon>
+            <span>复制</span>
+          </div>
+          <div v-if="canRevoke(selectedMessage)" class="context-menu-item" @click="handleRevoke">
+            <el-icon><Delete /></el-icon>
+            <span>撤回消息</span>
+          </div>
+        </div>
+
+        <!-- 消息输入框 -->
+        <div class="message-input-area">
+          <el-input
+            ref="messageInput"
+            v-model="messageContent"
+            type="textarea"
+            :rows="3"
+            placeholder="请输入消息... (Shift+Enter 换行)"
+            @keydown.enter="handleEnterKey"
+            @input="handleInput"
+            resize="none"
+          />
+          <div class="input-actions">
+            <div class="input-actions-left">
+              <el-button :icon="ChatDotSquare" @click="toggleEmojiPicker">表情</el-button>
+              <el-button :icon="Picture" @click="openImagePicker" :loading="imageUploadLoading"
+                >图片</el-button
+              >
+            </div>
+            <el-button type="primary" class="send-btn" @click="sendMessage">发送 (Enter)</el-button>
+          </div>
+
+          <!-- Emoji 表情选择器 -->
+          <div v-show="showEmojiPicker" class="emoji-picker">
+            <div class="emoji-header">
+              <span class="emoji-title">选择表情</span>
+              <el-button text :icon="Close" @click="closeEmojiPicker" />
+            </div>
+            <div class="emoji-list">
+              <div
+                v-for="(emoji, index) in emojiList"
+                :key="index"
+                class="emoji-item"
+                @click="insertEmoji(emoji)"
+              >
+                {{ emoji }}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</template>
+
+<script setup>
+import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import {
+  ArrowLeft,
+  Delete,
+  DocumentCopy,
+  ChatDotSquare,
+  Close,
+  Picture,
+} from '@element-plus/icons-vue'
+import { getChatHistory } from '@/api/privateMessage'
+import { getUserInfoById } from '@/api/user'
+import { getConversationList } from '@/api/conversation'
+import { uploadMessagePhoto } from '@/api/photo'
+import { useMessageStore } from '@/stores/messageStore'
+import { useUserStore } from '@/stores/userStore'
+import WebSocketClient from '@/utils/WebSocketClient'
+import { getFriendlyTime } from '@/utils/formatTime'
+import { emojiList } from '@/utils/emoji'
+import MessageBubble from '@/components/CustomerService/MessageBubble.vue'
+
+const route = useRoute()
+const router = useRouter()
+const messageStore = useMessageStore()
+const userStore = useUserStore()
+
+const loading = ref(false) // 加载状态
+const messageContent = ref('') // 消息输入框内容
+const targetUser = ref(null) // 目标用户信息
+const messageContainer = ref(null) // 消息列表容器
+const messageInput = ref(null) // 消息输入框引用
+
+// Emoji 表情选择器相关
+const showEmojiPicker = ref(false) // 表情选择器显示状态
+
+// 图片上传相关
+const imageUploadLoading = ref(false) // 图片上传加载状态
+const fileInputRef = ref(null) // 文件输入框引用
+
+const targetUserId = computed(() => parseInt(route.params.userId)) // 目标用户ID
+const currentUserId = computed(() => userStore.user?.id) // 当前用户ID
+const isOnline = ref(false)
+
+// 右键菜单相关
+const contextMenuVisible = ref(false) // 右键菜单是否可见
+const contextMenuPosition = ref({ x: 0, y: 0 }) // 右键菜单位置
+const selectedMessage = ref(null) // 选中的消息
+
+// 长按相关
+const longPressTimer = ref(null) // 长按定时器
+const isLongPress = ref(false) // 是否是长按
+
+// 撤回提示
+const revokeNotification = ref('') // 撤回提示文本
+const revokeNotificationTimer = ref(null) // 撤回提示定时器
+
+// 输入检测相关
+const lastTypingSentTime = ref(0) // 上次发送 TYPING 消息的时间
+const typingTimer = ref(null) // 输入状态消失定时器
+// 获取目标用户信息
+const fetchTargetUser = async () => {
+  try {
+    const res = await getUserInfoById(targetUserId.value)
+    targetUser.value = res.data
+  } catch (error) {
+    // 静默处理
+  }
+}
+
+// 获取聊天记录
+const fetchChatHistory = async () => {
+  try {
+    loading.value = true
+    const res = await getChatHistory(targetUserId.value, 1, 50)
+    const messages = res.data?.data || []
+    // 将消息列表反转，确保最新消息在底部
+    messageStore.setCurrentChatMessages(messages.reverse())
+    scrollToBottom()
+
+    // 获取历史消息后，标记为已读
+    if (messages.length > 0) {
+      WebSocketClient.markAsRead(targetUserId.value)
+    }
+  } catch (error) {
+    // 静默处理
+  } finally {
+    loading.value = false
+  }
+}
+
+// 发送消息
+const sendMessage = () => {
+  if (!messageContent.value.trim()) {
+    return
+  }
+
+  const content = messageContent.value
+
+  // 立即添加到消息列表（乐观更新）
+  const tempMessage = {
+    id: Date.now(), // 临时ID
+    fromUserId: currentUserId.value,
+    toUserId: targetUserId.value,
+    content: content,
+    messageType: 1,
+    createTime: new Date(),
+    isRead: 0,
+    isRevoked: 0,
+    fromUserNickname: userStore.user?.nickname,
+    fromUserAvatar: userStore.user?.avatar,
+    toUserNickname: targetUser.value?.nickname,
+    toUserAvatar: targetUser.value?.avatar,
+  }
+
+  messageStore.addMessageToCurrentChat(tempMessage)
+  scrollToBottom()
+
+  WebSocketClient.sendTextMessage(targetUserId.value, content)
+  messageContent.value = ''
+}
+
+// 处理 Enter 键按下 - Enter 发送，Shift+Enter 换行
+const handleEnterKey = (event) => {
+  // Shift+Enter：允许换行，不阻止默认行为
+  if (event.shiftKey) {
+    return
+  }
+  // 单独按 Enter：发送消息，阻止默认换行行为
+  event.preventDefault()
+  sendMessage()
+}
+
+// 处理输入事件 - 发送正在输入通知
+const handleInput = () => {
+  const now = Date.now()
+
+  // 检查：距离上次发送 TYPING 是否超过 3 秒
+  if (now - lastTypingSentTime.value < 3000) {
+    return
+  }
+
+  // 检查：对方在 10 秒内给我发过消息？
+  const messages = messageStore.currentChatMessages
+  if (messages.length > 0) {
+    const lastMessage = messages[messages.length - 1]
+    if (lastMessage.fromUserId === targetUserId.value) {
+      // 最后一条是对方发的
+      const messageTime = new Date(lastMessage.createTime).getTime()
+      if (now - messageTime > 10000) {
+        // 超过 10 秒没收到对方消息，不发送 TYPING
+        return
+      }
+    }
+  }
+
+  // 发送 TYPING 通知
+  lastTypingSentTime.value = now
+  WebSocketClient.sendTyping(targetUserId.value)
+}
+
+// 打开图片选择器
+const openImagePicker = () => {
+  // 创建隐藏的文件输入框
+  if (!fileInputRef.value) {
+    const input = document.createElement('input')
+    input.type = 'file'
+    input.accept = 'image/*'
+    input.onchange = handleImageSelect
+    fileInputRef.value = input
+  }
+  fileInputRef.value.click()
+}
+
+// 处理图片选择
+const handleImageSelect = async (event) => {
+  const file = event.target.files?.[0]
+  if (!file) {
+    return
+  }
+
+  // 验证文件类型
+  if (!file.type.startsWith('image/')) {
+    ElMessage.error('只能上传图片文件')
+    return
+  }
+
+  // 验证文件大小（10MB）
+  const maxSize = 10 * 1024 * 1024
+  if (file.size > maxSize) {
+    ElMessage.error('图片大小不能超过10MB')
+    return
+  }
+
+  try {
+    imageUploadLoading.value = true
+
+    // 上传图片
+    const res = await uploadMessagePhoto(file)
+    const imageUrl = res.data
+
+    // 立即添加到消息列表（乐观更新）
+    const tempMessage = {
+      id: Date.now(), // 临时ID
+      fromUserId: currentUserId.value,
+      toUserId: targetUserId.value,
+      content: '[图片]',
+      messageType: 2,
+      imageUrl: imageUrl,
+      createTime: new Date(),
+      isRead: 0,
+      isRevoked: 0,
+      fromUserNickname: userStore.user?.nickname,
+      fromUserAvatar: userStore.user?.avatar,
+      toUserNickname: targetUser.value?.nickname,
+      toUserAvatar: targetUser.value?.avatar,
+    }
+
+    messageStore.addMessageToCurrentChat(tempMessage)
+    scrollToBottom()
+
+    // 发送图片消息
+    WebSocketClient.sendImageMessage(targetUserId.value, imageUrl)
+    ElMessage.success('图片发送成功')
+  } catch (error) {
+    // 静默处理
+  } finally {
+    imageUploadLoading.value = false
+    // 清空文件输入框，允许重复上传同一文件
+    if (fileInputRef.value) {
+      fileInputRef.value.value = ''
+    }
+  }
+}
+
+// 切换表情选择器
+const toggleEmojiPicker = () => {
+  showEmojiPicker.value = !showEmojiPicker.value
+}
+
+// 关闭表情选择器
+const closeEmojiPicker = () => {
+  showEmojiPicker.value = false
+}
+
+// 插入表情到输入框
+const insertEmoji = (emoji) => {
+  // 获取 textarea 元素
+  const textarea = messageInput.value?.$el?.querySelector('textarea')
+
+  if (textarea) {
+    // 获取当前光标位置
+    const startPos = textarea.selectionStart
+    const endPos = textarea.selectionEnd
+
+    // 在光标位置插入表情
+    const beforeText = messageContent.value.substring(0, startPos)
+    const afterText = messageContent.value.substring(endPos)
+    messageContent.value = beforeText + emoji + afterText
+
+    // 更新光标位置（在插入的表情后面）
+    nextTick(() => {
+      const newPos = startPos + emoji.length
+      textarea.setSelectionRange(newPos, newPos)
+      textarea.focus()
+    })
+  } else {
+    // 如果无法获取 textarea，直接在末尾添加
+    messageContent.value += emoji
+  }
+
+  // 不关闭表情选择器，允许连续选择表情
+  // closeEmojiPicker();
+}
+
+// 滚动到底部
+const scrollToBottom = () => {
+  nextTick(() => {
+    if (messageContainer.value) {
+      messageContainer.value.scrollTop = messageContainer.value.scrollHeight
+    }
+  })
+}
+
+// 返回会话列表
+const goBack = () => {
+  router.push('/message')
+}
+
+// 跳转到用户主页
+const goToUserHomepage = (userId) => {
+  router.push(`/user/${userId}`)
+}
+
+// 检查消息是否可以撤回（2分钟内且是自己的消息）
+const canRevoke = (msg) => {
+  if (msg.fromUserId !== currentUserId.value) {
+    return false
+  }
+  if (msg.isRevoked === 1) {
+    return false
+  }
+  const now = new Date().getTime()
+  const createTime = new Date(msg.createTime).getTime()
+  const diffMinutes = (now - createTime) / 1000 / 60
+  return diffMinutes <= 2 // 2分钟内可以撤回
+}
+
+// 处理右键菜单
+const handleContextMenu = (event, msg) => {
+  // 图片消息且不可撤回时，不显示菜单
+  if (msg.messageType !== 1 && !canRevoke(msg)) {
+    return
+  }
+
+  contextMenuVisible.value = true
+  contextMenuPosition.value = {
+    x: event.clientX,
+    y: event.clientY,
+  }
+  selectedMessage.value = msg
+}
+
+// 处理长按开始
+const handleTouchStart = (event, msg) => {
+  // 图片消息且不可撤回时，不响应长按
+  if (msg.messageType !== 1 && !canRevoke(msg)) {
+    return
+  }
+
+  isLongPress.value = false
+  longPressTimer.value = setTimeout(() => {
+    isLongPress.value = true
+    // 获取触摸位置
+    const touch = event.touches[0]
+    contextMenuVisible.value = true
+    contextMenuPosition.value = {
+      x: touch.clientX,
+      y: touch.clientY,
+    }
+    selectedMessage.value = msg
+
+    // 震动反馈（如果支持）
+    if (navigator.vibrate) {
+      navigator.vibrate(50)
+    }
+  }, 500) // 长按500毫秒触发
+}
+
+// 处理长按结束
+const handleTouchEnd = () => {
+  if (longPressTimer.value) {
+    clearTimeout(longPressTimer.value)
+    longPressTimer.value = null
+  }
+}
+
+// 处理触摸移动（取消长按）
+const handleTouchMove = () => {
+  if (longPressTimer.value) {
+    clearTimeout(longPressTimer.value)
+    longPressTimer.value = null
+  }
+}
+
+// 复制消息
+const handleCopy = async () => {
+  if (!selectedMessage.value || selectedMessage.value.messageType !== 1) {
+    return
+  }
+
+  try {
+    // 使用现代浏览器的 Clipboard API
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(selectedMessage.value.content)
+      ElMessage.success('消息已复制到剪贴板')
+    } else {
+      // 降级方案：使用传统的 document.execCommand
+      const textArea = document.createElement('textarea')
+      textArea.value = selectedMessage.value.content
+      textArea.style.position = 'fixed'
+      textArea.style.left = '-999999px'
+      textArea.style.top = '-999999px'
+      document.body.appendChild(textArea)
+      textArea.focus()
+      textArea.select()
+
+      try {
+        document.execCommand('copy')
+        ElMessage.success('消息已复制到剪贴板')
+      } catch (err) {
+        // 静默处理
+        ElMessage.error('复制失败，请手动复制')
+      }
+
+      document.body.removeChild(textArea)
+    }
+  } catch (error) {
+    // 静默处理
+  }
+
+  // 关闭右键菜单
+  contextMenuVisible.value = false
+  selectedMessage.value = null
+}
+
+// 撤回消息
+const handleRevoke = async () => {
+  if (!selectedMessage.value) {
+    return
+  }
+
+  // 调用 WebSocket 撤回消息（等待后端响应，不再乐观更新）
+  WebSocketClient.revokeMessage(selectedMessage.value.id)
+
+  // 关闭右键菜单
+  contextMenuVisible.value = false
+  selectedMessage.value = null
+}
+
+// 显示撤回提示
+const showRevokeNotification = (text) => {
+  revokeNotification.value = text
+
+  // 清除之前的定时器
+  if (revokeNotificationTimer.value) {
+    clearTimeout(revokeNotificationTimer.value)
+  }
+
+  // 10秒后自动隐藏
+  revokeNotificationTimer.value = setTimeout(() => {
+    revokeNotification.value = ''
+    revokeNotificationTimer.value = null
+  }, 10000)
+
+  // 滚动到底部以显示提示
+  scrollToBottom()
+}
+
+// 关闭右键菜单（点击其他地方）
+const closeContextMenu = (event) => {
+  contextMenuVisible.value = false
+  selectedMessage.value = null
+
+  // 如果点击的不是表情按钮和表情选择器本身，则关闭表情选择器
+  if (event && showEmojiPicker.value) {
+    const target = event.target
+    const emojiPicker = document.querySelector('.emoji-picker')
+    const emojiButton = document.querySelector('.input-actions .el-button')
+
+    if (
+      emojiPicker &&
+      !emojiPicker.contains(target) &&
+      emojiButton &&
+      !emojiButton.contains(target)
+    ) {
+      closeEmojiPicker()
+    }
+  }
+}
+
+// WebSocket 消息处理
+const handleNewMessage = (data) => {
+  if (data.fromUserId === targetUserId.value || data.toUserId === targetUserId.value) {
+    // 补充用户信息
+    const message = {
+      ...data,
+      id: data.messageId || data.id, // 确保有消息ID
+      fromUserNickname: data.fromUserNickname || targetUser.value?.nickname,
+      fromUserAvatar: data.fromUserAvatar || targetUser.value?.avatar,
+      toUserNickname: data.toUserNickname || userStore.user?.nickname,
+      toUserAvatar: data.toUserAvatar || userStore.user?.avatar,
+    }
+    // 将消息添加到当前聊天窗口
+    messageStore.addMessageToCurrentChat(message)
+    scrollToBottom()
+
+    // 如果是收到对方的消息，立即标记为已读
+    if (data.fromUserId === targetUserId.value) {
+      // 清空前端会话未读数
+      messageStore.clearConversationUnread(targetUserId.value)
+      // 通知后端标记为已读
+      WebSocketClient.markAsRead(targetUserId.value)
+    }
+  }
+}
+
+// 处理对方正在输入通知
+const handleTypingNotify = (data) => {
+  if (data.fromUserId === targetUserId.value) {
+    // 设置 typing 状态
+    messageStore.setTargetUserTyping(true)
+
+    // 清除之前的定时器
+    if (typingTimer.value) {
+      clearTimeout(typingTimer.value)
+    }
+
+    // 设置 6 秒后自动消失
+    typingTimer.value = setTimeout(() => {
+      messageStore.setTargetUserTyping(false)
+      typingTimer.value = null
+    }, 6000)
+  }
+}
+
+const handleSendSuccess = (data) => {
+  // 消息发送成功，更新临时ID为真实ID
+  const messages = messageStore.currentChatMessages
+  const lastMessage = messages[messages.length - 1]
+  if (lastMessage && lastMessage.id > Date.now() - 5000) {
+    // 更新最后一条消息的ID
+    lastMessage.id = data.messageId
+  }
+}
+
+// 处理消息已读回执
+const handleMessageRead = (data) => {
+  // 对方已读我的消息，更新当前聊天窗口中我发送的消息为已读状态
+  if (data.fromUserId === targetUserId.value) {
+    messageStore.currentChatMessages.forEach((msg) => {
+      if (msg.fromUserId === currentUserId.value && msg.toUserId === targetUserId.value) {
+        msg.isRead = 1
+      }
+    })
+  }
+}
+
+// 处理用户在线状态变化
+const handleUserOnlineStatus = (data) => {
+  // 如果是当前聊天的用户，更新在线状态
+  if (data.userId === targetUserId.value) {
+    isOnline.value = data.isOnline
+    // 同时更新 messageStore 中的在线状态
+    messageStore.updateUserOnlineStatus(data.userId, data.isOnline)
+  }
+}
+
+// 处理撤回成功响应
+const handleRevokeSuccess = (data) => {
+  // 从消息列表中移除该消息
+  const messageIndex = messageStore.currentChatMessages.findIndex(
+    (msg) => msg.id === data.messageId,
+  )
+  if (messageIndex > -1) {
+    const isLastMessage = messageIndex === messageStore.currentChatMessages.length - 1
+    messageStore.currentChatMessages.splice(messageIndex, 1)
+
+    // 如果撤回的是最后一条消息，更新会话列表中的最后一条消息内容
+    if (isLastMessage) {
+      messageStore.updateConversationLastMessage(targetUserId.value, '你撤回了一条消息')
+    }
+  }
+
+  // 显示撤回提示
+  showRevokeNotification('你撤回了一条消息')
+  ElMessage.success('消息已撤回')
+}
+
+// 处理撤回失败响应
+const handleRevokeFailed = (data) => {
+  ElMessage.error(data.message || '撤回消息失败')
+}
+
+// 处理消息撤回通知（对方撤回）
+const handleMessageRevoke = (data) => {
+  // 查找并从列表中移除被撤回的消息
+  const messageIndex = messageStore.currentChatMessages.findIndex(
+    (msg) => msg.id === data.messageId,
+  )
+  if (messageIndex > -1) {
+    const message = messageStore.currentChatMessages[messageIndex]
+    const isLastMessage = messageIndex === messageStore.currentChatMessages.length - 1
+    messageStore.currentChatMessages.splice(messageIndex, 1)
+
+    // 如果是对方撤回的消息，显示提示
+    if (message.fromUserId === targetUserId.value) {
+      const revokeText = `${message.fromUserNickname || '对方'}撤回了一条消息`
+      showRevokeNotification(revokeText)
+
+      // 如果撤回的是最后一条消息，更新会话列表中的最后一条消息内容
+      if (isLastMessage) {
+        messageStore.updateConversationLastMessage(targetUserId.value, revokeText)
+      }
+    } else {
+      // 自己在其他设备撤回的消息
+      if (isLastMessage) {
+        messageStore.updateConversationLastMessage(targetUserId.value, '你撤回了一条消息')
+      }
+    }
+  }
+}
+
+// 组件挂载
+onMounted(async () => {
+  // 设置当前聊天用户
+  messageStore.setCurrentChatUser(targetUserId.value)
+  fetchTargetUser()
+  fetchChatHistory()
+
+  // 如果会话列表为空（刷新页面时），主动获取会话列表以获取在线状态
+  if (messageStore.conversationList.length === 0) {
+    try {
+      const res = await getConversationList()
+      messageStore.setConversationList(res.data || [])
+
+      // 在获取会话列表后立即更新在线状态
+      const conversation = messageStore.conversationList.find(
+        (conv) => conv.targetUserId === targetUserId.value,
+      )
+      if (conversation) {
+        isOnline.value = conversation.isOnline || false
+      }
+    } catch (error) {
+      // 静默处理
+    }
+  } else {
+    // 从已有的会话列表中获取初始在线状态
+    const conversation = messageStore.conversationList.find(
+      (conv) => conv.targetUserId === targetUserId.value,
+    )
+    if (conversation) {
+      isOnline.value = conversation.isOnline || false
+    }
+  }
+
+  // 注意：不要在这里初始化 WebSocket，Header.vue 已经全局初始化了
+  // 只需要监听消息事件
+  WebSocketClient.on('NEW_MESSAGE', handleNewMessage)
+  WebSocketClient.on('SEND_SUCCESS', handleSendSuccess)
+  WebSocketClient.on('MESSAGE_READ', handleMessageRead)
+  WebSocketClient.on('USER_ONLINE_STATUS', handleUserOnlineStatus)
+  WebSocketClient.on('REVOKE_SUCCESS', handleRevokeSuccess)
+  WebSocketClient.on('REVOKE_FAILED', handleRevokeFailed)
+  WebSocketClient.on('MESSAGE_REVOKED', handleMessageRevoke)
+  WebSocketClient.on('TYPING_NOTIFY', handleTypingNotify)
+
+  // 监听点击事件，关闭右键菜单
+  document.addEventListener('click', closeContextMenu)
+})
+
+// 组件卸载
+onUnmounted(() => {
+  WebSocketClient.off('NEW_MESSAGE', handleNewMessage)
+  WebSocketClient.off('SEND_SUCCESS', handleSendSuccess)
+  WebSocketClient.off('MESSAGE_READ', handleMessageRead)
+  WebSocketClient.off('USER_ONLINE_STATUS', handleUserOnlineStatus)
+  WebSocketClient.off('REVOKE_SUCCESS', handleRevokeSuccess)
+  WebSocketClient.off('REVOKE_FAILED', handleRevokeFailed)
+  WebSocketClient.off('MESSAGE_REVOKED', handleMessageRevoke)
+  WebSocketClient.off('TYPING_NOTIFY', handleTypingNotify)
+  messageStore.setCurrentChatUser(null)
+
+  // 清理事件监听器
+  document.removeEventListener('click', closeContextMenu)
+
+  // 清理长按定时器
+  if (longPressTimer.value) {
+    clearTimeout(longPressTimer.value)
+  }
+
+  // 清理 typing 定时器
+  if (typingTimer.value) {
+    clearTimeout(typingTimer.value)
+  }
+
+  // 清理撤回提示定时器
+  if (revokeNotificationTimer.value) {
+    clearTimeout(revokeNotificationTimer.value)
+  }
+})
+</script>
+
+<style lang="scss" scoped>
+.chat-window-page {
+  min-height: 100vh;
+  padding-top: 80px !important;
+
+  // 默认浅色模式 CSS 变量
+  --bg-page: #f5f7fa;
+  --bg-card: #ffffff;
+  --bg-hover: #f5f5f5;
+  --bg-message-received: #ffffff;
+  --bg-message-sent: #3b82f6;
+  --border-color: #f0f0f0;
+  --text-primary: #1a1a1a;
+  --text-secondary: #52525b;
+  --text-muted: #a1a1aa;
+  --text-on-accent: #ffffff;
+  --accent-color: #3b82f6;
+  --danger-color: #ef4444;
+  --success-color: #22c55e;
+
+  .container {
+    max-width: 1000px;
+    margin: 0 auto;
+    padding: 0 20px;
+  }
+
+  .chat-window-container {
+    background: var(--bg-card);
+    border-radius: 16px;
+    box-shadow:
+      0 1px 3px rgba(0, 0, 0, 0.08),
+      0 1px 2px rgba(0, 0, 0, 0.06);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    height: calc(100vh - 110px);
+    animation: slideInUp 0.4s ease-out;
+
+    @keyframes slideInUp {
+      from {
+        opacity: 0;
+        transform: translateY(30px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    .chat-header {
+      display: flex;
+      align-items: center;
+      padding: 18px 24px;
+      background: var(--bg-card);
+      border-bottom: 1px solid var(--border-color);
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      backdrop-filter: blur(10px);
+
+      ::v-deep(.el-button) {
+        border-radius: 10px;
+        width: 40px;
+        height: 40px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        transition: all 0.2s ease;
+        border: 1px solid var(--border-color);
+
+        &:hover {
+          transform: translateX(-2px);
+          background: var(--bg-hover);
+        }
+      }
+
+      .user-info {
+        display: flex;
+        align-items: center;
+        margin-left: 16px;
+        flex: 1;
+
+        .avatar-wrapper {
+          position: relative;
+          cursor: pointer;
+          transition: transform 0.2s ease;
+          flex-shrink: 0;
+
+          &:hover {
+            transform: scale(1.08);
+          }
+
+          ::v-deep(.el-avatar) {
+            border-radius: 12px;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+          }
+
+          .online-indicator {
+            position: absolute;
+            bottom: -2px;
+            right: -2px;
+            width: 14px;
+            height: 14px;
+            background: var(--success-color);
+            border: 3px solid var(--bg-card);
+            border-radius: 50%;
+            box-shadow: 0 2px 6px rgba(34, 197, 94, 0.4);
+            animation: onlinePulse 2s ease-in-out infinite;
+
+            @keyframes onlinePulse {
+              0%,
+              100% {
+                opacity: 1;
+              }
+              50% {
+                opacity: 0.7;
+              }
+            }
+          }
+        }
+
+        .user-details {
+          margin-left: 14px;
+          display: flex;
+          flex-direction: column;
+          gap: 2px;
+
+          .username {
+            font-size: 16px;
+            font-weight: 600;
+            color: var(--text-primary);
+            letter-spacing: -0.01em;
+          }
+
+          .online-status-text {
+            font-size: 12px;
+            color: var(--success-color);
+            font-weight: 500;
+          }
+
+          .typing-status {
+            display: inline-flex;
+            align-items: center;
+            font-size: 12px;
+            color: var(--success-color);
+            font-weight: 500;
+
+            .typing-text::after {
+              content: '';
+              animation: typing-dots 1.5s infinite;
+            }
+          }
+
+          @keyframes typing-dots {
+            0% {
+              content: '.';
+            }
+            33% {
+              content: '..';
+            }
+            66% {
+              content: '...';
+            }
+            100% {
+              content: '.';
+            }
+          }
+        }
+      }
+    }
+
+    .message-list {
+      flex: 1;
+      overflow-y: auto;
+      padding: 24px;
+      background: var(--bg-page);
+
+      // 滚动条样式
+      &::-webkit-scrollbar {
+        width: 6px;
+      }
+
+      &::-webkit-scrollbar-track {
+        background: transparent;
+      }
+
+      &::-webkit-scrollbar-thumb {
+        background: var(--border-color);
+        border-radius: 3px;
+
+        &:hover {
+          background: var(--text-muted);
+        }
+      }
+
+      // 撤回提示
+      .revoke-notification {
+        text-align: center;
+        padding: 0;
+        margin: 16px 0;
+
+        span {
+          display: inline-block;
+          padding: 6px 14px;
+          background: var(--bg-card);
+          color: var(--text-muted);
+          font-size: 12px;
+          border-radius: 20px;
+          border: 1px solid var(--border-color);
+          box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+        }
+      }
+
+      .message-item {
+        display: flex;
+        margin-bottom: 20px;
+        animation: messageSlideIn 0.3s ease-out;
+
+        @keyframes messageSlideIn {
+          from {
+            opacity: 0;
+            transform: translateY(10px);
+          }
+          to {
+            opacity: 1;
+            transform: translateY(0);
+          }
+        }
+
+        &.is-mine {
+          flex-direction: row-reverse;
+
+          .message-content {
+            align-items: flex-end;
+            margin-left: 0;
+            margin-right: 12px;
+
+            .message-header {
+              flex-direction: row-reverse;
+            }
+
+            .message-body {
+              background: linear-gradient(135deg, var(--accent-color) 0%, #2563eb 100%);
+              color: var(--text-on-accent);
+              border-radius: 18px 18px 4px 18px;
+              box-shadow: 0 2px 8px rgba(59, 130, 246, 0.25);
+
+              // 图片消息不需要蓝色背景
+              &:has(.image-message) {
+                background: transparent;
+                box-shadow: none;
+              }
+
+              .text-message {
+                word-break: break-word;
+                line-height: 1.5;
+              }
+            }
+
+            .read-status {
+              text-align: right;
+
+              .read-text {
+                color: var(--success-color);
+                font-weight: 500;
+              }
+
+              .unread-text {
+                color: var(--text-muted);
+              }
+            }
+          }
+        }
+
+        .message-avatar {
+          flex-shrink: 0;
+          cursor: pointer;
+          transition: transform 0.2s ease;
+          border-radius: 12px;
+
+          &:hover {
+            transform: scale(1.08);
+          }
+        }
+
+        .message-content {
+          display: flex;
+          flex-direction: column;
+          margin-left: 12px;
+          max-width: 65%;
+
+          .message-header {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 6px;
+
+            .message-nickname {
+              font-size: 13px;
+              font-weight: 600;
+              color: var(--text-secondary);
+            }
+
+            .message-time {
+              font-size: 11px;
+              color: var(--text-muted);
+              font-weight: 500;
+            }
+          }
+
+          .message-body {
+            padding: 12px 16px;
+            border-radius: 18px 18px 18px 4px;
+            background: var(--bg-message-received);
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+            transition: all 0.2s ease;
+
+            &:hover {
+              box-shadow: 0 2px 6px rgba(0, 0, 0, 0.12);
+            }
+
+            // 图片消息不需要气泡样式
+            &:has(.image-message) {
+              padding: 0;
+              background: transparent;
+              box-shadow: none;
+            }
+
+            .text-message {
+              word-break: break-word;
+              font-size: 14px;
+              line-height: 1.6;
+            }
+
+            .image-message {
+              max-width: 240px;
+              max-height: 240px;
+              border-radius: 12px;
+              cursor: pointer;
+              transition: transform 0.2s ease;
+              box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+
+              &:hover {
+                transform: scale(1.02);
+              }
+
+              .image-loading {
+                display: flex;
+                justify-content: center;
+                align-items: center;
+                width: 200px;
+                height: 200px;
+                background: var(--border-color);
+                border-radius: 12px;
+                font-size: 13px;
+                color: var(--text-muted);
+              }
+
+              .image-error {
+                display: flex;
+                flex-direction: column;
+                justify-content: center;
+                align-items: center;
+                gap: 8px;
+                width: 200px;
+                height: 200px;
+                background: var(--border-color);
+                border-radius: 12px;
+                color: var(--text-muted);
+
+                .el-icon {
+                  font-size: 32px;
+                }
+
+                span {
+                  font-size: 13px;
+                }
+              }
+            }
+          }
+
+          // 已读/未读状态
+          .read-status {
+            margin-top: 6px;
+            font-size: 11px;
+            font-weight: 500;
+          }
+        }
+      }
+    }
+
+    .message-input-area {
+      position: relative;
+      border-top: 1px solid var(--border-color);
+      padding: 20px 24px;
+      background: var(--bg-card);
+
+      ::v-deep(.el-input__wrapper) {
+        border-radius: 12px;
+        padding: 14px 16px;
+        box-shadow: none;
+        border: 1px solid var(--border-color);
+        transition: all 0.2s ease;
+        background: var(--bg-page);
+
+        &:hover {
+          border-color: var(--text-muted);
+        }
+
+        &:focus-within {
+          border-color: var(--accent-color);
+          box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+        }
+      }
+
+      ::v-deep(.el-textarea__inner) {
+        resize: none;
+        font-size: 14px;
+        line-height: 1.5;
+        border-radius: 12px;
+
+        &::placeholder {
+          color: var(--text-muted);
+        }
+      }
+
+      .input-actions {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 12px;
+        margin-top: 14px;
+
+        .input-actions-left {
+          display: flex;
+          gap: 8px;
+
+          ::v-deep(.el-button) {
+            border-radius: 10px;
+            padding: 10px 16px;
+            font-size: 13px;
+            transition: all 0.2s ease;
+            border: 1px solid var(--border-color);
+            background: var(--bg-page);
+            color: var(--text-primary);
+
+            &:hover {
+              background: var(--bg-hover);
+              transform: translateY(-1px);
+            }
+
+            .el-icon {
+              margin-right: 4px;
+            }
+          }
+        }
+
+        .send-btn {
+          border-radius: 12px !important;
+          padding: 12px 28px !important;
+          font-size: 14px !important;
+          font-weight: 600 !important;
+          background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%) !important;
+          border: none !important;
+          box-shadow: 0 2px 8px rgba(59, 130, 246, 0.35) !important;
+          transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1) !important;
+
+          &:hover {
+            transform: translateY(-2px) !important;
+            box-shadow: 0 6px 20px rgba(59, 130, 246, 0.45) !important;
+            background: linear-gradient(135deg, #4f8ef7 0%, #3b73e8 100%) !important;
+          }
+
+          &:active {
+            transform: translateY(0) scale(0.98) !important;
+            box-shadow: 0 2px 6px rgba(59, 130, 246, 0.3) !important;
+          }
+        }
+      }
+
+      // Emoji 表情选择器
+      .emoji-picker {
+        position: absolute;
+        bottom: calc(100% + 12px);
+        left: 24px;
+        width: 380px;
+        max-height: 340px;
+        background: var(--bg-card);
+        backdrop-filter: blur(10px);
+        border: 1px solid var(--border-color);
+        border-radius: 14px;
+        box-shadow: 0 12px 40px rgba(0, 0, 0, 0.15);
+        z-index: 1000;
+        overflow: hidden;
+        animation: emojiPickerSlideUp 0.25s ease-out;
+
+        @keyframes emojiPickerSlideUp {
+          from {
+            opacity: 0;
+            transform: translateY(15px) scale(0.95);
+          }
+          to {
+            opacity: 1;
+            transform: translateY(0) scale(1);
+          }
+        }
+
+        // 表情选择器头部
+        .emoji-header {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          padding: 14px 18px;
+          border-bottom: 1px solid var(--border-color);
+          background: var(--bg-page);
+
+          .emoji-title {
+            font-size: 14px;
+            font-weight: 600;
+            color: var(--text-primary);
+          }
+
+          ::v-deep(.el-button) {
+            padding: 6px;
+            border-radius: 8px;
+
+            &:hover {
+              background: var(--border-color);
+            }
+          }
+        }
+
+        // 表情列表
+        .emoji-list {
+          display: grid;
+          grid-template-columns: repeat(8, 1fr);
+          gap: 6px;
+          padding: 16px;
+          max-height: 280px;
+          overflow-y: auto;
+
+          // 滚动条样式
+          &::-webkit-scrollbar {
+            width: 5px;
+          }
+
+          &::-webkit-scrollbar-track {
+            background: transparent;
+          }
+
+          &::-webkit-scrollbar-thumb {
+            background: var(--border-color);
+            border-radius: 3px;
+          }
+
+          // 表情项
+          .emoji-item {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            width: 38px;
+            height: 38px;
+            font-size: 22px;
+            cursor: pointer;
+            border-radius: 8px;
+            transition: all 0.2s ease;
+            user-select: none;
+
+            &:hover {
+              background: var(--bg-page);
+              transform: scale(1.25);
+            }
+
+            &:active {
+              transform: scale(1.15);
+            }
+          }
+        }
+
+        // 移动端适配
+        @media (max-width: 768px) {
+          left: 16px;
+          right: 16px;
+          width: auto;
+
+          .emoji-list {
+            grid-template-columns: repeat(6, 1fr);
+          }
+        }
+      }
+    }
+  }
+
+  // 右键菜单
+  .context-menu {
+    position: fixed;
+    background: var(--bg-card);
+    backdrop-filter: blur(10px);
+    border: 1px solid var(--border-color);
+    border-radius: 12px;
+    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.15);
+    padding: 8px;
+    z-index: 9999;
+    min-width: 140px;
+    animation: contextMenuFadeIn 0.15s ease;
+
+    @keyframes contextMenuFadeIn {
+      from {
+        opacity: 0;
+        transform: scale(0.95);
+      }
+      to {
+        opacity: 1;
+        transform: scale(1);
+      }
+    }
+
+    .context-menu-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 14px;
+      cursor: pointer;
+      border-radius: 8px;
+      transition: all 0.2s ease;
+      color: var(--text-primary);
+      font-size: 14px;
+      font-weight: 500;
+
+      &:not(:last-child) {
+        margin-bottom: 4px;
+      }
+
+      &:hover {
+        background: var(--bg-page);
+
+        .el-icon {
+          transform: scale(1.1);
+        }
+      }
+
+      // 复制菜单项悬停效果
+      &:first-child:hover {
+        color: var(--accent-color);
+
+        .el-icon {
+          color: var(--accent-color);
+        }
+      }
+
+      // 撤回菜单项悬停效果（危险操作）
+      &:last-child:hover {
+        color: var(--danger-color);
+
+        .el-icon {
+          color: var(--danger-color);
+        }
+      }
+
+      .el-icon {
+        font-size: 16px;
+        transition: transform 0.2s ease;
+      }
+    }
+  }
+}
+
+// 黑夜模式适配 - 使用全局 .dark 类覆盖 CSS 变量
+html.dark .chat-window-page {
+  --bg-page: #0a0a0a;
+  --bg-card: #141414;
+  --bg-hover: #1a1a1a;
+  --bg-message-received: #1a1a1a;
+  --bg-message-sent: #3b82f6;
+  --border-color: #27272a;
+  --text-primary: #f5f5f5;
+  --text-secondary: #a1a1aa;
+  --text-muted: #71717a;
+  --text-on-accent: #ffffff;
+  --accent-color: #3b82f6;
+  --danger-color: #ef4444;
+  --success-color: #22c55e;
+}
+</style>

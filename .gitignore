@@ -1,0 +1,109 @@
+.idea
+.trae
+*.iml
+out
+gen
+target
+*.class
+
+*.log
+.settings
+.project
+logs
+job
+.codex/
+
+# 测试相关（排除测试资源文件，但保留测试代码）
+**/src/test/resources/**
+
+# 环境变量
+.env
+
+# 文档文件夹
+# docs
+# /docs/
+
+# Claude Code 配置
+.claude/
+
+# Superpowers 视觉伴侣临时文件
+.superpowers/
+
+# Superpowers 计划文档（允许提交）
+!docs/superpowers/plans/
+
+# Git Worktrees 工作区
+.worktrees/
+/tests/
+
+
+node_modules/
+/jmeter/
+
+/.mcp.json
+/.golutra/
+.gstack/
+/chen-stack-backend/src/test/
+/chen-stack-frontend/chen-stack-user/test-results/
+/chen-stack-frontend/chen-stack-user/tests/
+
+# 前端构建产物
+dist/
+**/dist/
+build/
+**/build/
+
+# Vite / 前端缓存
+.vite/
+**/.vite/
+.cache/
+**/.cache/
+
+# npm / pnpm / yarn 日志
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# 运行时上传文件 / 临时文件
+uploads/
+**/uploads/
+tmp/
+temp/
+**/tmp/
+**/temp/
+
+# 系统文件
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 本地编辑器配置
+.vscode/
+.cursor/
+
+# 环境变量和密钥文件
+.env.local
+.env.development.local
+.env.production.local
+.env.test.local
+*.key
+*.pem
+*.p12
+*.jks
+
+# 后端运行日志和 dump
+*.hprof
+hs_err_pid*
+replay_pid*
+
+# 忽略真实环境配置
+**/.env
+**/.env.local
+**/.env.development
+**/.env.production
+**/.env.test
+
+# 保留示例环境配置
+!**/.env.example
+!**/env.example

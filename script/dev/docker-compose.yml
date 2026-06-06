@@ -1,0 +1,230 @@
+services:
+  # MySQL 数据库
+  mysql:
+    image: mysql:8.0
+    container_name: chen-stack-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-chen_stack}
+      MYSQL_USER: ${MYSQL_USER:-root}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-root}
+      TZ: Asia/Shanghai
+    ports:
+      - "${MYSQL_PORT:-3306}:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ../sql/chen_stack.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - chen-stack-network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD:-root}"]
+      timeout: 20s
+      retries: 15
+      interval: 10s
+      start_period: 60s
+
+  # Redis 缓存
+  redis:
+    image: redis:7-alpine
+    container_name: chen-stack-redis
+    restart: unless-stopped
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD:-chenstack123}", "--user", "default", "off", "--user", "${REDIS_USERNAME:-chenstack}", "on", "+@all", "~*", "&*", ">${REDIS_PASSWORD:-chenstack123}"]
+    networks:
+      - chen-stack-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "--user", "${REDIS_USERNAME:-chenstack}", "-a", "${REDIS_PASSWORD:-chenstack123}", "ping"]
+      timeout: 10s
+      retries: 5
+      interval: 10s
+      start_period: 30s
+
+  # MinIO 对象存储
+  minio:
+    image: minio/minio:RELEASE.2025-04-08T15-41-24Z
+    container_name: chen-stack-minio
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minio}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-minio}
+      # 启用 MinIO Web 控制台
+      MINIO_BROWSER: on
+      MINIO_BROWSER_LOGIN_ANIMATION: on
+      MINIO_BROWSER_SESSION_DURATION: 12h
+      # 彻底禁用所有身份验证提供商
+      MINIO_IDENTITY_OPENID_ENABLE: "false"
+      MINIO_IDENTITY_LDAP_ENABLE: "false"
+      MINIO_IDENTITY_PLUGIN_ENABLE: "false"
+      # 配置区域设置
+      MINIO_REGION: us-east-1
+      # 强制跳过身份验证初始化
+      MINIO_SKIP_CLIENT: "true"
+    ports:
+      - "${MINIO_API_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - minio_data:/data
+    # 启动MinIO服务
+    command: server /data --console-address ":9001" --quiet
+    networks:
+      - chen-stack-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      timeout: 20s
+      retries: 3
+      interval: 30s
+      start_period: 20s
+
+  # RabbitMQ 消息队列
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    container_name: chen-stack-rabbitmq
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER:-guest}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS:-guest}
+    ports:
+      - "${RABBITMQ_PORT:-5672}:5672"
+      - "${RABBITMQ_MANAGEMENT_PORT:-15672}:15672"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    networks:
+      - chen-stack-network
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      timeout: 30s
+      retries: 10
+      interval: 10s
+      start_period: 60s
+
+  # 后端服务
+  backend:
+    build:
+      context: ../chen-stack-backend
+      dockerfile: Dockerfile
+    image: chen-stack-backend
+    container_name: chen-stack-backend
+    restart: unless-stopped
+    ports:
+      - "${BACKEND_PORT:-5000}:5000"
+    environment:
+      # 时区配置
+      TZ: Asia/Shanghai
+
+      # Spring Boot 配置
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-dev}
+
+      # 数据库配置
+      MYSQL_HOST: mysql
+      MYSQL_PORT: 3306
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-chen_stack}
+      MYSQL_USERNAME: ${MYSQL_USER:-root}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-root}
+
+      # Redis 配置
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_USERNAME: ${REDIS_USERNAME:-chenstack}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-chenstack123}
+
+      # MinIO 配置
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_PUBLIC_POINT: ${MINIO_PUBLIC_POINT:-http://localhost:9000}
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minio}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minio}
+
+      # RabbitMQ 配置
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: 5672
+      RABBITMQ_USERNAME: ${RABBITMQ_DEFAULT_USER:-guest}
+      RABBITMQ_PASSWORD: ${RABBITMQ_DEFAULT_PASS:-guest}
+
+      # AI 配置
+      SPRING_AI_OPENAI_API_KEY: ${SPRING_AI_OPENAI_API_KEY:-your-deepseek-api-key}
+      SPRING_AI_OPENAI_BASE_URL: ${SPRING_AI_OPENAI_BASE_URL:-https://api.deepseek.com}
+      SPRING_AI_OPENAI_CHAT_OPTIONS_MODEL: ${SPRING_AI_OPENAI_CHAT_OPTIONS_MODEL:-deepseek-chat}
+
+      # 邮件配置
+      MAIL_USERNAME: ${MAIL_USERNAME:-your-email@qq.com}
+      MAIL_PASSWORD: ${MAIL_PASSWORD:-your-email-password}
+
+      # 前端地址配置
+      FRONTEND_USER_HOST: ${FRONTEND_USER_HOST:-http://localhost:7000/}
+      FRONTEND_ADMIN_HOST: ${FRONTEND_ADMIN_HOST:-http://localhost:8000/}
+
+      # 阿里云配置
+      ALIYUN_ACCESS_KEY_ID: ${ALIYUN_ACCESS_KEY_ID:-your-access-key-id}
+      ALIYUN_ACCESS_KEY_SECRET: ${ALIYUN_ACCESS_KEY_SECRET:-your-access-key-secret}
+
+      # 自定义配置
+      CHEN_STACK_JWT_SECRET: ${CHEN_STACK_JWT_SECRET:-chenstack_jwt_secret}
+      CHEN_STACK_PHOTO_AUTO_AUDIT: ${CHEN_STACK_PHOTO_AUTO_AUDIT:-false}
+      CHEN_STACK_ARTICLE_AUTO_AUDIT: ${CHEN_STACK_ARTICLE_AUTO_AUDIT:-true}
+      CHEN_STACK_COMMENT_AUTO_AUDIT: ${CHEN_STACK_COMMENT_AUTO_AUDIT:-false}
+      CHEN_STACK_RATE_LIMIT_ENABLED: ${CHEN_STACK_RATE_LIMIT_ENABLED:-true}
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    networks:
+      - chen-stack-network
+
+  # 前端管理端
+  frontend-admin:
+    build:
+      context: ../chen-stack-frontend/chen-stack-admin
+      dockerfile: Dockerfile
+    image: chen-stack-admin
+    container_name: chen-stack-admin
+    restart: unless-stopped
+    ports:
+      - "${ADMIN_PORT:-8000}:80"
+    depends_on:
+      - backend
+    networks:
+      - chen-stack-network
+
+  # 前端用户端
+  frontend-user:
+    build:
+      context: ../chen-stack-frontend/chen-stack-user
+      dockerfile: Dockerfile
+    image: chen-stack-user
+    container_name: chen-stack-user
+    restart: unless-stopped
+    ports:
+      - "${USER_PORT:-7000}:80"
+    depends_on:
+      - backend
+    networks:
+      - chen-stack-network
+
+# 数据卷
+volumes:
+  mysql_data:
+    driver: local
+    name: chen-stack-mysql-data
+  redis_data:
+    driver: local
+    name: chen-stack-redis-data
+  minio_data:
+    driver: local
+    name: chen-stack-minio-data
+  rabbitmq_data:
+    driver: local
+    name: chen-stack-rabbitmq-data
+
+# 网络
+networks:
+  chen-stack-network:
+    driver: bridge
+    name: chen-stack-network
