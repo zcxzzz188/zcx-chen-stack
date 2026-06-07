@@ -384,7 +384,7 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
             List<Integer> columnIds = articleColumns.stream().map(ArticleColumn::getColumnId)
                     .collect(Collectors.toList());
             List<Column> columns = columnMapper.selectBatchIds(columnIds);
-            articleVo.setColumns(BeanUtil.copyToList(columns, ColumnVo.class));
+            articleVo.setColumns(filterVisibleColumns(columns, isOwner));
         }
 
         Boolean isLiked = likeService.isLiked(LikeTypeEnum.ARTICLE.getCode(), articleId);
@@ -496,6 +496,28 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
                                 Collectors.toList())));
         articleVoList.forEach(articleVo -> articleVo
                 .setColumns(articleIdToColumnsMap.getOrDefault(articleVo.getId(), new ArrayList<>())));
+    }
+
+    /**
+     * 过滤文章详情可见的专栏：
+     * 作者本人可见审核通过和待审核专栏，其他人仅可见审核通过专栏。
+     */
+    private List<ColumnVo> filterVisibleColumns(List<Column> columns, boolean isOwner) {
+        if (ObjectUtil.isEmpty(columns)) {
+            return new ArrayList<>();
+        }
+        return columns.stream()
+                .filter(Objects::nonNull)
+                .filter(column -> {
+                    Integer examineStatus = column.getExamineStatus();
+                    if (isOwner) {
+                        return Objects.equals(examineStatus, ExamineStatusEnum.PASS.getCode())
+                                || Objects.equals(examineStatus, ExamineStatusEnum.WAIT.getCode());
+                    }
+                    return Objects.equals(examineStatus, ExamineStatusEnum.PASS.getCode());
+                })
+                .map(column -> BeanUtil.copyProperties(column, ColumnVo.class))
+                .collect(Collectors.toList());
     }
 
     // 异步增加阅读量
@@ -695,12 +717,17 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
         }
         articleDto.setId(article.getId()); // 回显id
         articleDto.setUserId(userId);
+        saveArticleColumnRelations(articleDto.getId(), articleDto.getColumnIds());
         auditArticle(articleDto);
     }
 
     // 文章审核
     private void auditArticle(ArticleDto articleDto) {
         notificationThreadPool.getNotificationPool("article").execute(() -> {
+            Article currentArticle = articleMapper.selectOne(
+                    new LambdaQueryWrapper<Article>()
+                            .select(Article::getId, Article::getEditStatus, Article::getExamineStatus)
+                            .eq(Article::getId, articleDto.getId()));
 
             MessageDto messageDto = new MessageDto();
             messageDto.setType(MessageTypeEnum.SYSTEM.getCode());
@@ -716,31 +743,8 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
                     // 文字审核通过，更新审核状态为通过
                     updateArticle.setExamineStatus(ExamineStatusEnum.PASS.getCode());
                     updateArticle.setTag(articleDto.getTag());
-
-                    // 更新文章所属的专栏
-                    if (ObjectUtil.isNotEmpty(articleDto.getColumnIds())) {
-                        List<Integer> columnIds = articleDto.getColumnIds();
-                        columnIds.forEach(columnId -> {
-                            ArticleColumn articleColumn = articleColumnMapper
-                                    .selectOne(new LambdaQueryWrapper<ArticleColumn>().select(ArticleColumn::getSort)
-                                            .eq(ArticleColumn::getColumnId, columnId)
-                                            .orderByDesc(ArticleColumn::getSort).last("limit 1"));
-                            Integer sort = articleColumn == null ? 0 : articleColumn.getSort();
-                            ArticleColumn newArticleColumn = new ArticleColumn();
-                            newArticleColumn.setArticleId(articleDto.getId());
-                            newArticleColumn.setColumnId(columnId);
-                            newArticleColumn.setSort(sort + 1); // 最大排序值加1
-                            articleColumnMapper.insert(newArticleColumn);
-
-                            // 增加专栏的文章数量
-                            Column column = columnMapper.selectById(columnId);
-                            if (column != null) {
-                                column.setArticleCount(column.getArticleCount() + 1);
-                                columnMapper.updateById(column);
-                            }
-                        });
-                    }
                     articleMapper.updateById(updateArticle);
+                    syncColumnArticleCountByStatusChange(currentArticle, ExamineStatusEnum.PASS.getCode());
                 } else if (auditResult.getStatus().equals(ExamineStatusEnum.NO_PASS.getCode())) {
                     // 文字审核不通过，更新审核状态为不通过，并记录原因，并发送消息给用户
                     updateArticle.setExamineStatus(ExamineStatusEnum.NO_PASS.getCode());
@@ -809,29 +813,11 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
         if (ObjectUtil.isNotEmpty(articleDto.getEditStatus())) {
             if (articleDto.getEditStatus().equals(EditStatusEnum.DRAFT.getCode())
                     || articleDto.getEditStatus().equals(EditStatusEnum.RECYCLE.getCode())) {
-                // 如果设置草稿箱和回收站,则删除专栏文章关联
-                List<ArticleColumn> existingColumns = articleColumnMapper.selectList(
-                        new LambdaQueryWrapper<ArticleColumn>().eq(ArticleColumn::getArticleId, articleDto.getId()));
-
-                if (ObjectUtil.isNotEmpty(existingColumns)) {
-                    // 减少专栏文章数量
-                    existingColumns.forEach(articleColumn -> {
-                        Column column = columnMapper.selectById(articleColumn.getColumnId());
-                        if (column != null && column.getArticleCount() > 0) {
-                            column.setArticleCount(column.getArticleCount() - 1);
-                            columnMapper.updateById(column);
-                        }
-                    });
-
-                    // 删除专栏文章关联
-                    articleColumnMapper.delete(
-                            new LambdaQueryWrapper<ArticleColumn>().eq(ArticleColumn::getArticleId,
-                                    articleDto.getId()));
-                }
+                articleDto.setColumnIds(new ArrayList<>());
             }
         }
         // 更新文章, 处理专栏关联
-        handleColumnAssociation(articleDto);
+        handleColumnAssociation(articleDto, userArticle);
 
         Article article = BeanUtil.copyProperties(articleDto, Article.class);
         // XSS 过滤文章内容，防止 XSS 攻击
@@ -849,56 +835,130 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
      * 
      * @param articleDto 文章DTO
      */
-    private void handleColumnAssociation(ArticleDto articleDto) {
+    private void handleColumnAssociation(ArticleDto articleDto, Article existingArticle) {
         // 先删除现有的专栏关联
         List<ArticleColumn> existingColumns = articleColumnMapper.selectList(
                 new LambdaQueryWrapper<ArticleColumn>().eq(ArticleColumn::getArticleId, articleDto.getId()));
 
         if (ObjectUtil.isNotEmpty(existingColumns)) {
             // 减少原有专栏的文章数量
-            existingColumns.forEach(articleColumn -> {
-                Column column = columnMapper.selectById(articleColumn.getColumnId());
-                if (column != null && column.getArticleCount() > 0) {
-                    column.setArticleCount(column.getArticleCount() - 1);
-                    columnMapper.updateById(column);
-                }
-            });
+            if (shouldCountColumnArticle(existingArticle)) {
+                adjustColumnArticleCountsByArticle(articleDto.getId(), -1);
+            }
 
             // 删除现有专栏关联
             articleColumnMapper.delete(
                     new LambdaQueryWrapper<ArticleColumn>().eq(ArticleColumn::getArticleId, articleDto.getId()));
         }
 
-        // 如果有新的专栏ID，添加新的专栏关联
-        if (ObjectUtil.isNotEmpty(articleDto.getColumnIds())) {
-            List<Integer> columnIds = articleDto.getColumnIds();
-            columnIds.forEach(columnId -> {
-                // 检查专栏是否存在
-                Column column = columnMapper.selectById(columnId);
-                if (column != null) {
-                    // 获取该专栏的最大排序值
-                    ArticleColumn maxSortColumn = articleColumnMapper
-                            .selectOne(new LambdaQueryWrapper<ArticleColumn>()
-                                    .select(ArticleColumn::getSort)
-                                    .eq(ArticleColumn::getColumnId, columnId)
-                                    .orderByDesc(ArticleColumn::getSort)
-                                    .last("limit 1"));
+        saveArticleColumnRelations(articleDto.getId(), articleDto.getColumnIds());
 
-                    Integer sort = maxSortColumn == null ? 0 : maxSortColumn.getSort();
-
-                    // 创建新的专栏文章关联
-                    ArticleColumn newArticleColumn = new ArticleColumn();
-                    newArticleColumn.setArticleId(articleDto.getId());
-                    newArticleColumn.setColumnId(columnId);
-                    newArticleColumn.setSort(sort + 1); // 最大排序值加1
-                    articleColumnMapper.insert(newArticleColumn);
-
-                    // 增加专栏的文章数量
-                    column.setArticleCount(column.getArticleCount() + 1);
-                    columnMapper.updateById(column);
-                }
-            });
+        Article targetArticle = buildTargetArticleForColumnCount(existingArticle, articleDto);
+        if (shouldCountColumnArticle(targetArticle)) {
+            adjustColumnArticleCountsByArticle(articleDto.getId(), 1);
         }
+    }
+
+    private Article buildTargetArticleForColumnCount(Article existingArticle, ArticleDto articleDto) {
+        Article targetArticle = new Article();
+        targetArticle.setId(existingArticle.getId());
+        targetArticle.setEditStatus(ObjectUtil.isNotEmpty(articleDto.getEditStatus())
+                ? articleDto.getEditStatus()
+                : existingArticle.getEditStatus());
+        targetArticle.setExamineStatus(ObjectUtil.isNotEmpty(articleDto.getExamineStatus())
+                ? articleDto.getExamineStatus()
+                : existingArticle.getExamineStatus());
+        return targetArticle;
+    }
+
+    private void saveArticleColumnRelations(Integer articleId, List<Integer> columnIds) {
+        List<Integer> normalizedColumnIds = normalizeColumnIds(columnIds);
+        if (articleId == null || normalizedColumnIds.isEmpty()) {
+            return;
+        }
+
+        normalizedColumnIds.forEach(columnId -> {
+            Column column = columnMapper.selectById(columnId);
+            if (column == null) {
+                return;
+            }
+
+            ArticleColumn maxSortColumn = articleColumnMapper
+                    .selectOne(new LambdaQueryWrapper<ArticleColumn>()
+                            .select(ArticleColumn::getSort)
+                            .eq(ArticleColumn::getColumnId, columnId)
+                            .orderByDesc(ArticleColumn::getSort)
+                            .last("limit 1"));
+
+            Integer sort = maxSortColumn == null ? 0 : maxSortColumn.getSort();
+
+            ArticleColumn newArticleColumn = new ArticleColumn();
+            newArticleColumn.setArticleId(articleId);
+            newArticleColumn.setColumnId(columnId);
+            newArticleColumn.setSort(sort + 1);
+            articleColumnMapper.insert(newArticleColumn);
+        });
+    }
+
+    private List<Integer> normalizeColumnIds(List<Integer> columnIds) {
+        if (ObjectUtil.isEmpty(columnIds)) {
+            return new ArrayList<>();
+        }
+        return columnIds.stream()
+                .filter(Objects::nonNull)
+                .distinct()
+                .collect(Collectors.toList());
+    }
+
+    private boolean shouldCountColumnArticle(Article article) {
+        if (article == null) {
+            return false;
+        }
+        return Objects.equals(article.getEditStatus(), EditStatusEnum.PUBLISHED.getCode())
+                && Objects.equals(article.getExamineStatus(), ExamineStatusEnum.PASS.getCode());
+    }
+
+    private void syncColumnArticleCountByStatusChange(Article article, Integer newExamineStatus) {
+        if (article == null) {
+            return;
+        }
+        boolean countedBefore = shouldCountColumnArticle(article);
+        Article targetArticle = new Article();
+        targetArticle.setId(article.getId());
+        targetArticle.setEditStatus(article.getEditStatus());
+        targetArticle.setExamineStatus(newExamineStatus);
+        boolean countedAfter = shouldCountColumnArticle(targetArticle);
+
+        if (countedBefore == countedAfter) {
+            return;
+        }
+        adjustColumnArticleCountsByArticle(article.getId(), countedAfter ? 1 : -1);
+    }
+
+    private void adjustColumnArticleCountsByArticle(Integer articleId, int delta) {
+        if (articleId == null || delta == 0) {
+            return;
+        }
+        List<ArticleColumn> articleColumns = articleColumnMapper.selectList(
+                new LambdaQueryWrapper<ArticleColumn>().eq(ArticleColumn::getArticleId, articleId));
+        if (ObjectUtil.isEmpty(articleColumns)) {
+            return;
+        }
+
+        articleColumns.stream()
+                .map(ArticleColumn::getColumnId)
+                .filter(Objects::nonNull)
+                .distinct()
+                .forEach(columnId -> {
+                    Column column = columnMapper.selectById(columnId);
+                    if (column == null) {
+                        return;
+                    }
+                    int currentCount = ObjectUtil.defaultIfNull(column.getArticleCount(), 0);
+                    int newCount = delta > 0 ? currentCount + delta : Math.max(currentCount + delta, 0);
+                    column.setArticleCount(newCount);
+                    columnMapper.updateById(column);
+                });
     }
 
     @Override
@@ -1108,7 +1168,8 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
 
         Article article = articleMapper.selectOne(
                 new LambdaQueryWrapper<Article>()
-                        .select(Article::getUserId, Article::getTitle)
+                        .select(Article::getId, Article::getUserId, Article::getTitle, Article::getEditStatus,
+                                Article::getExamineStatus)
                         .eq(Article::getId, articleAuditDto.getArticleId()));
 
         if (ObjectUtil.isEmpty(article)) {
@@ -1122,6 +1183,7 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
         updateArticle.setId(articleAuditDto.getArticleId());
         updateArticle.setExamineStatus(examineStatus);
         articleMapper.updateById(updateArticle);
+        syncColumnArticleCountByStatusChange(article, examineStatus);
 
         // 发送消息给用户
         MessageDto messageDto = new MessageDto();
@@ -1165,7 +1227,8 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
 
         // 批量查询文章信息（只查询需要的字段）
         List<Article> articles = articleMapper.selectList(new LambdaQueryWrapper<Article>()
-                .select(Article::getId, Article::getUserId, Article::getTitle)
+                .select(Article::getId, Article::getUserId, Article::getTitle, Article::getEditStatus,
+                        Article::getExamineStatus)
                 .in(Article::getId, articleIds));
 
         if (articles.size() != articleIds.size()) {
@@ -1210,6 +1273,13 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
 
         // 批量更新文章状态
         this.updateBatchById(updateArticles);
+
+        articleAuditDtos.forEach(auditDto -> {
+            Article article = articleMap.get(auditDto.getArticleId());
+            if (article != null) {
+                syncColumnArticleCountByStatusChange(article, auditDto.getExamineStatus());
+            }
+        });
 
         // 批量发送所有消息
         if (!messages.isEmpty()) {
