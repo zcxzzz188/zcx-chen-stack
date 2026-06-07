@@ -80,6 +80,8 @@ public class ColumnServiceImpl extends ServiceImpl<ColumnMapper, Column> impleme
 
     @Resource
     private EmailUtils emailUtils;
+    @Resource
+    private PhotoServiceImpl photoServiceImpl;
 
     /**
      * 为专栏管理VO设置作者昵称
@@ -686,6 +688,10 @@ public class ColumnServiceImpl extends ServiceImpl<ColumnMapper, Column> impleme
             throw new BlogException(BlogConstants.ExamineColumnError);
         }
 
+        if (examineStatus.equals(ExamineStatusEnum.PASS.getCode())) {
+            photoServiceImpl.passPhotosByUrls(java.util.Collections.singletonList(column.getCoverUrl()));
+        }
+
         // 发送系统邮件通知
         emailUtils.sendSystemEmailNotification(
                 column.getUserId(),
@@ -727,6 +733,9 @@ public class ColumnServiceImpl extends ServiceImpl<ColumnMapper, Column> impleme
 
         // 批量发送系统邮件通知
         for (Column column : columns) {
+            if (examineStatus.equals(ExamineStatusEnum.PASS.getCode())) {
+                photoServiceImpl.passPhotosByUrls(java.util.Collections.singletonList(column.getCoverUrl()));
+            }
             emailUtils.sendSystemEmailNotification(
                     column.getUserId(),
                     examineStatus.equals(ExamineStatusEnum.PASS.getCode()) ? "专栏审核通过" : "专栏审核未通过",

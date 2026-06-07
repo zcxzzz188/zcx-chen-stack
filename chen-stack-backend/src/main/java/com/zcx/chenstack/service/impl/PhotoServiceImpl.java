@@ -39,6 +39,7 @@ import org.springframework.web.multipart.MultipartFile;
 
 import java.util.Date;
 import java.util.HashMap;
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
@@ -96,6 +97,26 @@ public class PhotoServiceImpl extends ServiceImpl<PhotoMapper, Photo> implements
             throw new BlogException(BlogConstants.ExamineStatusError);
         }
         return updatePhoto;
+    }
+
+    public void passPhotosByUrls(Collection<String> urls) {
+        if (ObjectUtil.isEmpty(urls)) {
+            return;
+        }
+
+        List<String> validUrls = urls.stream()
+                .filter(ObjectUtil::isNotEmpty)
+                .distinct()
+                .collect(Collectors.toList());
+        if (ObjectUtil.isEmpty(validUrls)) {
+            return;
+        }
+
+        LambdaUpdateWrapper<Photo> updateWrapper = new LambdaUpdateWrapper<>();
+        updateWrapper.in(Photo::getUrl, validUrls)
+                .ne(Photo::getExamineStatus, ExamineStatusEnum.PASS.getCode())
+                .set(Photo::getExamineStatus, ExamineStatusEnum.PASS.getCode());
+        photoMapper.update(null, updateWrapper);
     }
 
     @Override

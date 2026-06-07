@@ -42,6 +42,8 @@ import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.temporal.TemporalAdjusters;
 import java.util.*;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 /**
@@ -55,6 +57,10 @@ import java.util.stream.Collectors;
 @Service
 @Slf4j
 public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> implements ArticleService {
+    private static final Pattern IMAGE_SRC_PATTERN = Pattern.compile(
+            "<img[^>]+src\\s*=\\s*['\"]([^'\"]+)['\"][^>]*>",
+            Pattern.CASE_INSENSITIVE);
+
     @Resource
     private NotificationThreadPool notificationThreadPool;
     @Resource
@@ -78,6 +84,8 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
 
     @Resource
     private FavoriteService favoriteService;
+    @Resource
+    private PhotoServiceImpl photoServiceImpl;
 
     @Resource
     private HistoryService historyService;
@@ -961,6 +969,26 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
                 });
     }
 
+    private List<String> collectArticlePhotoUrls(Article article) {
+        List<String> photoUrls = new ArrayList<>();
+        if (article == null) {
+            return photoUrls;
+        }
+
+        if (ObjectUtil.isNotEmpty(article.getCoverUrl())) {
+            photoUrls.add(article.getCoverUrl());
+        }
+        if (ObjectUtil.isEmpty(article.getContent())) {
+            return photoUrls;
+        }
+
+        Matcher matcher = IMAGE_SRC_PATTERN.matcher(article.getContent());
+        while (matcher.find()) {
+            photoUrls.add(matcher.group(1));
+        }
+        return photoUrls;
+    }
+
     @Override
     public void deleteArticle(Integer articleId) {
         Article article = articleMapper.selectById(articleId);
@@ -1169,7 +1197,7 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
         Article article = articleMapper.selectOne(
                 new LambdaQueryWrapper<Article>()
                         .select(Article::getId, Article::getUserId, Article::getTitle, Article::getEditStatus,
-                                Article::getExamineStatus)
+                                Article::getExamineStatus, Article::getCoverUrl, Article::getContent)
                         .eq(Article::getId, articleAuditDto.getArticleId()));
 
         if (ObjectUtil.isEmpty(article)) {
@@ -1194,6 +1222,7 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
             // 审核通过
             messageDto
                     .setContent(MessageConstants.ArticleAuditPass(articleAuditDto.getArticleId(), article.getTitle()));
+            photoServiceImpl.passPhotosByUrls(collectArticlePhotoUrls(article));
         } else if (examineStatus.equals(ExamineStatusEnum.NO_PASS.getCode())) {
             // 审核不通过
             messageDto.setContent(MessageConstants.ArticleAuditNotPass(articleAuditDto.getArticleId(),
@@ -1228,7 +1257,7 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
         // 批量查询文章信息（只查询需要的字段）
         List<Article> articles = articleMapper.selectList(new LambdaQueryWrapper<Article>()
                 .select(Article::getId, Article::getUserId, Article::getTitle, Article::getEditStatus,
-                        Article::getExamineStatus)
+                        Article::getExamineStatus, Article::getCoverUrl, Article::getContent)
                 .in(Article::getId, articleIds));
 
         if (articles.size() != articleIds.size()) {
@@ -1242,6 +1271,7 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
         // 准备批量更新的数据
         List<Article> updateArticles = new ArrayList<>();
         List<MessageDto> messages = new ArrayList<>();
+        List<String> photoUrlsToPass = new ArrayList<>();
 
         for (ArticleAuditDto auditDto : articleAuditDtos) {
             Article article = articleMap.get(auditDto.getArticleId());
@@ -1258,6 +1288,7 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
             String messageContent;
             if (examineStatus.equals(ExamineStatusEnum.PASS.getCode())) {
                 messageContent = MessageConstants.ArticleAuditPass(auditDto.getArticleId(), article.getTitle());
+                photoUrlsToPass.addAll(collectArticlePhotoUrls(article));
             } else if (examineStatus.equals(ExamineStatusEnum.NO_PASS.getCode())) {
                 messageContent = MessageConstants.ArticleAuditNotPass(auditDto.getArticleId(), article.getTitle(),
                         examineReason);
@@ -1273,6 +1304,7 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
 
         // 批量更新文章状态
         this.updateBatchById(updateArticles);
+        photoServiceImpl.passPhotosByUrls(photoUrlsToPass);
 
         articleAuditDtos.forEach(auditDto -> {
             Article article = articleMap.get(auditDto.getArticleId());
