@@ -755,7 +755,7 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
                             .auditTextWithDetailsSplit(articleDto.getTitle() + " " + articleDto.getContent());
 
                     if (auditResult.getStatus().equals(ExamineStatusEnum.PASS.getCode())) {
-                        AuditResult photoAuditResult = waitForPhotoAuditResult(
+                        AuditResult photoAuditResult = waitForPhotoAuditResult(articleDto.getUserId(),
                                 collectArticlePhotoUrls(articleDto.getCoverUrl(), articleDto.getContent()));
                         if (photoAuditResult.getStatus().equals(ExamineStatusEnum.PASS.getCode())) {
                             // 文字和图片审核都通过，更新审核状态为通过
@@ -822,16 +822,21 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
                 sendEmail);
     }
 
-    private AuditResult waitForPhotoAuditResult(Collection<String> photoUrls) {
+    private AuditResult waitForPhotoAuditResult(Integer userId, Collection<String> photoUrls) {
         if (ObjectUtil.isEmpty(photoUrls)) {
             return new AuditResult(ExamineStatusEnum.PASS.getCode(), "文章无关联图片");
         }
 
         AuditResult lastResult = new AuditResult(ExamineStatusEnum.PASS.getCode(), "文章无关联图片");
+        boolean reAuditTriggered = false;
         for (int attempt = 0; attempt < PHOTO_AUDIT_MAX_RETRY_TIMES; attempt++) {
             lastResult = photoServiceImpl.auditPhotoUrlsByStatus(photoUrls);
             if (!ExamineStatusEnum.WAIT.getCode().equals(lastResult.getStatus())) {
                 return lastResult;
+            }
+            if (!reAuditTriggered) {
+                reAuditTriggered = true;
+                photoServiceImpl.reAuditPhotosByUrls(userId, photoUrls);
             }
             if (attempt == PHOTO_AUDIT_MAX_RETRY_TIMES - 1) {
                 break;
@@ -874,6 +879,11 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
                 articleDto.setColumnIds(new ArrayList<>());
             }
         }
+        Integer targetEditStatus = resolveTargetEditStatus(articleDto, userArticle);
+        boolean shouldReAudit = shouldTriggerReAuditOnUpdate(articleDto, userArticle, targetEditStatus);
+        if (shouldReAudit) {
+            articleDto.setExamineStatus(ExamineStatusEnum.WAIT.getCode());
+        }
         // 更新文章, 处理专栏关联
         handleColumnAssociation(articleDto, userArticle);
 
@@ -882,9 +892,16 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
         article.setTitle(XssUtils.cleanPlainText(article.getTitle()));
         article.setContent(XssUtils.cleanRichText(article.getContent()));
         article.setDescription(XssUtils.cleanPlainText(article.getDescription()));
+        articleDto.setTitle(article.getTitle());
+        articleDto.setContent(article.getContent());
+        articleDto.setDescription(article.getDescription());
 
         if (articleMapper.updateById(article) < 1) {
             throw new BlogException(BlogConstants.UpdateArticleError);
+        }
+        if (shouldReAudit) {
+            articleDto.setUserId(userArticle.getUserId());
+            auditArticle(articleDto);
         }
     }
 
@@ -927,6 +944,74 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
                 ? articleDto.getExamineStatus()
                 : existingArticle.getExamineStatus());
         return targetArticle;
+    }
+
+    private Integer resolveTargetEditStatus(ArticleDto articleDto, Article existingArticle) {
+        return ObjectUtil.isNotEmpty(articleDto.getEditStatus())
+                ? articleDto.getEditStatus()
+                : existingArticle.getEditStatus();
+    }
+
+    private boolean shouldTriggerReAuditOnUpdate(ArticleDto articleDto, Article existingArticle, Integer targetEditStatus) {
+        if (!Objects.equals(targetEditStatus, EditStatusEnum.PUBLISHED.getCode())) {
+            return false;
+        }
+
+        if (!Objects.equals(existingArticle.getExamineStatus(), ExamineStatusEnum.PASS.getCode())) {
+            return true;
+        }
+
+        if (!Objects.equals(existingArticle.getEditStatus(), EditStatusEnum.PUBLISHED.getCode())) {
+            return true;
+        }
+
+        if (!Objects.equals(cleanPlainTextForCompare(resolveUpdatedValue(articleDto.getTitle(), existingArticle.getTitle())),
+                existingArticle.getTitle())) {
+            return true;
+        }
+        if (!Objects.equals(
+                cleanPlainTextForCompare(resolveUpdatedValue(articleDto.getDescription(), existingArticle.getDescription())),
+                existingArticle.getDescription())) {
+            return true;
+        }
+        if (!Objects.equals(cleanRichTextForCompare(resolveUpdatedValue(articleDto.getContent(), existingArticle.getContent())),
+                existingArticle.getContent())) {
+            return true;
+        }
+        if (!Objects.equals(resolveUpdatedValue(articleDto.getCoverUrl(), existingArticle.getCoverUrl()),
+                existingArticle.getCoverUrl())) {
+            return true;
+        }
+        if (!Objects.equals(resolveUpdatedValue(articleDto.getTag(), existingArticle.getTag()), existingArticle.getTag())) {
+            return true;
+        }
+        if (!Objects.equals(resolveUpdatedValue(articleDto.getReprintType(), existingArticle.getReprintType()),
+                existingArticle.getReprintType())) {
+            return true;
+        }
+        if (!Objects.equals(resolveUpdatedValue(articleDto.getReprintUrl(), existingArticle.getReprintUrl()),
+                existingArticle.getReprintUrl())) {
+            return true;
+        }
+        return false;
+    }
+
+    private String cleanPlainTextForCompare(String value) {
+        if (value == null) {
+            return null;
+        }
+        return XssUtils.cleanPlainText(value);
+    }
+
+    private String cleanRichTextForCompare(String value) {
+        if (value == null) {
+            return null;
+        }
+        return XssUtils.cleanRichText(value);
+    }
+
+    private <T> T resolveUpdatedValue(T updatedValue, T existingValue) {
+        return updatedValue != null ? updatedValue : existingValue;
     }
 
     private void saveArticleColumnRelations(Integer articleId, List<Integer> columnIds) {

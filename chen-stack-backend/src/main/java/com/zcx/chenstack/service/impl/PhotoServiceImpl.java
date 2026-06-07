@@ -168,6 +168,52 @@ public class PhotoServiceImpl extends ServiceImpl<PhotoMapper, Photo> implements
         return new AuditResult(ExamineStatusEnum.PASS.getCode(), "关联图片审核通过");
     }
 
+    public void reAuditPhotosByUrls(Integer userId, Collection<String> urls) {
+        if (ObjectUtil.isEmpty(urls)) {
+            return;
+        }
+
+        List<String> validUrls = urls.stream()
+                .filter(ObjectUtil::isNotEmpty)
+                .distinct()
+                .collect(Collectors.toList());
+        if (ObjectUtil.isEmpty(validUrls)) {
+            return;
+        }
+
+        List<Photo> photos = photoMapper.selectList(new LambdaQueryWrapper<Photo>()
+                .select(Photo::getId, Photo::getUserId, Photo::getUrl, Photo::getExamineStatus)
+                .in(Photo::getUrl, validUrls)
+                .orderByDesc(Photo::getId));
+        Map<String, Photo> photoMap = photos.stream()
+                .collect(Collectors.toMap(Photo::getUrl, photo -> photo, (current, ignored) -> current));
+
+        validUrls.forEach(url -> {
+            try {
+                Photo photo = photoMap.get(url);
+                if (ObjectUtil.isNotEmpty(photo)) {
+                    if (ExamineStatusEnum.PASS.getCode().equals(photo.getExamineStatus())
+                            || ExamineStatusEnum.NO_PASS.getCode().equals(photo.getExamineStatus())) {
+                        return;
+                    }
+                    refreshPhotoAuditStatus(photo);
+                    return;
+                }
+
+                Photo newPhoto = new Photo();
+                newPhoto.setUserId(userId);
+                newPhoto.setUrl(url);
+                newPhoto.setExamineStatus(ExamineStatusEnum.WAIT.getCode());
+                newPhoto.setCreateTime(new Date());
+                newPhoto.setUpdateTime(new Date());
+                photoMapper.insert(newPhoto);
+                refreshPhotoAuditStatus(newPhoto);
+            } catch (Exception e) {
+                log.error("重新审核图片失败，userId: {}, url: {}", userId, url, e);
+            }
+        });
+    }
+
     @Override
     public String uploadArticle(MultipartFile file) {
         Integer userId = SecurityUtils.getUserId();
@@ -312,6 +358,19 @@ public class PhotoServiceImpl extends ServiceImpl<PhotoMapper, Photo> implements
                 log.error("头像异步审核失败，用户ID: {}", userId, e);
             }
         });
+    }
+
+    private void refreshPhotoAuditStatus(Photo photo) {
+        if (ObjectUtil.isEmpty(photo) || ObjectUtil.isEmpty(photo.getId()) || ObjectUtil.isEmpty(photo.getUrl())) {
+            return;
+        }
+        try {
+            AuditResult imageAuditResult = imageAuditUtils.auditImageWithDetails(photo.getUrl());
+            Photo updatePhoto = setPhotoExamineStatus(photo, imageAuditResult.getStatus());
+            photoMapper.updateById(updatePhoto);
+        } catch (Exception e) {
+            log.error("更新图片审核状态失败，photoId: {}, url: {}", photo.getId(), photo.getUrl(), e);
+        }
     }
 
     // 审核通过后更新用户头像
