@@ -142,21 +142,65 @@
           </p>
           <!-- 社交链接 -->
           <div class="footer-social">
-            <a
-              href="javascript:void(0)"
-              class="social-link"
-              title="GitHub"
+            <button
+              type="button"
+              class="social-link social-link-qq"
+              title="QQ 联系"
+              aria-label="QQ 联系"
+              @click="openContactQr('qq')"
             >
-              <svg-icon name="github" width="18px" height="18px" />
-            </a>
-            <a
-              href="javascript:void(0)"
-              class="social-link"
-              title="Gitee"
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                class="social-link-icon"
+                viewBox="0 0 24 24"
+                width="18"
+                height="18"
+                fill="none"
+                aria-hidden="true"
+              >
+                <path d="M0 0h24v24H0z" fill="none" />
+                <path
+                  fill="currentColor"
+                  fill-rule="evenodd"
+                  d="M12.01 22.597c-.737.076-2.183.15-3.5.153a20 20 0 0 1-1.893-.07a5 5 0 0 1-.728-.12a1.7 1.7 0 0 1-.34-.123a1 1 0 0 1-.41-.37a1.1 1.1 0 0 1-.152-.684c.026-.235.123-.426.226-.569c.192-.268.476-.462.707-.597q.154-.088.319-.167a6.5 6.5 0 0 1-1.051-1.818a6 6 0 0 1-.379.431a2.4 2.4 0 0 1-.373.317c-.108.071-.369.229-.702.188a.87.87 0 0 1-.611-.39a1.3 1.3 0 0 1-.171-.39a3.3 3.3 0 0 1-.091-.908c.013-.72.174-1.76.613-3.173c.34-1.092.719-2.032 1.229-3.296l.007-.017l.296-.734c-.039-2.318.42-4.526 1.529-6.19c1.156-1.734 2.98-2.815 5.466-2.82h.018c2.486.005 4.31 1.086 5.466 2.82c1.108 1.664 1.568 3.872 1.53 6.19q.154.387.295.734l.007.018c.51 1.263.89 2.203 1.229 3.295c.439 1.412.6 2.452.613 3.173c.007.356-.023.663-.09.908c-.034.12-.085.26-.172.39a.87.87 0 0 1-.611.39c-.333.04-.594-.117-.702-.188a2.4 2.4 0 0 1-.373-.317a6 6 0 0 1-.379-.431a6.5 6.5 0 0 1-1.05 1.818q.163.078.317.167c.232.135.515.33.708.598c.103.142.2.333.226.567c.027.246-.032.481-.152.685a1 1 0 0 1-.41.37a1.7 1.7 0 0 1-.34.124a5 5 0 0 1-.728.119c-.531.052-1.206.071-1.893.07c-1.317-.002-2.763-.077-3.5-.153m-5.502-12.22c-.057-2.19.372-4.118 1.275-5.475c.877-1.316 2.235-2.15 4.227-2.152c1.992.003 3.35.836 4.227 2.152c.903 1.357 1.332 3.285 1.275 5.476a.8.8 0 0 0 .053.298l.354.88c.518 1.281.875 2.168 1.194 3.196c.256.822.401 1.48.477 1.987c-.274-.389-.49-.733-.51-.765a.75.75 0 0 0-.738-.347h-.002a.75.75 0 0 0-.647.742c-.002.996-.531 2.384-1.727 3.398a.75.75 0 0 0-.068 1.08v.001a.76.76 0 0 0 .332.21c.141.043.311.1.486.167c-.36.018-.77.026-1.204.025c-1.325-.002-2.86-.087-3.502-.157c-.643.07-2.177.155-3.502.157a25 25 0 0 1-1.205-.025a8 8 0 0 1 .487-.167a.75.75 0 0 0 .331-.21h.001a.75.75 0 0 0 .186-.636v-.001a.75.75 0 0 0-.254-.444c-1.196-1.014-1.725-2.402-1.727-3.398a.75.75 0 0 0-.647-.742h-.002a.75.75 0 0 0-.739.347c-.02.032-.235.376-.509.765a13.5 13.5 0 0 1 .477-1.987c.319-1.028.676-1.914 1.194-3.196l.354-.88a.8.8 0 0 0 .053-.298"
+                  clip-rule="evenodd"
+                />
+              </svg>
+            </button>
+            <button
+              type="button"
+              class="social-link social-link-wechat"
+              title="微信联系"
+              aria-label="微信联系"
+              @click="openContactQr('wechat')"
             >
-              <svg-icon name="gitee" width="18px" height="18px" />
-            </a>
-            <a href="javascript:void(0)" class="social-link" title="联系邮箱">
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                class="social-link-icon"
+                viewBox="0 0 24 24"
+                width="18"
+                height="18"
+                fill="none"
+                aria-hidden="true"
+              >
+                <path d="M0 0h24v24H0z" fill="none" />
+                <path
+                  fill="currentColor"
+                  d="M15.85 8.14c.39 0 .77.03 1.14.08C16.31 5.25 13.19 3 9.44 3c-4.25 0-7.7 2.88-7.7 6.43c0 2.05 1.15 3.86 2.94 5.04L3.67 16.5l2.76-1.19c.59.21 1.21.38 1.87.47c-.09-.39-.14-.79-.14-1.21c-.01-3.54 3.44-6.43 7.69-6.43M12 5.89a.96.96 0 1 1 0 1.92a.96.96 0 0 1 0-1.92M6.87 7.82a.96.96 0 1 1 0-1.92a.96.96 0 0 1 0 1.92"
+                />
+                <path
+                  fill="currentColor"
+                  d="M22.26 14.57c0-2.84-2.87-5.14-6.41-5.14s-6.41 2.3-6.41 5.14s2.87 5.14 6.41 5.14c.58 0 1.14-.08 1.67-.2L20.98 21l-1.2-2.4c1.5-.94 2.48-2.38 2.48-4.03m-8.34-.32a.96.96 0 1 1 .96-.96c.01.53-.43.96-.96.96m3.85 0a.96.96 0 1 1 0-1.92a.96.96 0 0 1 0 1.92"
+                />
+              </svg>
+            </button>
+            <button
+              type="button"
+              class="social-link social-link-email"
+              title="复制邮箱"
+              aria-label="复制邮箱"
+              @click="copyEmail"
+            >
               <svg
                 width="18"
                 height="18"
@@ -170,7 +214,7 @@
                 <rect x="2" y="4" width="20" height="16" rx="2" />
                 <path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7" />
               </svg>
-            </a>
+            </button>
           </div>
         </div>
 
@@ -210,11 +254,39 @@
         </div>
       </div>
     </footer>
+
+    <Teleport to="body">
+      <div
+        v-if="contactQrVisible"
+        class="contact-qr-overlay"
+        @wheel.prevent
+        @touchmove.prevent
+      >
+        <div class="contact-qr-panel">
+          <button
+            type="button"
+            class="contact-qr-close"
+            aria-label="关闭二维码预览"
+            title="关闭"
+            @click="closeContactQr"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M6 6l12 12M18 6 6 18" />
+            </svg>
+          </button>
+          <img
+            :src="contactQrImage"
+            alt="二维码预览"
+            class="contact-qr-image"
+          />
+        </div>
+      </div>
+    </Teleport>
   </div>
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, watch, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
 import { Loading, Picture } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
@@ -251,6 +323,21 @@ const currentYear = ref(new Date().getFullYear())
 const contentSection = ref(null)
 const articlesSectionRef = ref(null)
 const hotTags = ref([]) // 热门标签
+const contactQrVisible = ref(false)
+const contactQrImage = ref('/contact/qq-qr.png')
+
+const contactQrMap = {
+  qq: {
+    image: '/contact/qq-qr.png',
+  },
+  wechat: {
+    image: '/contact/wechat-qr.png',
+  },
+}
+let bodyStyleSnapshot = null
+let htmlStyleSnapshot = null
+let lockedScrollY = 0
+let bodyScrollLocked = false
 
 // 社区统计数据
 const stats = ref({
@@ -370,6 +457,125 @@ const getArticleDetailRoute = (article) => `/user/${article.userId}/article/${ar
 const goToArticle = (article) => router.push(getArticleDetailRoute(article))
 const navigateTo = (path) => router.push(path)
 
+const openContactQr = (type) => {
+  contactQrImage.value = contactQrMap[type]?.image || contactQrMap.qq.image
+  contactQrVisible.value = true
+}
+
+const copyEmailText = async (email) => {
+  if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(email)
+    return true
+  }
+
+  if (typeof document === 'undefined') return false
+
+  const textarea = document.createElement('textarea')
+  textarea.value = email
+  textarea.setAttribute('readonly', 'true')
+  textarea.style.position = 'fixed'
+  textarea.style.left = '-9999px'
+  textarea.style.top = '0'
+  document.body.appendChild(textarea)
+  textarea.select()
+
+  let success = false
+  try {
+    success = document.execCommand('copy')
+  } catch (error) {
+    success = false
+  } finally {
+    document.body.removeChild(textarea)
+  }
+
+  return success
+}
+
+const copyEmail = async () => {
+  const email = '2236440482@qq.com'
+  try {
+    const success = await copyEmailText(email)
+    if (success) {
+      ElMessage.success('邮箱已复制')
+    } else {
+      ElMessage.warning(`请手动复制邮箱：${email}`)
+    }
+  } catch (error) {
+    ElMessage.warning(`请手动复制邮箱：${email}`)
+  }
+}
+
+const closeContactQr = () => {
+  contactQrVisible.value = false
+}
+
+const lockBodyScroll = () => {
+  if (bodyScrollLocked || typeof window === 'undefined' || typeof document === 'undefined') {
+    return
+  }
+
+  const { body, documentElement: html } = document
+  lockedScrollY = window.scrollY || window.pageYOffset || 0
+  bodyStyleSnapshot = {
+    overflow: body.style.overflow,
+    position: body.style.position,
+    top: body.style.top,
+    left: body.style.left,
+    right: body.style.right,
+    width: body.style.width,
+    overscrollBehavior: body.style.overscrollBehavior,
+  }
+  htmlStyleSnapshot = {
+    overflow: html.style.overflow,
+    overscrollBehavior: html.style.overscrollBehavior,
+  }
+
+  html.style.overflow = 'hidden'
+  html.style.overscrollBehavior = 'none'
+  body.style.overflow = 'hidden'
+  body.style.position = 'fixed'
+  body.style.top = `-${lockedScrollY}px`
+  body.style.left = '0'
+  body.style.right = '0'
+  body.style.width = '100%'
+  body.style.overscrollBehavior = 'none'
+  bodyScrollLocked = true
+}
+
+const restoreBodyScroll = () => {
+  if (!bodyScrollLocked || typeof window === 'undefined' || typeof document === 'undefined') {
+    return
+  }
+
+  const { body, documentElement: html } = document
+
+  body.style.overflow = bodyStyleSnapshot?.overflow || ''
+  body.style.position = bodyStyleSnapshot?.position || ''
+  body.style.top = bodyStyleSnapshot?.top || ''
+  body.style.left = bodyStyleSnapshot?.left || ''
+  body.style.right = bodyStyleSnapshot?.right || ''
+  body.style.width = bodyStyleSnapshot?.width || ''
+  body.style.overscrollBehavior = bodyStyleSnapshot?.overscrollBehavior || ''
+
+  html.style.overflow = htmlStyleSnapshot?.overflow || ''
+  html.style.overscrollBehavior = htmlStyleSnapshot?.overscrollBehavior || ''
+
+  bodyStyleSnapshot = null
+  htmlStyleSnapshot = null
+  bodyScrollLocked = false
+
+  window.scrollTo(0, lockedScrollY)
+  lockedScrollY = 0
+}
+
+watch(contactQrVisible, (visible) => {
+  if (visible) {
+    lockBodyScroll()
+  } else {
+    restoreBodyScroll()
+  }
+})
+
 // 跳转到标签搜索
 const navigateToTag = (tagName) => {
   router.push({
@@ -473,6 +679,10 @@ onMounted(async () => {
   setTimeout(() => {
     observeElements()
   }, 100)
+})
+
+onBeforeUnmount(() => {
+  restoreBodyScroll()
 })
 </script>
 
@@ -1228,24 +1438,51 @@ html.dark {
       gap: 8px;
     }
 
-    .social-link {
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      width: 36px;
-      height: 36px;
-      border-radius: 8px;
-      background: var(--bg-page);
-      border: 1px solid var(--border);
-      color: var(--text-secondary);
-      transition: all 0.2s ease;
+  .social-link {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 36px;
+    height: 36px;
+    border-radius: 8px;
+    background: var(--bg-page);
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+    font: inherit;
+    transition: all 0.2s ease;
+    cursor: pointer;
+    padding: 0;
+    text-decoration: none;
 
-      &:hover {
-        border-color: var(--accent);
-        color: var(--accent);
-        transform: translateY(-2px);
-      }
+    &:hover {
+      border-color: var(--accent);
+      color: var(--accent);
+      transform: translateY(-2px);
     }
+
+    &:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+    }
+  }
+
+  .social-link-icon {
+    width: 18px;
+    height: 18px;
+    display: block;
+  }
+
+  .social-link-qq {
+    color: #12b7f5;
+  }
+
+  .social-link-wechat {
+    color: #07c160;
+  }
+
+  .social-link-email {
+    color: #f97316;
+  }
   }
 
   // 导航区域组
@@ -1354,6 +1591,91 @@ html.dark {
     }
 
   }
+}
+
+.contact-qr-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 4000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgba(15, 23, 42, 0.62);
+  backdrop-filter: blur(6px);
+}
+
+.contact-qr-panel {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  max-width: min(92vw, 380px);
+  padding: 14px;
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.96);
+  border: 1px solid rgba(226, 232, 240, 0.95);
+  box-shadow: 0 24px 64px rgba(15, 23, 42, 0.28);
+  overflow: hidden;
+}
+
+.contact-qr-image {
+  display: block;
+  width: min(320px, calc(92vw - 28px));
+  max-height: calc(100vh - 120px);
+  object-fit: contain;
+  border-radius: 14px;
+  background: #fff;
+}
+
+.contact-qr-close {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  width: 30px;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 9999px;
+  background: rgba(255, 255, 255, 0.72);
+  color: #475569;
+  cursor: pointer;
+  padding: 0;
+  opacity: 0.28;
+  transform: scale(0.92);
+  transition: opacity 0.18s ease, transform 0.18s ease, background 0.18s ease,
+    border-color 0.18s ease, color 0.18s ease;
+  box-shadow: 0 10px 22px rgba(148, 163, 184, 0.18);
+
+  &:hover {
+    background: rgba(255, 255, 255, 0.92);
+    color: #334155;
+    border-color: rgba(148, 163, 184, 0.34);
+  }
+
+  &:focus-visible {
+    outline: 2px solid rgba(148, 163, 184, 0.5);
+    outline-offset: 2px;
+    opacity: 1;
+    transform: scale(1);
+  }
+
+  svg {
+    width: 14px;
+    height: 14px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2.4;
+    stroke-linecap: round;
+  }
+}
+
+.contact-qr-panel:hover .contact-qr-close,
+.contact-qr-close:focus-visible {
+  opacity: 1;
+  transform: scale(1);
 }
 
 // ===== 动画 =====
