@@ -87,7 +87,12 @@
                   </template>
                 </el-image>
                 <div class="other-column-info">
-                  <h5 class="other-column-title">{{ column.name }}</h5>
+                  <div class="other-column-title-row">
+                    <h5 class="other-column-title">{{ column.name }}</h5>
+                    <span v-if="isPendingColumn(column.examineStatus)" class="column-status-badge">
+                      审核中
+                    </span>
+                  </div>
                   <span class="other-column-count">{{ column.articleCount || 0 }} 篇</span>
                 </div>
               </div>
@@ -128,7 +133,12 @@
                   </el-image>
 
                   <div class="column-details">
-                    <h1 class="column-title">{{ columnInfo.name }}</h1>
+                    <div class="column-title-row">
+                      <h1 class="column-title">{{ columnInfo.name }}</h1>
+                      <span v-if="isPendingColumn(columnInfo.examineStatus)" class="column-pending-tip">
+                        审核中，仅自己可见
+                      </span>
+                    </div>
                     <div class="column-description-container">
                       <p class="column-description" :class="{ expanded: isDescExpanded }">
                         {{ columnInfo.description || '暂无描述' }}
@@ -366,6 +376,10 @@ const followButtonText = computed(() => {
 // 使用统一的数字格式化工具函数
 const formatNumber = (num) => {
   return formatCompactNumber(num)
+}
+
+const isPendingColumn = (examineStatus) => {
+  return examineStatus === 0
 }
 
 // 切换专栏描述展开/收起
@@ -764,16 +778,38 @@ onUnmounted(() => {
             flex: 1;
             min-width: 0;
 
+            .other-column-title-row {
+              display: flex;
+              align-items: center;
+              gap: 8px;
+              margin-bottom: 4px;
+              min-width: 0;
+            }
+
             .other-column-title {
               font-size: 14px;
               font-weight: 500;
               color: var(--el-text-color-primary);
-              margin: 0 0 4px 0;
+              margin: 0;
+              flex: 1;
+              min-width: 0;
               display: -webkit-box;
               -webkit-line-clamp: 1;
               line-clamp: 1;
               -webkit-box-orient: vertical;
               overflow: hidden;
+            }
+
+            .column-status-badge {
+              flex-shrink: 0;
+              display: inline-flex;
+              align-items: center;
+              padding: 2px 6px;
+              border-radius: 999px;
+              font-size: 11px;
+              line-height: 1.4;
+              color: var(--el-color-warning-dark-2);
+              background-color: var(--el-color-warning-light-9);
             }
 
             .other-column-count {
@@ -862,12 +898,31 @@ onUnmounted(() => {
           flex: 1;
           min-width: 0;
 
+          .column-title-row {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            flex-wrap: wrap;
+            margin-bottom: 12px;
+          }
+
           .column-title {
             font-size: 24px;
             font-weight: 700;
-            margin: 0 0 12px 0;
+            margin: 0;
             color: var(--el-text-color-primary);
             line-height: 1.3;
+          }
+
+          .column-pending-tip {
+            display: inline-flex;
+            align-items: center;
+            padding: 4px 10px;
+            border-radius: 999px;
+            font-size: 12px;
+            color: var(--el-color-warning-dark-2);
+            background-color: var(--el-color-warning-light-9);
+            border: 1px solid var(--el-color-warning-light-7);
           }
 
           .column-description-container {

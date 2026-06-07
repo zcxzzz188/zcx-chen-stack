@@ -18,6 +18,7 @@ import com.zcx.chenstack.domain.entity.Column;
 import com.zcx.chenstack.domain.entity.SysUser;
 import com.zcx.chenstack.domain.enums.ExamineStatusEnum;
 import com.zcx.chenstack.domain.enums.ShowStatusEnum;
+import com.zcx.chenstack.domain.enums.StatusEnum;
 import com.zcx.chenstack.domain.vo.*;
 import com.zcx.chenstack.exception.BlogException;
 import com.zcx.chenstack.mapper.ArticleColumnMapper;
@@ -158,13 +159,29 @@ public class ColumnServiceImpl extends ServiceImpl<ColumnMapper, Column> impleme
         }
     }
 
+    private boolean isNormalCurrentUser(Integer userId) {
+        if (userId == null || userId == 0) {
+            return false;
+        }
+        SysUser currentUser = sysUserMapper.selectById(userId);
+        return currentUser != null && StatusEnum.NORMAL.getStatus().equals(currentUser.getStatus());
+    }
+
     @Override
     public List<ColumnVo> getColumnList() {
         Integer userId = SecurityUtils.getUserId();
-        List<Column> columns = columnMapper.selectList(new LambdaQueryWrapper<Column>()
-                .eq(userId != 0, Column::getUserId, userId)
-                .eq(Column::getExamineStatus, ExamineStatusEnum.PASS.getCode()) // 只返回审核通过的专栏
-                .orderByAsc(Column::getSort)); // 按排序值正序排列
+        boolean canViewOwnPendingColumns = isNormalCurrentUser(userId);
+        LambdaQueryWrapper<Column> queryWrapper = new LambdaQueryWrapper<Column>()
+                .orderByAsc(Column::getSort); // 按排序值正序排列
+
+        if (canViewOwnPendingColumns) {
+            queryWrapper.eq(Column::getUserId, userId)
+                    .in(Column::getExamineStatus, ExamineStatusEnum.PASS.getCode(), ExamineStatusEnum.WAIT.getCode());
+        } else {
+            queryWrapper.eq(Column::getExamineStatus, ExamineStatusEnum.PASS.getCode()); // 未登录或非正常用户只返回审核通过的专栏
+        }
+
+        List<Column> columns = columnMapper.selectList(queryWrapper);
         List<ColumnVo> columnVoList = BeanUtil.copyToList(columns, ColumnVo.class);
         return columnVoList;
     }
@@ -172,11 +189,20 @@ public class ColumnServiceImpl extends ServiceImpl<ColumnMapper, Column> impleme
     @Override
     public PageVo<List<ColumnVo>> getColumnListByUserId(Integer userId, Integer pageNum, Integer pageSize) {
         Page<Column> page = new Page<>(pageNum, pageSize);
+        Integer currentUserId = SecurityUtils.getUserId();
+        boolean canViewOwnPendingColumns = userId != null
+                && userId.equals(currentUserId)
+                && isNormalCurrentUser(currentUserId);
         LambdaQueryWrapper<Column> qw = new LambdaQueryWrapper<Column>()
                 .eq(Column::getUserId, userId)
                 .eq(Column::getShowStatus, ShowStatusEnum.PUBLIC.getCode())
-                .eq(Column::getExamineStatus, ExamineStatusEnum.PASS.getCode()) // 只返回审核通过的专栏
                 .orderByAsc(Column::getSort); // 按排序值正序排列
+
+        if (canViewOwnPendingColumns) {
+            qw.in(Column::getExamineStatus, ExamineStatusEnum.PASS.getCode(), ExamineStatusEnum.WAIT.getCode());
+        } else {
+            qw.eq(Column::getExamineStatus, ExamineStatusEnum.PASS.getCode()); // 非本人或非正常用户只返回公开且审核通过的专栏
+        }
 
         List<Column> columns = columnMapper.selectPage(page, qw).getRecords();
         List<ColumnVo> columnVoList = BeanUtil.copyToList(columns, ColumnVo.class);

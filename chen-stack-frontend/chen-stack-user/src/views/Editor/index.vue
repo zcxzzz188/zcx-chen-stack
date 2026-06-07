@@ -276,10 +276,21 @@
                           :checked="isColumnSelected(item.id)"
                           :disabled="columns.length >= 3 && !isColumnSelected(item.id)"
                         >
-                          <span>{{ item.name }}</span>
+                          <span class="column-option-label">
+                            <span>{{ item.name }}</span>
+                            <span
+                              v-if="item.examineStatus === 0"
+                              class="column-pending-badge"
+                            >
+                              审核中
+                            </span>
+                          </span>
                         </el-checkbox>
                       </div>
                     </div>
+                  </div>
+                  <div v-if="hasPendingSelectedColumn" class="column-pending-hint">
+                    该专栏审核中，仅你自己可见；审核通过后，其他用户才能看到。
                   </div>
                 </div>
               </div>
@@ -526,6 +537,9 @@ const article = ref({
 
 // 当前选择的专栏
 const columns = ref([])
+const hasPendingSelectedColumn = computed(() =>
+  columns.value.some((column) => column.examineStatus === 0),
+)
 
 // 是否是草稿
 const isDraft = ref(false)
@@ -1292,21 +1306,27 @@ const inputColumn = ref('')
 // 用户专栏列表是否显示
 const showColumnDropdown = ref(false)
 
+const normalizeColumnOptions = (response) => {
+  const columnList = Array.isArray(response?.data?.data)
+    ? response.data.data
+    : Array.isArray(response?.data)
+      ? response.data
+      : []
+
+  return columnList
+    .slice()
+    .sort((a, b) => a.sort - b.sort)
+    .map((item) => ({
+      ...item,
+    }))
+}
+
 // 鼠标悬停时获取最新专栏列表并显示
 const showColumnListOnHover = async () => {
   showColumnDropdown.value = true
   try {
     const res = await getColumnList()
-    allColumns.value = res.data
-      .sort((a, b) => {
-        return a.sort - b.sort
-      })
-      .map((item) => {
-        return {
-          id: item.id,
-          name: item.name,
-        }
-      })
+    allColumns.value = normalizeColumnOptions(res)
   } catch (error) {
     // 静默处理
   }
@@ -1371,16 +1391,7 @@ const addNewColumnn = () => {
       .then((res) => {
         // 刷新专栏列表
         getColumnList().then((res) => {
-          allColumns.value = res.data
-            .sort((a, b) => {
-              return a.sort - b.sort
-            })
-            .map((item) => {
-              return {
-                id: item.id,
-                name: item.name,
-              }
-            })
+          allColumns.value = normalizeColumnOptions(res)
         })
         ElMessage.success('新增专栏成功')
       })
@@ -1395,16 +1406,7 @@ const addNewColumnn = () => {
 // 用户的专栏列表
 const allColumns = ref([])
 getColumnList().then((res) => {
-  allColumns.value = res.data.data
-    .sort((a, b) => {
-      return a.sort - b.sort
-    })
-    .map((item) => {
-      return {
-        id: item.id,
-        name: item.name,
-      }
-    })
+  allColumns.value = normalizeColumnOptions(res)
 })
 
 // 判断专栏是否已选择
@@ -2103,8 +2105,32 @@ const handleSaveDraft = async () => {
                         background-color: transparent;
                       }
                     }
+
+                    .column-option-label {
+                      display: inline-flex;
+                      align-items: center;
+                      gap: 8px;
+                    }
+
+                    .column-pending-badge {
+                      display: inline-flex;
+                      align-items: center;
+                      padding: 2px 6px;
+                      border-radius: 999px;
+                      font-size: 12px;
+                      line-height: 1.2;
+                      color: var(--el-color-warning-dark-2);
+                      background-color: var(--el-color-warning-light-9);
+                    }
                   }
                 }
+              }
+
+              .column-pending-hint {
+                margin-top: 8px;
+                font-size: 12px;
+                line-height: 1.6;
+                color: var(--el-color-warning-dark-2);
               }
             }
           }
