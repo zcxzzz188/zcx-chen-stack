@@ -8,6 +8,7 @@ import com.zcx.chenstack.domain.entity.Article;
 import com.zcx.chenstack.domain.entity.Comment;
 import com.zcx.chenstack.domain.entity.Like;
 import com.zcx.chenstack.domain.entity.SysUser;
+import com.zcx.chenstack.domain.enums.ExamineStatusEnum;
 import com.zcx.chenstack.domain.enums.LikeTypeEnum;
 import com.zcx.chenstack.exception.BlogException;
 import com.zcx.chenstack.mapper.ArticleMapper;
@@ -62,6 +63,10 @@ public class LikeServiceImpl extends ServiceImpl<LikeMapper, Like> implements Li
             throw new BlogException(BlogConstants.LikeTypeError);
         }
 
+        if (LikeTypeEnum.COMMENT.equals(likeType)) {
+            validateCommentLikeTarget(typeId);
+        }
+
         // 查询是否已点赞
         LambdaQueryWrapper<Like> queryWrapper = new LambdaQueryWrapper<>();
         queryWrapper.eq(Like::getUserId, userId)
@@ -106,6 +111,16 @@ public class LikeServiceImpl extends ServiceImpl<LikeMapper, Like> implements Li
                 throw new BlogException(BlogConstants.UpdateCommentLikeCountError);
             }
             throw new BlogException(BlogConstants.LikeTypeError);
+        }
+    }
+
+    private void validateCommentLikeTarget(Integer commentId) {
+        Comment comment = commentMapper.selectById(commentId);
+        if (comment == null || (comment.getIsDeleted() != null && comment.getIsDeleted() == 1)) {
+            throw new BlogException(BlogConstants.NotFoundComment);
+        }
+        if (!ExamineStatusEnum.PASS.getCode().equals(comment.getExamineStatus())) {
+            throw new BlogException("评论审核通过后才能点赞");
         }
     }
 

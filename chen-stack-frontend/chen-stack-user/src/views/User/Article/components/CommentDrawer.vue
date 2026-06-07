@@ -200,41 +200,16 @@ const loadMoreComments = () => {
 }
 
 // 处理评论添加
-const handleCommentAdded = (newComment) => {
+const handleCommentAdded = async () => {
   // 重新加载评论列表以获取最新数据
-  fetchCommentList(true)
-  ElMessage.success('评论发表成功')
+  await fetchCommentList(true)
+  ElMessage.success('评论已提交，审核通过后将公开')
 }
 
 // 处理回复添加
-const handleReplyAdded = (commentId, newReply) => {
-  // 找到对应的父评论并更新其回复数
-  const comment = commentList.value.find((c) => c.id === commentId)
-  if (comment) {
-    // 检查回复是否已存在，避免重复添加
-    let replyAdded = false
-
-    if (comment.children) {
-      const existingReply = comment.children.find((reply) => reply.id === newReply.id)
-      if (!existingReply) {
-        // 将新回复添加到父评论的子回复列表中
-        comment.children.push(newReply)
-        replyAdded = true
-      }
-    } else {
-      // 如果回复列表未加载，创建children数组并添加回复
-      comment.children = [newReply]
-      replyAdded = true
-    }
-
-    // 只有确实添加了新回复才更新计数
-    if (replyAdded) {
-      comment.replyCount = (comment.replyCount || 0) + 1
-      // 更新总评论数
-      commentTotal.value++
-    }
-  }
-  ElMessage.success('回复发表成功')
+const handleReplyAdded = async () => {
+  await fetchCommentList(true)
+  ElMessage.success('回复已提交，审核通过后将公开')
 }
 
 // 处理评论删除

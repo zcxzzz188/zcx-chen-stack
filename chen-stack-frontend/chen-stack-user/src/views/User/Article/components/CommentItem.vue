@@ -15,6 +15,7 @@
           <span v-if="comment.replyUserNickname" class="reply-to">
             回复 <span class="reply-username">{{ comment.replyUserNickname }}</span>
           </span>
+          <span v-if="isPendingSelfComment" class="comment-status-tag">审核中，仅自己可见</span>
           <span class="comment-time">{{ formatTime(comment.createTime) }}</span>
         </div>
 
@@ -26,7 +27,7 @@
         <!-- 评论操作栏 -->
         <div class="comment-actions">
           <!-- 点赞按钮 -->
-          <div class="action-item like-action">
+          <div v-if="!isPendingSelfComment" class="action-item like-action">
             <el-button
               text
               size="small"
@@ -45,7 +46,7 @@
           </div>
 
           <!-- 回复按钮 -->
-          <div class="action-item">
+          <div v-if="!isPendingSelfComment" class="action-item">
             <el-button text size="small" @click="toggleReplyForm">
               <el-icon><ChatDotRound /></el-icon>
               <span>回复</span>
@@ -162,6 +163,10 @@ const canDelete = computed(() => {
   return userStore.user && userStore.user.id === props.comment.userId
 })
 
+const isPendingSelfComment = computed(() => {
+  return canDelete.value && props.comment.examineStatus === 0
+})
+
 // 初始化回复列表（如果有子回复）
 onMounted(() => {
   if (props.comment.children && props.comment.children.length > 0) {
@@ -253,17 +258,6 @@ const handleReplyAdded = (newReply) => {
     // 子评论的回复应该与子评论并列，所以传递父评论的ID
     emit('reply-added', props.comment.parentId, newReply)
   } else {
-    // 父评论的回复，添加到当前评论的回复列表中
-    const existingReply = replyList.value.find((reply) => reply.id === newReply.id)
-    if (!existingReply) {
-      // 添加新回复到列表
-      replyList.value.push(newReply)
-      // 注意：不在这里更新 replyCount，由 CommentDrawer 统一处理
-    }
-
-    // 显示回复列表
-    showReplies.value = true
-
     // 通知父组件
     emit('reply-added', props.comment.id, newReply)
   }
@@ -271,17 +265,6 @@ const handleReplyAdded = (newReply) => {
 
 // 处理子回复添加
 const handleSubReplyAdded = (commentId, newReply) => {
-  // 如果是当前评论的子回复，才添加到列表中
-  if (commentId === props.comment.id) {
-    // 检查回复是否已存在，避免重复添加
-    const existingReply = replyList.value.find((reply) => reply.id === newReply.id)
-    if (!existingReply) {
-      // 子回复添加到当前评论的回复列表中
-      replyList.value.push(newReply)
-      // 注意：不在这里更新 replyCount，由 CommentDrawer 统一处理
-    }
-  }
-
   // 通知父组件（继续向上传递事件）
   emit('reply-added', commentId, newReply)
 }
@@ -392,6 +375,17 @@ const handleDelete = async () => {
           font-size: 12px;
           color: var(--el-text-color-secondary);
           margin-left: auto;
+        }
+
+        .comment-status-tag {
+          display: inline-flex;
+          align-items: center;
+          padding: 2px 8px;
+          border-radius: 999px;
+          font-size: 12px;
+          color: #a16207;
+          background: rgba(250, 204, 21, 0.16);
+          border: 1px solid rgba(234, 179, 8, 0.22);
         }
       }
 

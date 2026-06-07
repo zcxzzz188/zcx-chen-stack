@@ -317,14 +317,10 @@ public class CommentServiceImpl extends ServiceImpl<CommentMapper, Comment> impl
         // 添加参数边界验证，防止负数或过大值导致 SQL 错误
         offset = Math.max(0, offset);
         pageSize = Math.min(Math.max(1, pageSize), 100);
-        Integer currentUserId = SecurityUtils.getUserId() == 0 ? null : SecurityUtils.getUserId();
+        Integer currentUserId = getCurrentUserIdOrNull();
 
         // 1. 查询顶级评论基础信息
-        LambdaQueryWrapper<Comment> topCommentWrapper = new LambdaQueryWrapper<Comment>()
-                .eq(Comment::getArticleId, articleId)
-                .eq(Comment::getParentId, 0)
-                .eq(Comment::getExamineStatus, 1)
-                .eq(Comment::getIsDeleted, 0)
+        LambdaQueryWrapper<Comment> topCommentWrapper = buildVisibleCommentWrapper(articleId, 0, currentUserId)
                 .orderByDesc(Comment::getCreateTime)
                 .last("LIMIT " + offset + ", " + pageSize);
 
@@ -336,17 +332,13 @@ public class CommentServiceImpl extends ServiceImpl<CommentMapper, Comment> impl
         Set<Integer> topCommentIds = topComments.stream().map(Comment::getId).collect(Collectors.toSet());
 
         // 2. 批量查询子评论（每个顶级评论最多2条）
-        List<Comment> allReplies = batchQueryReplies(articleId, topCommentIds, 2);
+        List<Comment> allReplies = batchQueryReplies(articleId, topCommentIds, 2, currentUserId);
 
         // 3. 批量构建CommentVo
         List<CommentVo> result = batchBuildCommentVos(topComments, allReplies, currentUserId, true);
 
         // 4. 查询总数
-        Long total = count(new LambdaQueryWrapper<Comment>()
-                .eq(Comment::getArticleId, articleId)
-                .eq(Comment::getParentId, 0)
-                .eq(Comment::getExamineStatus, 1)
-                .eq(Comment::getIsDeleted, 0));
+        Long total = count(buildVisibleCommentWrapper(articleId, 0, currentUserId));
 
         return new PageVo<>(result, total);
     }
@@ -364,14 +356,10 @@ public class CommentServiceImpl extends ServiceImpl<CommentMapper, Comment> impl
         // 添加参数边界验证，防止负数或过大值导致 SQL 错误
         offset = Math.max(0, offset);
         pageSize = Math.min(Math.max(1, pageSize), 100);
-        Integer currentUserId = SecurityUtils.getUserId() == 0 ? null : SecurityUtils.getUserId();
+        Integer currentUserId = getCurrentUserIdOrNull();
 
         // 1. 查询回复评论基础信息
-        LambdaQueryWrapper<Comment> replyWrapper = new LambdaQueryWrapper<Comment>()
-                .eq(Comment::getArticleId, parentComment.getArticleId())
-                .eq(Comment::getParentId, commentId)
-                .eq(Comment::getExamineStatus, 1)
-                .eq(Comment::getIsDeleted, 0)
+        LambdaQueryWrapper<Comment> replyWrapper = buildVisibleCommentWrapper(parentComment.getArticleId(), commentId, currentUserId)
                 .orderByDesc(Comment::getCreateTime)
                 .last("LIMIT " + offset + ", " + pageSize);
 
@@ -384,11 +372,7 @@ public class CommentServiceImpl extends ServiceImpl<CommentMapper, Comment> impl
         List<CommentVo> result = batchBuildCommentVos(replies, new ArrayList<>(), currentUserId, false);
 
         // 3. 查询总数
-        Long total = count(new LambdaQueryWrapper<Comment>()
-                .eq(Comment::getArticleId, parentComment.getArticleId())
-                .eq(Comment::getParentId, commentId)
-                .eq(Comment::getExamineStatus, 1)
-                .eq(Comment::getIsDeleted, 0));
+        Long total = count(buildVisibleCommentWrapper(parentComment.getArticleId(), commentId, currentUserId));
 
         return new PageVo<>(result, total);
     }
@@ -401,7 +385,8 @@ public class CommentServiceImpl extends ServiceImpl<CommentMapper, Comment> impl
      * @param limitPerParent 每个父评论最多查询的子评论数量
      * @return 子评论列表
      */
-    private List<Comment> batchQueryReplies(Integer articleId, Set<Integer> parentIds, int limitPerParent) {
+    private List<Comment> batchQueryReplies(Integer articleId, Set<Integer> parentIds, int limitPerParent,
+            Integer currentUserId) {
         if (parentIds.isEmpty()) {
             return new ArrayList<>();
         }
@@ -410,9 +395,9 @@ public class CommentServiceImpl extends ServiceImpl<CommentMapper, Comment> impl
         LambdaQueryWrapper<Comment> replyWrapper = new LambdaQueryWrapper<Comment>()
                 .eq(Comment::getArticleId, articleId)
                 .in(Comment::getParentId, parentIds)
-                .eq(Comment::getExamineStatus, 1)
                 .eq(Comment::getIsDeleted, 0)
                 .orderByDesc(Comment::getCreateTime);
+        appendVisibleCommentCondition(replyWrapper, currentUserId);
 
         List<Comment> allReplies = list(replyWrapper);
 
@@ -426,6 +411,34 @@ public class CommentServiceImpl extends ServiceImpl<CommentMapper, Comment> impl
         });
 
         return limitedReplies;
+    }
+
+    private Integer getCurrentUserIdOrNull() {
+        Integer currentUserId = SecurityUtils.getUserId();
+        return currentUserId == null || currentUserId <= 0 ? null : currentUserId;
+    }
+
+    private LambdaQueryWrapper<Comment> buildVisibleCommentWrapper(Integer articleId, Integer parentId,
+            Integer currentUserId) {
+        LambdaQueryWrapper<Comment> wrapper = new LambdaQueryWrapper<Comment>()
+                .eq(Comment::getArticleId, articleId)
+                .eq(Comment::getParentId, parentId)
+                .eq(Comment::getIsDeleted, 0);
+        appendVisibleCommentCondition(wrapper, currentUserId);
+        return wrapper;
+    }
+
+    private void appendVisibleCommentCondition(LambdaQueryWrapper<Comment> wrapper, Integer currentUserId) {
+        if (currentUserId == null) {
+            wrapper.eq(Comment::getExamineStatus, ExamineStatusEnum.PASS.getCode());
+            return;
+        }
+
+        wrapper.and(visibleWrapper -> visibleWrapper
+                .eq(Comment::getExamineStatus, ExamineStatusEnum.PASS.getCode())
+                .or(selfWrapper -> selfWrapper
+                        .eq(Comment::getExamineStatus, ExamineStatusEnum.WAIT.getCode())
+                        .eq(Comment::getUserId, currentUserId)));
     }
 
     /**

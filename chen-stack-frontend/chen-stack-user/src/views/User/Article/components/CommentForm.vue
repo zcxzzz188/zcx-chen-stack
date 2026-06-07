@@ -195,23 +195,12 @@ const handleSubmit = async () => {
     const res = await addComment(commentData)
     const commentId = res.data
 
-    // 构建新评论对象（用于界面显示）
+    // 构建新评论对象（仅用于触发列表刷新，不依赖本地审核状态）
     const newComment = {
       id: commentId,
       parentId: props.parentId,
       articleId: props.articleId,
-      userId: userStore.user.id,
-      nickname: userStore.user.nickname,
-      avatar: userStore.user.avatar,
       replyUserId: props.replyUserId,
-      replyUserNickname: props.replyUserNickname, // 被回复用户的昵称
-      content: content,
-      examineStatus: 1,
-      likeCount: 0,
-      replyCount: 0,
-      createTime: new Date(),
-      isLiked: false,
-      children: [],
     }
 
     commentContent.value = ''
