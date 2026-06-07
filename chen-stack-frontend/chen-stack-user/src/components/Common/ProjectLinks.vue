@@ -12,12 +12,17 @@
 
       <!-- 链接列表 -->
       <div class="project-links">
-        <div class="project-link project-link-placeholder">
+        <a
+          href="https://github.com/zcxzzz188/zcx-chen-stack"
+          target="_blank"
+          rel="noopener noreferrer"
+          class="project-link project-link-placeholder"
+        >
           <div class="link-content">
-            <span class="link-name">项目源码整理中</span>
-            <span class="link-subtitle">后续统一发布</span>
+            <span class="link-name">GitHub 源码仓库</span>
+            <span class="link-subtitle">点击查看项目源码</span>
           </div>
-        </div>
+        </a>
       </div>
     </div>
   </div>

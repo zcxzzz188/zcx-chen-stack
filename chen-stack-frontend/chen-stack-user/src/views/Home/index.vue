@@ -98,12 +98,17 @@
           <!-- 项目链接 -->
           <SidebarCard title="项目链接" icon="📦">
             <div class="project-links">
-              <div class="project-link project-link-placeholder">
+              <a
+                href="https://github.com/zcxzzz188/zcx-chen-stack"
+                target="_blank"
+                rel="noopener noreferrer"
+                class="project-link project-link-placeholder"
+              >
                 <div class="project-link-info">
-                  <div class="project-link-name">项目源码整理中</div>
-                  <div class="project-link-desc">后续统一发布</div>
+                  <div class="project-link-name">GitHub 源码仓库</div>
+                  <div class="project-link-desc">点击查看项目源码</div>
                 </div>
-              </div>
+              </a>
             </div>
           </SidebarCard>
 
@@ -140,18 +145,18 @@
             <a
               href="javascript:void(0)"
               class="social-link"
-              title="项目源码整理中"
+              title="GitHub"
             >
               <svg-icon name="github" width="18px" height="18px" />
             </a>
             <a
               href="javascript:void(0)"
               class="social-link"
-              title="项目源码整理中"
+              title="Gitee"
             >
               <svg-icon name="gitee" width="18px" height="18px" />
             </a>
-            <a href="javascript:void(0)" class="social-link" title="项目源码整理中">
+            <a href="javascript:void(0)" class="social-link" title="联系邮箱">
               <svg
                 width="18"
                 height="18"
@@ -183,22 +188,16 @@
             <h4>资源链接</h4>
             <ul>
               <li>
-                <span>项目源码整理中</span>
-              </li>
-              <li>
-                <span>项目源码整理中</span>
+                <a
+                  href="https://github.com/zcxzzz188/zcx-chen-stack"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  项目源码仓库
+                </a>
               </li>
               <li><router-link to="/about">关于我们</router-link></li>
               <li><router-link to="/contact">联系方式</router-link></li>
-            </ul>
-          </div>
-
-          <div class="footer-column">
-            <h4>法律信息</h4>
-            <ul>
-              <li><a href="javascript:void(0)">隐私政策</a></li>
-              <li><a href="javascript:void(0)">服务条款</a></li>
-              <li><a href="javascript:void(0)">Cookie 政策</a></li>
             </ul>
           </div>
         </div>
@@ -206,19 +205,8 @@
 
       <!-- 底部栏 -->
       <div class="footer-bottom">
-        <div class="footer-bottom-left">
-          <span class="copyright">© {{ currentYear }} 辰栈. All rights reserved.</span>
-        </div>
         <div class="footer-bottom-right">
-          <a
-            href="https://beian.miit.gov.cn/"
-            target="_blank"
-            rel="noopener noreferrer"
-            class="icp-link"
-          >
-            <span class="icp-icon">粤</span>
-            ICP 备 2024324512 号
-          </a>
+          <span class="copyright">© {{ currentYear }} 辰栈. All rights reserved.</span>
         </div>
       </div>
     </footer>
@@ -1067,6 +1055,7 @@ html.dark {
   text-decoration: none;
   color: var(--text-primary);
   transition: all 0.2s ease;
+  cursor: pointer;
 
   &:hover {
     border-color: var(--accent);
@@ -1265,9 +1254,22 @@ html.dark {
     grid-template-columns: repeat(3, 1fr);
     gap: 40px;
 
+    .footer-column:first-child {
+      grid-column: 2;
+    }
+
+    .footer-column:last-child {
+      grid-column: 3;
+    }
+
     @media (max-width: 768px) {
       grid-template-columns: repeat(2, 1fr);
       gap: 32px;
+
+      .footer-column:first-child,
+      .footer-column:last-child {
+        grid-column: auto;
+      }
     }
 
     @media (max-width: 480px) {
@@ -1335,7 +1337,7 @@ html.dark {
     border-top: 1px solid var(--border);
     display: flex;
     align-items: center;
-    justify-content: space-between;
+    justify-content: flex-end;
     flex-wrap: wrap;
     gap: 12px;
 
@@ -1344,41 +1346,13 @@ html.dark {
       text-align: center;
     }
 
-    .footer-bottom-left {
+    .footer-bottom-right {
       .copyright {
         font-size: 0.8rem;
         color: var(--text-muted);
       }
     }
 
-    .footer-bottom-right {
-      .icp-link {
-        display: inline-flex;
-        align-items: center;
-        gap: 6px;
-        font-size: 0.8rem;
-        color: var(--text-muted);
-        text-decoration: none;
-        transition: color 0.2s ease;
-
-        &:hover {
-          color: var(--accent);
-        }
-
-        .icp-icon {
-          display: inline-flex;
-          align-items: center;
-          justify-content: center;
-          width: 18px;
-          height: 18px;
-          background: var(--bg-page);
-          border: 1px solid var(--border);
-          border-radius: 4px;
-          font-size: 0.65rem;
-          font-weight: 600;
-        }
-      }
-    }
   }
 }
 
