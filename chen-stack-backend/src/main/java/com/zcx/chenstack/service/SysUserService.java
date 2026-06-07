@@ -35,7 +35,7 @@ public interface SysUserService extends IService<SysUser> {
      *
      * @param registerDto 注册信息
      */
-    void register(RegisterDto registerDto);
+    String register(RegisterDto registerDto);
 
     /**
      * 发送注册邮件验证码

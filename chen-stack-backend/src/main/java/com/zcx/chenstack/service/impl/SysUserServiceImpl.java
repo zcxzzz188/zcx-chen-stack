@@ -146,7 +146,7 @@ public class SysUserServiceImpl extends ServiceImpl<SysUserMapper, SysUser> impl
     }
 
     @Override
-    public void register(RegisterDto registerDto) {
+    public String register(RegisterDto registerDto) {
         // 必须校验验证码，不能为空
         if (ObjectUtil.isEmpty(registerDto.getEmailCheckCode())) {
             throw new BlogException(BlogConstants.CheckCodeError);
@@ -187,23 +187,26 @@ public class SysUserServiceImpl extends ServiceImpl<SysUserMapper, SysUser> impl
         String ip = ipUtils.getIp();
 
         int insert = sysUserMapper.insert(user);
-        if (insert == 1) {
-            Integer userId = user.getId();
-
-            // 异步创建用户设置
-            notificationThreadPool.getNotificationPool("user").execute(() -> {
-                try {
-                    userSettingsService.createDefaultSettings(userId);
-                } catch (Exception e) {
-                    log.error("异步创建用户设置失败，userId={}", userId, e);
-                }
-            });
-
-            ipService.setRegisterIp(user.getId(), ip);
-            sysUserRoleService.setRegisterRole(user.getId());
-            redisComponent.cleanEmailCheckCode(registerDto.getEmail(), MailEnum.REGISTER.getType());
+        if (insert != 1 || user.getId() == null) {
+            throw new BlogException(BlogConstants.SystemInternalError);
         }
 
+        Integer userId = user.getId();
+
+        // 异步创建用户设置
+        notificationThreadPool.getNotificationPool("user").execute(() -> {
+            try {
+                userSettingsService.createDefaultSettings(userId);
+            } catch (Exception e) {
+                log.error("异步创建用户设置失败，userId={}", userId, e);
+            }
+        });
+
+        ipService.setRegisterIp(userId, ip);
+        sysUserRoleService.setRegisterRole(userId);
+        recordLoginSuccess(user, RegisterOrLoginTypeEnum.EMAIL.getCode());
+        redisComponent.cleanEmailCheckCode(registerDto.getEmail(), MailEnum.REGISTER.getType());
+        return jwtUtils.createToken(userId, false);
     }
 
     @Override

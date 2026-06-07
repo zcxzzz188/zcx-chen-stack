@@ -87,8 +87,8 @@ public class SysUserController {
      */
     @PostMapping("/register")
     public Result register(@RequestBody @Valid RegisterDto registerDto) {
-        sysUserService.register(registerDto);
-        return Result.success();
+        String jwt = sysUserService.register(registerDto);
+        return Result.success(jwt);
     }
 
     /**

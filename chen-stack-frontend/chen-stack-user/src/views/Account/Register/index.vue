@@ -119,12 +119,15 @@ import { computed, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { EditPen, Lock, Message, User } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
-import { register, sendEmail } from '@/api/user'
+import { register, sendEmail, info } from '@/api/user'
+import { SetJwt } from '@/utils/Auth'
+import { useUserStore } from '@/stores/userStore.js'
 
 // 邮件发送等待时间
 const waitTime = ref(0)
 const formDataRef = ref()
 const router = useRouter()
+const userStore = useUserStore()
 // 提交表单
 const formData = ref({
   username: '',
@@ -233,23 +236,32 @@ function sendEmailBtn() {
 }
 
 // 注册按钮
-function registerBtn() {
-  formDataRef.value.validate((valid) => {
-    if (valid) {
-      // 去除首尾空格
-      formData.value.username = formData.value.username.trim()
-      formData.value.email = formData.value.email.trim()
-      // 去掉repeatPassword字段，后端不需要
-      const RegisterDto = { ...formData.value }
-      delete RegisterDto.repeatPassword
-      register(RegisterDto).then(() => {
-        ElMessage.success('注册成功，欢迎进入社区')
-        router.push('/login')
-      })
-    } else {
-      ElMessage.warning('请完整填写注册内容')
-    }
-  })
+async function registerBtn() {
+  const valid = await formDataRef.value.validate().catch(() => false)
+  if (!valid) {
+    ElMessage.warning('请完整填写注册内容')
+    return
+  }
+
+  // 去除首尾空格
+  formData.value.username = formData.value.username.trim()
+  formData.value.email = formData.value.email.trim()
+  // 去掉repeatPassword字段，后端不需要
+  const RegisterDto = { ...formData.value }
+  delete RegisterDto.repeatPassword
+
+  const res = await register(RegisterDto)
+  const jwt = res?.data
+  if (!jwt) {
+    ElMessage.error('注册成功，但自动登录失败，请前往登录页手动登录')
+    return
+  }
+
+  SetJwt(jwt)
+  const userInfoRes = await info()
+  userStore.user = userInfoRes.data
+  ElMessage.success('注册成功，已自动登录')
+  router.push({ name: 'Home' })
 }
 </script>
 
