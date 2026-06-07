@@ -91,9 +91,21 @@ const loginForm = ref({
 const loading = ref(false)
 const checkCodeInfo = ref({})
 
+const validatePasswordCharacters = (rule, value, callback) => {
+  if (value === '') {
+    callback(new Error('请输入密码'))
+  } else if (!/^[a-zA-Z0-9!@#$%^&*._-]+$/.test(value)) {
+    callback(new Error('密码只能包含英文、数字和特殊字符(!@#$%^&*._-)'))
+  } else if (value.length < 6 || value.length > 20) {
+    callback(new Error('密码的长度必须在 6-20 个字符之间'))
+  } else {
+    callback()
+  }
+}
+
 const rules = {
   username: [{ required: true, message: '请输入用户名/邮箱', trigger: 'blur' }],
-  password: [{ required: true, message: '请输入密码', trigger: 'blur' }],
+  password: [{ validator: validatePasswordCharacters, trigger: ['blur', 'change'] }],
   checkCode: [{ required: true, message: '请输入验证码', trigger: 'blur' }],
 }
 
