@@ -93,6 +93,8 @@ import { info } from '@/api/user'
 import { UserFilled, HomeFilled, Management, House, Plus } from '@element-plus/icons-vue'
 import { ElMessageBox } from 'element-plus'
 
+const LAST_LOGOUT_USERNAME_KEY = 'chen_stack_user_last_logout_username'
+
 const userStore = useUserStore()
 const { user } = storeToRefs(userStore)
 const router = useRouter()
@@ -122,6 +124,15 @@ const getUserInfo = async () => {
   user.value = res.data
 }
 
+const saveLastLogoutUsername = () => {
+  const username = user.value?.username?.trim()
+  if (username) {
+    window.sessionStorage.setItem(LAST_LOGOUT_USERNAME_KEY, username)
+  } else {
+    window.sessionStorage.removeItem(LAST_LOGOUT_USERNAME_KEY)
+  }
+}
+
 const logout = async () => {
   try {
     await ElMessageBox.confirm('确认退出登录吗？', '提示', {
@@ -129,6 +140,7 @@ const logout = async () => {
       cancelButtonText: '取消',
       type: 'warning',
     })
+    saveLastLogoutUsername()
     userStore.clearUser()
     router.replace('/login')
   } catch {

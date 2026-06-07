@@ -114,6 +114,8 @@ import { login, checkCode, info } from '@/api/user'
 import { SetJwt } from '@/utils/Auth'
 import { useUserStore } from '@/stores/userStore.js'
 
+const LAST_LOGOUT_USERNAME_KEY = 'chen_stack_user_last_logout_username'
+
 const userStore = useUserStore()
 
 const router = useRouter()
@@ -166,6 +168,14 @@ const rules = ref({
   checkCode: [{ validator: validateCheckCode, trigger: ['blur', 'change'] }],
 })
 
+// 初始化登录表单默认值
+const initLoginForm = () => {
+  const lastLogoutUsername = window.sessionStorage.getItem(LAST_LOGOUT_USERNAME_KEY)?.trim()
+  formData.value.username = lastLogoutUsername || 'test'
+  formData.value.password = lastLogoutUsername ? '' : '123456'
+  formData.value.checkCode = ''
+}
+
 // 登录按钮
 const loginBtn = async () => {
   if (loginLoading.value) {
@@ -193,10 +203,11 @@ const loginBtn = async () => {
     // 等待 info() 获取用户信息完成后再跳转，避免 Header 组件挂载时 user 为空
     const userInfoRes = await info()
     userStore.user = userInfoRes.data
+    window.sessionStorage.removeItem(LAST_LOGOUT_USERNAME_KEY)
     router.push({ name: 'Home' })
   } catch {
     // 登录失败后刷新验证码，避免继续使用旧验证码
-    await changeCheckCode()
+    await changeCheckCode(true)
   } finally {
     loginLoading.value = false
   }
@@ -204,33 +215,30 @@ const loginBtn = async () => {
 
 const checkCodeInfo = ref({})
 const canRefreshCode = ref(true)
+
+const fetchCheckCode = async () => {
+  const res = await checkCode()
+  checkCodeInfo.value = res.data
+  formData.value.checkCodeKey = res.data.checkCodeKey
+}
+
 // 刷新验证码（3秒间隔限制）
-const changeCheckCode = async () => {
-  if (!canRefreshCode.value) {
+const changeCheckCode = async (force = false) => {
+  if (!force && !canRefreshCode.value) {
     return
   }
   canRefreshCode.value = false
   setTimeout(() => {
     canRefreshCode.value = true
   }, 3000)
-  await checkCode().then((res) => {
-    checkCodeInfo.value = res.data
-    formData.value.checkCodeKey = res.data.checkCodeKey
-  })
-}
-
-// 测试模式自动填充（仅开发环境生效）
-const autoFillTestAccount = () => {
-  if (import.meta.env.VITE_TEST_MODE === 'true') {
-    formData.value.username = import.meta.env.VITE_TEST_USERNAME || 'test'
-    formData.value.password = import.meta.env.VITE_TEST_PASSWORD || '123456'
-  }
+  formData.value.checkCode = ''
+  await fetchCheckCode()
 }
 
 // 页面加载完成后刷新验证码
-onMounted(() => {
-  changeCheckCode()
-  autoFillTestAccount()
+onMounted(async () => {
+  initLoginForm()
+  await changeCheckCode(true)
 })
 </script>
 

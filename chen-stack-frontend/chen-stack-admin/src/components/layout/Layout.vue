@@ -184,6 +184,8 @@ import { Bell, Message, Delete, User, Check } from '@element-plus/icons-vue'
 import { formatTime } from '@/utils/FormatTime'
 import { onUnmounted } from 'vue'
 
+const LAST_LOGOUT_USERNAME_KEY = 'chen_stack_admin_last_logout_username'
+
 const userStore = useUserStore()
 const router = useRouter()
 
@@ -371,8 +373,18 @@ const user = computed(() => {
   return userStore.user
 })
 
+const saveLastLogoutUsername = () => {
+  const username = user.value?.username?.trim()
+  if (username) {
+    window.sessionStorage.setItem(LAST_LOGOUT_USERNAME_KEY, username)
+  } else {
+    window.sessionStorage.removeItem(LAST_LOGOUT_USERNAME_KEY)
+  }
+}
+
 // 退出登录
 const handleLogout = () => {
+  saveLastLogoutUsername()
   userStore.clearUser()
   router.push('/login')
   ElMessage.success('退出登录成功')

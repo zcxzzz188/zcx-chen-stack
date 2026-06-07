@@ -74,6 +74,9 @@ import { login, checkCode, info } from '@/api/user'
 import { SetJwt } from '@/utils/Auth'
 import { useRouter } from 'vue-router'
 import { useUserStore } from '@/stores/userStore'
+
+const LAST_LOGOUT_USERNAME_KEY = 'chen_stack_admin_last_logout_username'
+
 const userStore = useUserStore()
 
 const router = useRouter()
@@ -110,28 +113,28 @@ const getCheckCode = async () => {
 
 // 刷新验证码（3秒间隔限制）
 const canRefreshCode = ref(true)
-const refreshCheckCode = async () => {
-  if (!canRefreshCode.value) {
+const refreshCheckCode = async (force = false) => {
+  if (!force && !canRefreshCode.value) {
     return
   }
   canRefreshCode.value = false
   setTimeout(() => {
     canRefreshCode.value = true
   }, 3000)
+  loginForm.value.checkCode = ''
   await getCheckCode()
 }
 
-// 测试模式自动填充（仅开发环境生效）
-const autoFillTestAccount = () => {
-  if (import.meta.env.VITE_TEST_MODE === 'true') {
-    loginForm.value.username = import.meta.env.VITE_TEST_USERNAME || 'test'
-    loginForm.value.password = import.meta.env.VITE_TEST_PASSWORD || '123456'
-  }
+const initLoginForm = () => {
+  const lastLogoutUsername = window.sessionStorage.getItem(LAST_LOGOUT_USERNAME_KEY)?.trim()
+  loginForm.value.username = lastLogoutUsername || 'test'
+  loginForm.value.password = lastLogoutUsername ? '' : '123456'
+  loginForm.value.checkCode = ''
 }
 
-onMounted(() => {
-  autoFillTestAccount()
-  getCheckCode()
+onMounted(async () => {
+  initLoginForm()
+  await refreshCheckCode(true)
 })
 
 const handleLogin = async () => {
@@ -158,12 +161,13 @@ const handleLogin = async () => {
 
     const [userInfoRes] = await Promise.all([info(), userStore.loadMenusAndRoutes()])
     userStore.setUser(userInfoRes.data)
+    window.sessionStorage.removeItem(LAST_LOGOUT_USERNAME_KEY)
 
     await router.push('/home')
     ElMessage.success('登录成功')
   } catch {
     // 登录失败后刷新验证码
-    await refreshCheckCode()
+    await refreshCheckCode(true)
   } finally {
     loading.value = false
   }

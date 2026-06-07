@@ -127,6 +127,8 @@ import { getUnreadCount } from '@/api/privateMessage'
 import { getUnreadNotificationCount } from '@/api/notification'
 import WebSocketClient from '@/utils/WebSocketClient'
 
+const LAST_LOGOUT_USERNAME_KEY = 'chen_stack_user_last_logout_username'
+
 const userStore = useUserStore()
 const messageStore = useMessageStore()
 const { user } = storeToRefs(userStore)
@@ -297,6 +299,15 @@ const getUserInfo = async () => {
   user.value = res.data
 }
 
+const saveLastLogoutUsername = () => {
+  const username = user.value?.username?.trim()
+  if (username) {
+    window.sessionStorage.setItem(LAST_LOGOUT_USERNAME_KEY, username)
+  } else {
+    window.sessionStorage.removeItem(LAST_LOGOUT_USERNAME_KEY)
+  }
+}
+
 const logout = async () => {
   try {
     await ElMessageBox.confirm('确认退出登录吗？', '提示', {
@@ -305,6 +316,7 @@ const logout = async () => {
       type: 'warning',
     })
     showUserPopover.value = false
+    saveLastLogoutUsername()
     userStore.clearUser()
     router.replace('/login')
   } catch {
