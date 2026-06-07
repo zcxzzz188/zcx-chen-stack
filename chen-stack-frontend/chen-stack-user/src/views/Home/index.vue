@@ -324,14 +324,14 @@ const contentSection = ref(null)
 const articlesSectionRef = ref(null)
 const hotTags = ref([]) // 热门标签
 const contactQrVisible = ref(false)
-const contactQrImage = ref('/contact/qq-qr.png')
+const contactQrImage = ref('/contact-qr/qq-qr.png')
 
 const contactQrMap = {
   qq: {
-    image: '/contact/qq-qr.png',
+    image: '/contact-qr/qq-qr.png',
   },
   wechat: {
-    image: '/contact/wechat-qr.png',
+    image: '/contact-qr/wechat-qr.png',
   },
 }
 let bodyStyleSnapshot = null

@@ -30,6 +30,18 @@ const router = createRouter({
           meta: { title: '搜索' },
         },
         {
+          path: 'about',
+          name: 'About',
+          component: () => import('@/views/About/index.vue'),
+          meta: { title: '关于辰栈' },
+        },
+        {
+          path: 'contact',
+          name: 'Contact',
+          component: () => import('@/views/Contact/index.vue'),
+          meta: { title: '联系方式' },
+        },
+        {
           path: 'user/:userId',
           name: 'UserHomepage',
           component: () => import('@/views/User/Homepage/index.vue'),
