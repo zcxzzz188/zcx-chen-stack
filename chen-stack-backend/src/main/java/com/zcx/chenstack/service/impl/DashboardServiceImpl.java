@@ -1,6 +1,7 @@
 package com.zcx.chenstack.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.zcx.chenstack.domain.constants.BlogConstants;
 import com.zcx.chenstack.domain.entity.Article;
 import com.zcx.chenstack.domain.entity.ArticleFavorite;
@@ -226,13 +227,18 @@ public class DashboardServiceImpl implements DashboardService {
     private Long getTodayActiveUserCount() {
         try {
             LocalDate today = LocalDate.now();
-            // 查询今日登录且状态为成功的不同用户数
-            LambdaQueryWrapper<SysLoginLog> wrapper = new LambdaQueryWrapper<>();
-            wrapper.eq(SysLoginLog::getStatus, 0)
-                  .ge(SysLoginLog::getLoginTime, today.atStartOfDay())
-                  .lt(SysLoginLog::getLoginTime, today.plusDays(1).atStartOfDay());
-            // 统计不同 userId 的数量
-            return sysLoginLogMapper.selectCount(wrapper);
+            QueryWrapper<SysLoginLog> wrapper = new QueryWrapper<>();
+            wrapper.select("COUNT(DISTINCT user_id)")
+                .eq("status", 0)
+                .ge("login_time", today.atStartOfDay())
+                .lt("login_time", today.plusDays(1).atStartOfDay())
+                .isNotNull("user_id");
+
+            List<Object> result = sysLoginLogMapper.selectObjs(wrapper);
+            if (result.isEmpty() || result.get(0) == null) {
+                return 0L;
+            }
+            return Long.parseLong(result.get(0).toString());
         } catch (Exception e) {
             log.error("获取今日活跃用户数失败", e);
             return 0L;
