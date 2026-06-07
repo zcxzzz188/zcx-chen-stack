@@ -28,6 +28,9 @@ import java.util.List;
 @Slf4j
 @Component
 public class ImageAuditUtils {
+    private static final String LOCALHOST_MINIO_URL = "http://localhost:9000";
+    private static final String LOOPBACK_MINIO_URL = "http://127.0.0.1:9000";
+    private static final String DOCKER_MINIO_URL = "http://chen-stack-minio:9000";
 
     @Value("${aliyun.accessKeyId}")
     private String accessKeyId;
@@ -37,6 +40,18 @@ public class ImageAuditUtils {
 
     @Value("${aliyun.imageaudit.endpoint}")
     private String endpoint;
+
+    private Integer mergeAuditStatus(Integer currentStatus, Integer nextStatus) {
+        if (ExamineStatusEnum.NO_PASS.getCode().equals(currentStatus)
+                || ExamineStatusEnum.NO_PASS.getCode().equals(nextStatus)) {
+            return ExamineStatusEnum.NO_PASS.getCode();
+        }
+        if (ExamineStatusEnum.WAIT.getCode().equals(currentStatus)
+                || ExamineStatusEnum.WAIT.getCode().equals(nextStatus)) {
+            return ExamineStatusEnum.WAIT.getCode();
+        }
+        return ExamineStatusEnum.PASS.getCode();
+    }
 
     /**
      * 创建阿里云图片审核客户端
@@ -65,8 +80,9 @@ public class ImageAuditUtils {
      */
     public AuditResult auditImageWithDetails(String imageUrl) {
         try {
+            String normalizedImageUrl = normalizeImageUrlForBackendFetch(imageUrl);
             // 对URL进行编码处理，解决URL中包含特殊字符导致无法下载的问题
-            String encodedImageUrl = encodeImageUrl(imageUrl);
+            String encodedImageUrl = encodeImageUrl(normalizedImageUrl);
 
             Client client = createClient();
 
@@ -134,7 +150,7 @@ public class ImageAuditUtils {
 
                     // 如果建议是"block"，则审核不通过
                     if (ImageAuditConstants.Suggestion.BLOCK.equals(suggestion)) {
-                        status = ExamineStatusEnum.NO_PASS.getCode();
+                        status = mergeAuditStatus(status, ExamineStatusEnum.NO_PASS.getCode());
                         // 构建错误信息
                         errorMessage.append(getSceneDescription(scene))
                                 .append(":")
@@ -144,7 +160,7 @@ public class ImageAuditUtils {
                                 .append("%; ");
                     } else if (ImageAuditConstants.Suggestion.REVIEW.equals(suggestion)) {
                         // 如果建议是"review"，则需要人工审核
-                        status = ExamineStatusEnum.WAIT.getCode();
+                        status = mergeAuditStatus(status, ExamineStatusEnum.WAIT.getCode());
                         errorMessage.append(getSceneDescription(scene))
                                 .append(":")
                                 .append(getSceneLabelMessage(scene, label))
@@ -159,12 +175,26 @@ public class ImageAuditUtils {
         } catch (com.aliyun.tea.TeaException e) {
             log.error("图片:{} ,审核失败:{}", imageUrl, e);
             // 审核服务异常,需要人工审核
-            AuditResult imageAuditResult = new AuditResult(2, "图片审核过程中发生错误: " + e.getMessage());
+            AuditResult imageAuditResult = new AuditResult(ExamineStatusEnum.WAIT.getCode(),
+                    "图片审核过程中发生错误: " + e.getMessage());
             return imageAuditResult;
         } catch (Exception e) {
             log.error("图片:{} ,审核异常:{}", imageUrl, e);
             throw new RuntimeException("图片审核异常", e);
         }
+    }
+
+    private String normalizeImageUrlForBackendFetch(String imageUrl) {
+        if (imageUrl == null || imageUrl.isEmpty()) {
+            return imageUrl;
+        }
+        if (imageUrl.startsWith(LOCALHOST_MINIO_URL)) {
+            return DOCKER_MINIO_URL + imageUrl.substring(LOCALHOST_MINIO_URL.length());
+        }
+        if (imageUrl.startsWith(LOOPBACK_MINIO_URL)) {
+            return DOCKER_MINIO_URL + imageUrl.substring(LOOPBACK_MINIO_URL.length());
+        }
+        return imageUrl;
     }
 
     /**

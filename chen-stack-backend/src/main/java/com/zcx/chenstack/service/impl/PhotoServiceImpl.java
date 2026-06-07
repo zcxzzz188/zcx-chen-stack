@@ -119,6 +119,55 @@ public class PhotoServiceImpl extends ServiceImpl<PhotoMapper, Photo> implements
         photoMapper.update(null, updateWrapper);
     }
 
+    public AuditResult auditPhotoUrlsByStatus(Collection<String> urls) {
+        if (ObjectUtil.isEmpty(urls)) {
+            return new AuditResult(ExamineStatusEnum.PASS.getCode(), "文章无关联图片");
+        }
+
+        List<String> validUrls = urls.stream()
+                .filter(ObjectUtil::isNotEmpty)
+                .distinct()
+                .collect(Collectors.toList());
+        if (ObjectUtil.isEmpty(validUrls)) {
+            return new AuditResult(ExamineStatusEnum.PASS.getCode(), "文章无关联图片");
+        }
+
+        List<Photo> photos = photoMapper.selectList(new LambdaQueryWrapper<Photo>()
+                .select(Photo::getId, Photo::getUrl, Photo::getExamineStatus)
+                .in(Photo::getUrl, validUrls)
+                .orderByDesc(Photo::getId));
+
+        Map<String, Photo> photoMap = photos.stream()
+                .collect(Collectors.toMap(Photo::getUrl, photo -> photo, (current, ignored) -> current));
+
+        List<String> missingUrls = new java.util.ArrayList<>();
+        List<String> waitUrls = new java.util.ArrayList<>();
+
+        for (String url : validUrls) {
+            Photo photo = photoMap.get(url);
+            if (ObjectUtil.isEmpty(photo)) {
+                missingUrls.add(url);
+                continue;
+            }
+            if (ExamineStatusEnum.NO_PASS.getCode().equals(photo.getExamineStatus())) {
+                return new AuditResult(ExamineStatusEnum.NO_PASS.getCode(), "关联图片未通过审核: " + url);
+            }
+            if (!ExamineStatusEnum.PASS.getCode().equals(photo.getExamineStatus())) {
+                waitUrls.add(url);
+            }
+        }
+
+        if (ObjectUtil.isNotEmpty(missingUrls)) {
+            return new AuditResult(ExamineStatusEnum.WAIT.getCode(), "关联图片记录不存在，需人工审核: " + missingUrls.get(0));
+        }
+
+        if (ObjectUtil.isNotEmpty(waitUrls)) {
+            return new AuditResult(ExamineStatusEnum.WAIT.getCode(), "关联图片待审核，需人工审核: " + waitUrls.get(0));
+        }
+
+        return new AuditResult(ExamineStatusEnum.PASS.getCode(), "关联图片审核通过");
+    }
+
     @Override
     public String uploadArticle(MultipartFile file) {
         Integer userId = SecurityUtils.getUserId();

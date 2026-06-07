@@ -60,6 +60,8 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
     private static final Pattern IMAGE_SRC_PATTERN = Pattern.compile(
             "<img[^>]+src\\s*=\\s*['\"]([^'\"]+)['\"][^>]*>",
             Pattern.CASE_INSENSITIVE);
+    private static final int PHOTO_AUDIT_MAX_RETRY_TIMES = 6;
+    private static final long PHOTO_AUDIT_RETRY_INTERVAL_MILLIS = 5000L;
 
     @Resource
     private NotificationThreadPool notificationThreadPool;
@@ -753,11 +755,29 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
                             .auditTextWithDetailsSplit(articleDto.getTitle() + " " + articleDto.getContent());
 
                     if (auditResult.getStatus().equals(ExamineStatusEnum.PASS.getCode())) {
-                        // 文字审核通过，更新审核状态为通过
-                        updateArticle.setExamineStatus(ExamineStatusEnum.PASS.getCode());
-                        updateArticle.setTag(articleDto.getTag());
-                        articleMapper.updateById(updateArticle);
-                        syncColumnArticleCountByStatusChange(currentArticle, ExamineStatusEnum.PASS.getCode());
+                        AuditResult photoAuditResult = waitForPhotoAuditResult(
+                                collectArticlePhotoUrls(articleDto.getCoverUrl(), articleDto.getContent()));
+                        if (photoAuditResult.getStatus().equals(ExamineStatusEnum.PASS.getCode())) {
+                            // 文字和图片审核都通过，更新审核状态为通过
+                            updateArticle.setExamineStatus(ExamineStatusEnum.PASS.getCode());
+                            updateArticle.setTag(articleDto.getTag());
+                            articleMapper.updateById(updateArticle);
+                            syncColumnArticleCountByStatusChange(currentArticle, ExamineStatusEnum.PASS.getCode());
+                        } else if (photoAuditResult.getStatus().equals(ExamineStatusEnum.NO_PASS.getCode())) {
+                            updateArticle.setExamineStatus(ExamineStatusEnum.NO_PASS.getCode());
+                            articleMapper.updateById(updateArticle);
+                            log.error("文章关联图片审核不通过，ID: {}，标题: {}，原因: {}", articleDto.getId(),
+                                    articleDto.getTitle(), photoAuditResult.getErrorMessage());
+
+                            messageDto.setContent(MessageConstants.ArticleAuditNotPass(articleDto.getId(),
+                                    articleDto.getTitle(), photoAuditResult.getErrorMessage()));
+                            messageDto.setReceiverId(articleDto.getUserId());
+                            messageService.sendToUser(messageDto);
+                        } else {
+                            log.error("文章关联图片需要人工审核，ID: {}，标题: {}，原因: {}", articleDto.getId(),
+                                    articleDto.getTitle(), photoAuditResult.getErrorMessage());
+                            markArticleForManualReview(articleDto, photoAuditResult.getErrorMessage());
+                        }
                     } else if (auditResult.getStatus().equals(ExamineStatusEnum.NO_PASS.getCode())) {
                         // 文字审核不通过，更新审核状态为不通过，并记录原因，并发送消息给用户
                         updateArticle.setExamineStatus(ExamineStatusEnum.NO_PASS.getCode());
@@ -800,6 +820,30 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
         sendEmail.put("text", String.format(MessageConstants.ARTICLE_NEED_REVIEW, articleDto.getId(), reason));
         rabbitTemplate.convertAndSend(RabbitMQConstants.Examine_Exchange, RabbitMQConstants.Examine_Routing_Key,
                 sendEmail);
+    }
+
+    private AuditResult waitForPhotoAuditResult(Collection<String> photoUrls) {
+        if (ObjectUtil.isEmpty(photoUrls)) {
+            return new AuditResult(ExamineStatusEnum.PASS.getCode(), "文章无关联图片");
+        }
+
+        AuditResult lastResult = new AuditResult(ExamineStatusEnum.PASS.getCode(), "文章无关联图片");
+        for (int attempt = 0; attempt < PHOTO_AUDIT_MAX_RETRY_TIMES; attempt++) {
+            lastResult = photoServiceImpl.auditPhotoUrlsByStatus(photoUrls);
+            if (!ExamineStatusEnum.WAIT.getCode().equals(lastResult.getStatus())) {
+                return lastResult;
+            }
+            if (attempt == PHOTO_AUDIT_MAX_RETRY_TIMES - 1) {
+                break;
+            }
+            try {
+                Thread.sleep(PHOTO_AUDIT_RETRY_INTERVAL_MILLIS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return new AuditResult(ExamineStatusEnum.WAIT.getCode(), "等待图片审核结果时线程被中断");
+            }
+        }
+        return lastResult;
     }
 
     // 保存草稿
@@ -976,19 +1020,20 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
     }
 
     private List<String> collectArticlePhotoUrls(Article article) {
+        return collectArticlePhotoUrls(article == null ? null : article.getCoverUrl(),
+                article == null ? null : article.getContent());
+    }
+
+    private List<String> collectArticlePhotoUrls(String coverUrl, String content) {
         List<String> photoUrls = new ArrayList<>();
-        if (article == null) {
+        if (ObjectUtil.isNotEmpty(coverUrl)) {
+            photoUrls.add(coverUrl);
+        }
+        if (ObjectUtil.isEmpty(content)) {
             return photoUrls;
         }
 
-        if (ObjectUtil.isNotEmpty(article.getCoverUrl())) {
-            photoUrls.add(article.getCoverUrl());
-        }
-        if (ObjectUtil.isEmpty(article.getContent())) {
-            return photoUrls;
-        }
-
-        Matcher matcher = IMAGE_SRC_PATTERN.matcher(article.getContent());
+        Matcher matcher = IMAGE_SRC_PATTERN.matcher(content);
         while (matcher.find()) {
             photoUrls.add(matcher.group(1));
         }
