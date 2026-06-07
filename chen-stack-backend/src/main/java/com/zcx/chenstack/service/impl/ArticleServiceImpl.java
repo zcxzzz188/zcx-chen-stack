@@ -732,68 +732,74 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
     // 文章审核
     private void auditArticle(ArticleDto articleDto) {
         notificationThreadPool.getNotificationPool("article").execute(() -> {
-            Article currentArticle = articleMapper.selectOne(
-                    new LambdaQueryWrapper<Article>()
-                            .select(Article::getId, Article::getEditStatus, Article::getExamineStatus)
-                            .eq(Article::getId, articleDto.getId()));
-
-            MessageDto messageDto = new MessageDto();
-            messageDto.setType(MessageTypeEnum.SYSTEM.getCode());
-            // 先更新文章的审核状态
-            Article updateArticle = new Article();
-            updateArticle.setId(articleDto.getId());
-            // 进行自动审核
-            if (chenStackConfig.isArticleAutoAudit()) {
-                AuditResult auditResult = textAuditUtils
-                        .auditTextWithDetailsSplit(articleDto.getTitle() + " " + articleDto.getContent());
-
-                if (auditResult.getStatus().equals(ExamineStatusEnum.PASS.getCode())) {
-                    // 文字审核通过，更新审核状态为通过
-                    updateArticle.setExamineStatus(ExamineStatusEnum.PASS.getCode());
-                    updateArticle.setTag(articleDto.getTag());
-                    articleMapper.updateById(updateArticle);
-                    syncColumnArticleCountByStatusChange(currentArticle, ExamineStatusEnum.PASS.getCode());
-                } else if (auditResult.getStatus().equals(ExamineStatusEnum.NO_PASS.getCode())) {
-                    // 文字审核不通过，更新审核状态为不通过，并记录原因，并发送消息给用户
-                    updateArticle.setExamineStatus(ExamineStatusEnum.NO_PASS.getCode());
-                    articleMapper.updateById(updateArticle);
-                    log.error("文章审核不通过，ID: {}，标题: {}，原因: {}", articleDto.getId(), articleDto.getTitle(),
-                            auditResult.getErrorMessage());
-
-                    messageDto.setContent(MessageConstants.ArticleAuditNotPass(articleDto.getId(),
-                            articleDto.getTitle(), auditResult.getErrorMessage()));
-                    messageDto.setReceiverId(articleDto.getUserId());
-                    messageService.sendToUser(messageDto);
-                } else if (auditResult.getStatus().equals(ExamineStatusEnum.WAIT.getCode())) {
-                    // 需要人工审核，更新审核状态为待审核，并记录原因，并发送消息给管理员
-                    updateArticle.setExamineStatus(ExamineStatusEnum.WAIT.getCode());
-                    articleMapper.updateById(updateArticle);
-                    log.error("文章需要人工审核，ID: {}", articleDto.getId());
-
-                    messageDto.setContent(MessageConstants.ArticleNeedReview(articleDto.getId(), articleDto.getTitle(),
-                            auditResult.getErrorMessage()));
-                    messageService.sendToAdmin(messageDto);
-
-                    HashMap<String, Object> sendEmail = new HashMap<>();
-                    sendEmail.put("text", String.format(MessageConstants.ARTICLE_NEED_REVIEW, articleDto.getId(),
-                            auditResult.getErrorMessage()));
-                    rabbitTemplate.convertAndSend(RabbitMQConstants.Examine_Exchange,
-                            RabbitMQConstants.Examine_Routing_Key, sendEmail);
+            try {
+                Article currentArticle = articleMapper.selectOne(
+                        new LambdaQueryWrapper<Article>()
+                                .select(Article::getId, Article::getEditStatus, Article::getExamineStatus)
+                                .eq(Article::getId, articleDto.getId()));
+                if (ObjectUtil.isEmpty(currentArticle)) {
+                    log.warn("文章审核任务未找到文章，ID: {}", articleDto.getId());
+                    return;
                 }
-            } else {
-                updateArticle.setExamineStatus(ExamineStatusEnum.WAIT.getCode());
-                articleMapper.updateById(updateArticle);
-                // 没有开启自动审核, 需要人工审核，发送消息给管理员
-                messageDto.setContent(
-                        MessageConstants.ArticleNeedReview(articleDto.getId(), articleDto.getTitle(), null));
-                messageService.sendToAdmin(messageDto);
 
-                HashMap<String, Object> sendEmail = new HashMap<>();
-                sendEmail.put("text", String.format(MessageConstants.ARTICLE_NEED_REVIEW, articleDto.getId(), null));
-                rabbitTemplate.convertAndSend(RabbitMQConstants.Examine_Exchange, RabbitMQConstants.Examine_Routing_Key,
-                        sendEmail);
+                MessageDto messageDto = new MessageDto();
+                messageDto.setType(MessageTypeEnum.SYSTEM.getCode());
+                // 先更新文章的审核状态
+                Article updateArticle = new Article();
+                updateArticle.setId(articleDto.getId());
+                // 进行自动审核
+                if (chenStackConfig.isArticleAutoAudit()) {
+                    AuditResult auditResult = textAuditUtils
+                            .auditTextWithDetailsSplit(articleDto.getTitle() + " " + articleDto.getContent());
+
+                    if (auditResult.getStatus().equals(ExamineStatusEnum.PASS.getCode())) {
+                        // 文字审核通过，更新审核状态为通过
+                        updateArticle.setExamineStatus(ExamineStatusEnum.PASS.getCode());
+                        updateArticle.setTag(articleDto.getTag());
+                        articleMapper.updateById(updateArticle);
+                        syncColumnArticleCountByStatusChange(currentArticle, ExamineStatusEnum.PASS.getCode());
+                    } else if (auditResult.getStatus().equals(ExamineStatusEnum.NO_PASS.getCode())) {
+                        // 文字审核不通过，更新审核状态为不通过，并记录原因，并发送消息给用户
+                        updateArticle.setExamineStatus(ExamineStatusEnum.NO_PASS.getCode());
+                        articleMapper.updateById(updateArticle);
+                        log.error("文章审核不通过，ID: {}，标题: {}，原因: {}", articleDto.getId(), articleDto.getTitle(),
+                                auditResult.getErrorMessage());
+
+                        messageDto.setContent(MessageConstants.ArticleAuditNotPass(articleDto.getId(),
+                                articleDto.getTitle(), auditResult.getErrorMessage()));
+                        messageDto.setReceiverId(articleDto.getUserId());
+                        messageService.sendToUser(messageDto);
+                    } else if (auditResult.getStatus().equals(ExamineStatusEnum.WAIT.getCode())) {
+                        // 需要人工审核，更新审核状态为待审核，并记录原因，并发送消息给管理员
+                        log.error("文章需要人工审核，ID: {}", articleDto.getId());
+                        markArticleForManualReview(articleDto, auditResult.getErrorMessage());
+                    }
+                } else {
+                    // 没有开启自动审核, 需要人工审核，发送消息给管理员
+                    markArticleForManualReview(articleDto, null);
+                }
+            } catch (Exception e) {
+                log.error("文章自动审核过程中发生异常，ID: {}，标题: {}", articleDto.getId(), articleDto.getTitle(), e);
+                markArticleForManualReview(articleDto, "自动审核异常: " + e.getMessage());
             }
         });
+    }
+
+    private void markArticleForManualReview(ArticleDto articleDto, String reason) {
+        Article updateArticle = new Article();
+        updateArticle.setId(articleDto.getId());
+        updateArticle.setExamineStatus(ExamineStatusEnum.WAIT.getCode());
+        articleMapper.updateById(updateArticle);
+
+        MessageDto messageDto = new MessageDto();
+        messageDto.setType(MessageTypeEnum.SYSTEM.getCode());
+        messageDto.setContent(MessageConstants.ArticleNeedReview(articleDto.getId(), articleDto.getTitle(), reason));
+        messageService.sendToAdmin(messageDto);
+
+        HashMap<String, Object> sendEmail = new HashMap<>();
+        sendEmail.put("text", String.format(MessageConstants.ARTICLE_NEED_REVIEW, articleDto.getId(), reason));
+        rabbitTemplate.convertAndSend(RabbitMQConstants.Examine_Exchange, RabbitMQConstants.Examine_Routing_Key,
+                sendEmail);
     }
 
     // 保存草稿

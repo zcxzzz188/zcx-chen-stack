@@ -53,6 +53,18 @@ public class TextAuditUtils {
     @Value("${aliyun.imageaudit.endpoint}")
     private String endpoint;
 
+    private Integer mergeAuditStatus(Integer currentStatus, Integer nextStatus) {
+        if (Objects.equals(currentStatus, ExamineStatusEnum.NO_PASS.getCode())
+                || Objects.equals(nextStatus, ExamineStatusEnum.NO_PASS.getCode())) {
+            return ExamineStatusEnum.NO_PASS.getCode();
+        }
+        if (Objects.equals(currentStatus, ExamineStatusEnum.WAIT.getCode())
+                || Objects.equals(nextStatus, ExamineStatusEnum.WAIT.getCode())) {
+            return ExamineStatusEnum.WAIT.getCode();
+        }
+        return ExamineStatusEnum.PASS.getCode();
+    }
+
     /**
      * 根据label获取对应的违规分类描述
      *
@@ -318,7 +330,7 @@ public class TextAuditUtils {
 
                     // 如果建议是"block"，则审核不通过
                     if ("block".equals(suggestion)) {
-                        status = ExamineStatusEnum.NO_PASS.getCode(); // 审核不通过
+                        status = mergeAuditStatus(status, ExamineStatusEnum.NO_PASS.getCode());
                         // 构建错误信息
                         errorMessage.append("检测到违规内容: ")
                                 .append(labelDescription)
@@ -337,7 +349,7 @@ public class TextAuditUtils {
                                 .append("%; ");
                     } else if ("review".equals(suggestion)) {
                         // 如果建议是"review"，则需要人工审核
-                        status = ExamineStatusEnum.WAIT.getCode();
+                        status = mergeAuditStatus(status, ExamineStatusEnum.WAIT.getCode());
                         errorMessage.append("需要人工审核: ")
                                 .append(labelDescription)
                                 .append("(")
@@ -354,8 +366,8 @@ public class TextAuditUtils {
                                 .append(rate)
                                 .append("%; ");
                     } else {
-                        // 如果建议是"pass"，则审核通过
-                        status = ExamineStatusEnum.PASS.getCode();
+                        // 如果建议是"pass"，则保持当前更高优先级状态不变
+                        status = mergeAuditStatus(status, ExamineStatusEnum.PASS.getCode());
                     }
                 }
             }
@@ -364,7 +376,7 @@ public class TextAuditUtils {
         } catch (com.aliyun.tea.TeaException e) {
             log.error("文本段审核失败:{}", e);
             // 审核服务异常,需要人工审核
-            return new AuditResult(2, "文本段审核过程中发生错误: " + e.getMessage());
+            return new AuditResult(ExamineStatusEnum.WAIT.getCode(), "文本段审核过程中发生错误: " + e.getMessage());
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
@@ -390,14 +402,14 @@ public class TextAuditUtils {
 
             // 如果有任何一段不通过，整体就不通过
             if (result.getStatus().equals(ExamineStatusEnum.NO_PASS.getCode())) {
-                finalStatus = ExamineStatusEnum.NO_PASS.getCode();
+                finalStatus = mergeAuditStatus(finalStatus, ExamineStatusEnum.NO_PASS.getCode());
                 if (allMessages.length() > 0) {
                     allMessages.append("; ");
                 }
                 allMessages.append("第").append(i + 1).append("段: ").append(result.getErrorMessage());
-            } else if (result.getStatus().equals(ExamineStatusEnum.WAIT.getCode()) && finalStatus.equals(ExamineStatusEnum.PASS.getCode())) {
+            } else if (result.getStatus().equals(ExamineStatusEnum.WAIT.getCode())) {
                 // 如果没有不通过的，但有需要人工审核的，则设置为需要人工审核
-                finalStatus = ExamineStatusEnum.WAIT.getCode();
+                finalStatus = mergeAuditStatus(finalStatus, ExamineStatusEnum.WAIT.getCode());
                 if (allMessages.length() > 0) {
                     allMessages.append("; ");
                 }
@@ -502,7 +514,7 @@ public class TextAuditUtils {
 
                     // 如果建议是"block"，则审核不通过
                     if ("block".equals(suggestion)) {
-                        status = ExamineStatusEnum.NO_PASS.getCode(); // 审核不通过
+                        status = mergeAuditStatus(status, ExamineStatusEnum.NO_PASS.getCode());
                         // 构建错误信息
                         errorMessage.append("检测到违规内容: ")
                                 .append(labelDescription)
@@ -521,7 +533,7 @@ public class TextAuditUtils {
                                 .append("%; ");
                     } else if ("review".equals(suggestion)) {
                         // 如果建议是"review"，则需要人工审核
-                        status = ExamineStatusEnum.WAIT.getCode();
+                        status = mergeAuditStatus(status, ExamineStatusEnum.WAIT.getCode());
                         errorMessage.append("需要人工审核: ")
                                 .append(labelDescription)
                                 .append("(")
@@ -538,8 +550,8 @@ public class TextAuditUtils {
                                 .append(rate)
                                 .append("%; ");
                     } else {
-                        // 如果建议是"pass"，则审核通过
-                        status = ExamineStatusEnum.PASS.getCode();
+                        // 如果建议是"pass"，则保持当前更高优先级状态不变
+                        status = mergeAuditStatus(status, ExamineStatusEnum.PASS.getCode());
                     }
                 }
             }
