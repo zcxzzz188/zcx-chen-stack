@@ -128,6 +128,7 @@ chen-stack:
     enabled: ${CHEN_STACK_RATE_LIMIT_ENABLED:true} # 限流开关，压力测试时设为 false
   PhotoAutoAudit: ${CHEN_STACK_PHOTO_AUTO_AUDIT:false} # 是否开启图片自动审核
   ArticleAutoAudit: ${CHEN_STACK_ARTICLE_AUTO_AUDIT:false} # 是否开启文章自动审核
+  ColumnAutoAudit: ${CHEN_STACK_COLUMN_AUTO_AUDIT:false} # 是否开启专栏自动审核
   CommentAutoAudit: ${CHEN_STACK_COMMENT_AUTO_AUDIT:false} # 是否开启评论自动审核
   AllowOrigins:
     - http://localhost:7000

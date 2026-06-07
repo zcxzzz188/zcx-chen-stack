@@ -7,6 +7,7 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import com.zcx.chenstack.config.ChenStackConfig;
 import com.zcx.chenstack.domain.constants.BlogConstants;
 import com.zcx.chenstack.domain.dto.ColumnArticleSortDto;
 import com.zcx.chenstack.domain.dto.ColumnDto;
@@ -19,6 +20,7 @@ import com.zcx.chenstack.domain.entity.SysUser;
 import com.zcx.chenstack.domain.enums.ExamineStatusEnum;
 import com.zcx.chenstack.domain.enums.ShowStatusEnum;
 import com.zcx.chenstack.domain.enums.StatusEnum;
+import com.zcx.chenstack.domain.result.AuditResult;
 import com.zcx.chenstack.domain.vo.*;
 import com.zcx.chenstack.exception.BlogException;
 import com.zcx.chenstack.mapper.ArticleColumnMapper;
@@ -30,6 +32,8 @@ import com.zcx.chenstack.service.ColumnService;
 import com.zcx.chenstack.service.UserSettingsService;
 import com.zcx.chenstack.utils.EmailUtils;
 import com.zcx.chenstack.utils.SecurityUtils;
+import com.zcx.chenstack.utils.TextAuditUtils;
+import com.zcx.chenstack.utils.MyThreadFactory;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -38,10 +42,16 @@ import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.temporal.TemporalAdjusters;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Date;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.function.Function;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 /**
@@ -56,6 +66,13 @@ import java.util.stream.Collectors;
 @Service
 @Slf4j
 public class ColumnServiceImpl extends ServiceImpl<ColumnMapper, Column> implements ColumnService {
+    private static final int PHOTO_AUDIT_MAX_RETRY_TIMES = 6;
+    private static final long PHOTO_AUDIT_RETRY_INTERVAL_MILLIS = 5000L;
+
+    private final ExecutorService columnAuditExecutor = new ThreadPoolExecutor(
+            2, 4, 0L, TimeUnit.MILLISECONDS,
+            new LinkedBlockingQueue<>(200),
+            new MyThreadFactory("ColumnServiceImpl"));
 
     @Resource
     private ColumnMapper columnMapper;
@@ -82,6 +99,10 @@ public class ColumnServiceImpl extends ServiceImpl<ColumnMapper, Column> impleme
     private EmailUtils emailUtils;
     @Resource
     private PhotoServiceImpl photoServiceImpl;
+    @Resource
+    private TextAuditUtils textAuditUtils;
+    @Resource
+    private ChenStackConfig chenStackConfig;
 
     /**
      * 为专栏管理VO设置作者昵称
@@ -326,7 +347,12 @@ public class ColumnServiceImpl extends ServiceImpl<ColumnMapper, Column> impleme
         if (userId != 0) {
             columnDto.setUserId(userId);
         }
-        columnMapper.insert(BeanUtil.copyProperties(columnDto, Column.class));
+        Column newColumn = BeanUtil.copyProperties(columnDto, Column.class);
+        newColumn.setExamineStatus(ExamineStatusEnum.WAIT.getCode());
+        columnMapper.insert(newColumn);
+        if (chenStackConfig.isColumnAutoAudit()) {
+            auditColumn(newColumn);
+        }
     }
 
     @Override
@@ -371,18 +397,127 @@ public class ColumnServiceImpl extends ServiceImpl<ColumnMapper, Column> impleme
             }
         }
 
-        // 如果修改了标题、描述或封面，重新设为待审核状态
-        boolean nameChanged = !ObjectUtil.equal(column.getName(), columnDto.getName());
-        boolean descriptionChanged = !ObjectUtil.equal(column.getDescription(), columnDto.getDescription());
-        boolean coverUrlChanged = !ObjectUtil.equal(column.getCoverUrl(), columnDto.getCoverUrl());
-
-        if (nameChanged || descriptionChanged || coverUrlChanged) {
+        boolean shouldReAudit = shouldTriggerColumnReAudit(column, columnDto);
+        if (shouldReAudit) {
             updateColumn.setExamineStatus(ExamineStatusEnum.WAIT.getCode());
         }
 
+        // 如果修改了标题、描述或封面，重新设为待审核状态
         if (columnMapper.updateById(updateColumn) <= 0) {
             throw new BlogException(BlogConstants.UpdateColumnError);
         }
+        if (shouldReAudit && chenStackConfig.isColumnAutoAudit()) {
+            auditColumn(buildAuditTargetColumn(column, columnDto));
+        }
+    }
+
+    private boolean shouldTriggerColumnReAudit(Column existingColumn, ColumnDto columnDto) {
+        if (!Objects.equals(existingColumn.getExamineStatus(), ExamineStatusEnum.PASS.getCode())) {
+            return true;
+        }
+        return !ObjectUtil.equal(existingColumn.getName(),
+                columnDto.getName() != null ? columnDto.getName() : existingColumn.getName())
+                || !ObjectUtil.equal(existingColumn.getDescription(),
+                        columnDto.getDescription() != null ? columnDto.getDescription() : existingColumn.getDescription())
+                || !ObjectUtil.equal(existingColumn.getCoverUrl(),
+                        columnDto.getCoverUrl() != null ? columnDto.getCoverUrl() : existingColumn.getCoverUrl());
+    }
+
+    private Column buildAuditTargetColumn(Column existingColumn, ColumnDto columnDto) {
+        Column auditTarget = new Column();
+        auditTarget.setId(existingColumn.getId());
+        auditTarget.setUserId(existingColumn.getUserId());
+        auditTarget.setName(columnDto.getName() != null ? columnDto.getName() : existingColumn.getName());
+        auditTarget.setDescription(
+                columnDto.getDescription() != null ? columnDto.getDescription() : existingColumn.getDescription());
+        auditTarget.setCoverUrl(columnDto.getCoverUrl() != null ? columnDto.getCoverUrl() : existingColumn.getCoverUrl());
+        return auditTarget;
+    }
+
+    private void auditColumn(Column column) {
+        columnAuditExecutor.execute(() -> {
+            try {
+                Column currentColumn = columnMapper.selectOne(new LambdaQueryWrapper<Column>()
+                        .select(Column::getId, Column::getUserId, Column::getName, Column::getDescription,
+                                Column::getCoverUrl, Column::getExamineStatus)
+                        .eq(Column::getId, column.getId()));
+                if (ObjectUtil.isEmpty(currentColumn)) {
+                    log.warn("专栏审核任务未找到专栏，ID: {}", column.getId());
+                    return;
+                }
+
+                AuditResult textAuditResult = textAuditUtils.auditTextWithDetailsSplit(
+                        buildColumnAuditText(currentColumn.getName(), currentColumn.getDescription()));
+                if (ExamineStatusEnum.NO_PASS.getCode().equals(textAuditResult.getStatus())) {
+                    updateColumnExamineStatus(currentColumn.getId(), ExamineStatusEnum.NO_PASS.getCode());
+                    return;
+                }
+                if (ExamineStatusEnum.WAIT.getCode().equals(textAuditResult.getStatus())) {
+                    updateColumnExamineStatus(currentColumn.getId(), ExamineStatusEnum.WAIT.getCode());
+                    return;
+                }
+
+                AuditResult coverAuditResult = waitForCoverPhotoAuditResult(currentColumn.getUserId(),
+                        currentColumn.getCoverUrl());
+                if (ExamineStatusEnum.PASS.getCode().equals(coverAuditResult.getStatus())) {
+                    updateColumnExamineStatus(currentColumn.getId(), ExamineStatusEnum.PASS.getCode());
+                    photoServiceImpl.passPhotosByUrls(java.util.Collections.singletonList(currentColumn.getCoverUrl()));
+                } else if (ExamineStatusEnum.NO_PASS.getCode().equals(coverAuditResult.getStatus())) {
+                    updateColumnExamineStatus(currentColumn.getId(), ExamineStatusEnum.NO_PASS.getCode());
+                } else {
+                    updateColumnExamineStatus(currentColumn.getId(), ExamineStatusEnum.WAIT.getCode());
+                }
+            } catch (Exception e) {
+                log.error("专栏自动审核异常，columnId: {}", column.getId(), e);
+                updateColumnExamineStatus(column.getId(), ExamineStatusEnum.WAIT.getCode());
+            }
+        });
+    }
+
+    private String buildColumnAuditText(String name, String description) {
+        String safeName = name == null ? "" : name;
+        String safeDescription = description == null ? "" : description;
+        return safeName + " " + safeDescription;
+    }
+
+    private AuditResult waitForCoverPhotoAuditResult(Integer userId, String coverUrl) {
+        if (ObjectUtil.isEmpty(coverUrl)) {
+            return new AuditResult(ExamineStatusEnum.PASS.getCode(), "专栏无封面图");
+        }
+
+        Collection<String> photoUrls = java.util.Collections.singletonList(coverUrl);
+        AuditResult lastResult = new AuditResult(ExamineStatusEnum.PASS.getCode(), "专栏无封面图");
+        boolean reAuditTriggered = false;
+        for (int attempt = 0; attempt < PHOTO_AUDIT_MAX_RETRY_TIMES; attempt++) {
+            lastResult = photoServiceImpl.auditPhotoUrlsByStatus(photoUrls);
+            if (!ExamineStatusEnum.WAIT.getCode().equals(lastResult.getStatus())) {
+                return lastResult;
+            }
+            if (!reAuditTriggered) {
+                reAuditTriggered = true;
+                photoServiceImpl.reAuditPhotosByUrls(userId, photoUrls);
+            }
+            if (attempt == PHOTO_AUDIT_MAX_RETRY_TIMES - 1) {
+                break;
+            }
+            try {
+                Thread.sleep(PHOTO_AUDIT_RETRY_INTERVAL_MILLIS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return new AuditResult(ExamineStatusEnum.WAIT.getCode(), "等待专栏封面审核结果时线程被中断");
+            }
+        }
+        return lastResult;
+    }
+
+    private void updateColumnExamineStatus(Integer columnId, Integer examineStatus) {
+        if (columnId == null || examineStatus == null) {
+            return;
+        }
+        Column updateColumn = new Column();
+        updateColumn.setId(columnId);
+        updateColumn.setExamineStatus(examineStatus);
+        columnMapper.updateById(updateColumn);
     }
 
     @Override
