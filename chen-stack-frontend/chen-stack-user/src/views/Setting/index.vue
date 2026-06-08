@@ -43,7 +43,7 @@
                       :before-upload="beforeAvatarUpload"
                       accept="image/*"
                     >
-                      <img v-if="userInfo.avatar" :src="userInfo.avatar" class="avatar-preview" />
+                      <img v-if="displayAvatarUrl" :src="displayAvatarUrl" class="avatar-preview" />
                       <div v-else class="avatar-placeholder">
                         <el-icon class="avatar-placeholder__icon">
                           <Plus />
@@ -51,6 +51,10 @@
                         <span class="avatar-placeholder__text">上传头像</span>
                       </div>
                     </el-upload>
+                    <div v-if="isPendingAvatarReview" class="avatar-review-status">
+                      <span class="avatar-review-status__badge">审核中</span>
+                      <p>当前仅自己可见，审核通过后将替换公开头像。</p>
+                    </div>
                   </div>
 
                   <div class="profile-card__info">
@@ -586,7 +590,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { Edit, EditPen, Lock, Message, Plus, User } from '@element-plus/icons-vue'
 import {
   info,
@@ -604,6 +608,7 @@ import { compressImage, validateAvatarImageFile } from '@/utils/PhotoUtils'
 import { useUserStore } from '@/stores/userStore'
 
 const userStore = useUserStore()
+let pendingAvatarRefreshTimer = null
 
 const userLoading = ref(false)
 const userInfo = ref(null)
@@ -647,6 +652,17 @@ const introductionPreview = computed(() => {
   return userInfo.value?.introduction || '这个人很懒，什么都没写。'
 })
 
+const isPendingAvatarReview = computed(() => {
+  return Boolean(userInfo.value?.pendingAvatarUrl) && userInfo.value?.pendingAvatarStatus === 0
+})
+
+const displayAvatarUrl = computed(() => {
+  if (isPendingAvatarReview.value) {
+    return userInfo.value?.pendingAvatarUrl || ''
+  }
+  return userInfo.value?.avatar || ''
+})
+
 const maskedEmail = computed(() => {
   const email = userInfo.value?.email
   if (!email) {
@@ -682,22 +698,29 @@ const profileCompletion = computed(() => {
   return Math.round((completedCount / fields.length) * 100)
 })
 
+const syncUserInfoState = (data) => {
+  userInfo.value = data
+  isReceivePrivateMessageEmail.value = data?.isReceivePrivateMessageEmail || 0
+  isReceiveCommentEmail.value = data?.isReceiveCommentEmail || 0
+  isReceiveSystemEmail.value = data?.isReceiveSystemEmail || 0
+}
+
 const fetchUserInfo = async () => {
   try {
     userLoading.value = true
     const res = await info()
-    userInfo.value = res.data
-    // 初始化私信邮件通知开关状态
-    isReceivePrivateMessageEmail.value = res.data.isReceivePrivateMessageEmail || 0
-    // 初始化评论邮件通知开关状态
-    isReceiveCommentEmail.value = res.data.isReceiveCommentEmail || 0
-    // 初始化系统邮件通知开关状态
-    isReceiveSystemEmail.value = res.data.isReceiveSystemEmail || 0
+    syncUserInfoState(res.data)
   } catch (error) {
     // 静默处理
   } finally {
     userLoading.value = false
   }
+}
+
+const refreshUserInfoSilently = async () => {
+  const res = await info()
+  syncUserInfoState(res.data)
+  userStore.user = res.data
 }
 
 const startEdit = (field) => {
@@ -773,9 +796,15 @@ const handleAvatarUpload = async (options) => {
     await uploadAvatar(compressedFile)
 
     // 上传成功后重新拉取最新用户信息，确保设置页和顶部导航头像同步刷新
-    const latestUserInfoRes = await info()
-    userInfo.value = latestUserInfoRes.data
-    userStore.user = latestUserInfoRes.data
+    await refreshUserInfoSilently()
+
+    if (pendingAvatarRefreshTimer) {
+      clearTimeout(pendingAvatarRefreshTimer)
+    }
+    pendingAvatarRefreshTimer = setTimeout(() => {
+      refreshUserInfoSilently().catch(() => {})
+      pendingAvatarRefreshTimer = null
+    }, 800)
 
     if (options.onSuccess) {
       options.onSuccess()
@@ -789,6 +818,13 @@ const handleAvatarUpload = async (options) => {
     }
   }
 }
+
+onBeforeUnmount(() => {
+  if (pendingAvatarRefreshTimer) {
+    clearTimeout(pendingAvatarRefreshTimer)
+    pendingAvatarRefreshTimer = null
+  }
+})
 
 const passwordDialogVisible = ref(false)
 const passwordStep = ref(0)
@@ -1303,6 +1339,30 @@ onMounted(() => {
 
                 .avatar-placeholder__text {
                   font-size: 12px;
+                }
+              }
+
+              .avatar-review-status {
+                margin-top: 10px;
+
+                p {
+                  margin: 8px 0 0;
+                  max-width: 200px;
+                  font-size: 12px;
+                  line-height: 1.6;
+                  color: var(--setting-text-muted);
+                }
+
+                .avatar-review-status__badge {
+                  display: inline-flex;
+                  align-items: center;
+                  min-height: 24px;
+                  padding: 0 10px;
+                  border-radius: 999px;
+                  background: var(--el-color-warning-light-9);
+                  color: var(--el-color-warning-dark-2);
+                  font-size: 12px;
+                  font-weight: 600;
                 }
               }
             }

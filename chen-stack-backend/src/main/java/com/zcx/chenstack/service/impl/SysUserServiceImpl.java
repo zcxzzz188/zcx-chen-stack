@@ -342,6 +342,18 @@ public class SysUserServiceImpl extends ServiceImpl<SysUserMapper, SysUser> impl
         sysUserVo.setSex(sysUser.getSex());
         sysUserVo.setFansCount(sysUser.getFansCount());
         sysUserVo.setFollowCount(sysUser.getFollowCount());
+
+        Photo latestAvatarPhoto = photoMapper.selectOne(new LambdaQueryWrapper<Photo>()
+                .select(Photo::getUrl, Photo::getExamineStatus)
+                .eq(Photo::getUserId, userId)
+                .like(Photo::getUrl, "/user/avatar/")
+                .orderByDesc(Photo::getId)
+                .last("LIMIT 1"));
+        if (latestAvatarPhoto != null && ExamineStatusEnum.WAIT.getCode().equals(latestAvatarPhoto.getExamineStatus())) {
+            sysUserVo.setPendingAvatarUrl(latestAvatarPhoto.getUrl());
+            sysUserVo.setPendingAvatarStatus(latestAvatarPhoto.getExamineStatus());
+        }
+
         // 从 user_settings 表读取邮件通知设置
         sysUserVo.setIsReceivePrivateMessageEmail(userSettingsService.getReceivePrivateMessageEmail(userId));
         sysUserVo.setIsReceiveCommentEmail(userSettingsService.getReceiveCommentEmail(userId));

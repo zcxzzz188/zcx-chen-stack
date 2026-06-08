@@ -45,6 +45,16 @@ public class SysUserVo {
      * 头像
      */
     private String avatar;
+
+    /**
+     * 待审核头像url
+     */
+    private String pendingAvatarUrl;
+
+    /**
+     * 待审核头像审核状态
+     */
+    private Integer pendingAvatarStatus;
     
     /**
      * 状态 0-正常 1-禁用
