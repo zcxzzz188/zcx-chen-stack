@@ -74,23 +74,25 @@
       <el-table-column v-if="showUpdateTime" prop="updateTime" label="更新时间" :width="updateTimeWidth" sortable />
 
       <!-- 操作列 -->
-      <el-table-column v-if="showActions" :label="actionsLabel" :width="actionsWidth" fixed="right">
+      <el-table-column v-if="showActions" :label="actionsLabel" :width="actionsWidth" fixed="right" header-align="center">
         <template #default="{ row }">
-          <TableActions
-            :show-view="hasViewAction"
-            :show-detail="hasDetailAction"
-            :show-edit="hasEditAction"
-            :show-delete="hasDeleteAction"
-            :show-audit="hasAuditAction"
-            :show-reject="hasRejectAction"
-            :detail-text="detailText"
-            @view="$emit('view', row)"
-            @detail="$emit('detail', row)"
-            @edit="$emit('edit', row)"
-            @delete="$emit('delete', row)"
-            @audit="$emit('audit', row)"
-            @reject="$emit('reject', row)"
-          />
+          <div class="table-action-cell">
+            <TableActions
+              :show-view="hasViewAction"
+              :show-detail="hasDetailAction"
+              :show-edit="hasEditAction"
+              :show-delete="hasDeleteAction"
+              :show-audit="hasAuditAction"
+              :show-reject="hasRejectAction"
+              :detail-text="detailText"
+              @view="$emit('view', row)"
+              @detail="$emit('detail', row)"
+              @edit="$emit('edit', row)"
+              @delete="$emit('delete', row)"
+              @audit="$emit('audit', row)"
+              @reject="$emit('reject', row)"
+            />
+          </div>
         </template>
       </el-table-column>
 
@@ -353,6 +355,13 @@ const resolveUserName = (row) => row?.userName || row?.nickname || row?.username
         font-size: 12px;
         color: var(--text-placeholder);
       }
+    }
+
+    .table-action-cell {
+      width: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
     }
   }
 }

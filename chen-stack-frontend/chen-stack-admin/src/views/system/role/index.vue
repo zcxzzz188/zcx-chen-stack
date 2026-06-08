@@ -34,7 +34,7 @@
           </el-table-column>
           <el-table-column prop="createTime" label="创建时间" sortable width="120" />
           <el-table-column prop="updateTime" label="更新时间" sortable width="120" />
-          <el-table-column label="操作" width="440" fixed="right">
+          <el-table-column label="操作" width="440" fixed="right" header-align="center">
             <template #default="{ row }">
               <div class="table-actions">
                 <el-button type="primary" size="small" @click="handleEditRole(row)" :icon="Edit" class="edit-button"> 编辑 </el-button>
@@ -554,9 +554,12 @@ onMounted(() => {
   }
 
   .table-actions {
-    height: 30px;
+    min-height: 30px;
+    width: 100%;
     display: flex;
     align-items: center;
+    justify-content: center;
+    flex-wrap: wrap;
     gap: 8px;
 
     .edit-button {

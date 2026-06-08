@@ -52,19 +52,21 @@
           <el-table-column prop="loginTime" label="最近登录时间" sortable width="135" />
           <el-table-column prop="createTime" label="创建时间" sortable width="120" />
           <el-table-column prop="updateTime" label="更新时间" sortable width="120" />
-          <el-table-column label="操作" width="280">
+          <el-table-column label="操作" width="280" header-align="center">
             <template #default="{ row }">
-              <TableActions
-                :show-detail="true"
-                :show-edit="true"
-                :show-delete="true"
-                :detail-text="'详情'"
-                @detail="handleDetailUser(row.id)"
-                @edit="handleEditUser(row)"
-                @delete="handleDeleteUser(row.id)"
-              >
-                <el-button size="small" type="warning" class="action-btn role-btn" @click="handleAuthorizeRole(row)" :icon="Avatar">添加角色</el-button>
-              </TableActions>
+              <div class="table-actions">
+                <TableActions
+                  :show-detail="true"
+                  :show-edit="true"
+                  :show-delete="true"
+                  :detail-text="'详情'"
+                  @detail="handleDetailUser(row.id)"
+                  @edit="handleEditUser(row)"
+                  @delete="handleDeleteUser(row.id)"
+                >
+                  <el-button size="small" type="warning" class="action-btn role-btn" @click="handleAuthorizeRole(row)" :icon="Avatar">添加角色</el-button>
+                </TableActions>
+              </div>
             </template>
           </el-table-column>
         </el-table>
@@ -705,6 +707,24 @@ const handleAuthorizeDialogClose = () => {
   :deep(.el-table__fixed-right) {
     box-shadow: -3px 0 10px var(--shadow-card);
   }
+}
+
+.table-actions {
+  width: 100%;
+  min-height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+.table-actions :deep(.table-actions) {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 // 角色按钮
