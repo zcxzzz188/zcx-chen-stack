@@ -17,6 +17,7 @@ import org.thymeleaf.TemplateEngine;
 import org.thymeleaf.context.Context;
 
 import java.io.UnsupportedEncodingException;
+import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.HashMap;
@@ -59,7 +60,7 @@ public class EmailUtils {
         // 创建一个邮件消息
         MimeMessage message = javaMailSender.createMimeMessage();
         // 创建 MimeMessageHelper 对象, 用于设置邮件内容
-        MimeMessageHelper helper = new MimeMessageHelper(message);
+        MimeMessageHelper helper = new MimeMessageHelper(message, StandardCharsets.UTF_8.name());
 
         try {
             helper.setTo(toEmail);
@@ -91,7 +92,7 @@ public class EmailUtils {
         // 创建一个邮件消息
         MimeMessage message = javaMailSender.createMimeMessage();
         // 创建 MimeMessageHelper 对象, 用于设置邮件内容
-        MimeMessageHelper helper = new MimeMessageHelper(message);
+        MimeMessageHelper helper = new MimeMessageHelper(message, StandardCharsets.UTF_8.name());
 
         try {
             helper.setTo(username);
@@ -126,7 +127,7 @@ public class EmailUtils {
         // 创建 MimeMessageHelper
         MimeMessageHelper helper = null;
         try {
-            helper = new MimeMessageHelper(message, false);
+            helper = new MimeMessageHelper(message, false, StandardCharsets.UTF_8.name());
             // 发件人邮箱和名称
             helper.setFrom(username, "辰栈");
             // 收件人邮箱
