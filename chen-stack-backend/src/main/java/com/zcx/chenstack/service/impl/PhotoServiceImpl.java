@@ -119,6 +119,46 @@ public class PhotoServiceImpl extends ServiceImpl<PhotoMapper, Photo> implements
         photoMapper.update(null, updateWrapper);
     }
 
+    public void cleanArticlePhotosByUrlsIfUnused(Collection<String> urls) {
+        if (ObjectUtil.isEmpty(urls)) {
+            return;
+        }
+
+        List<String> validUrls = urls.stream()
+                .filter(ObjectUtil::isNotEmpty)
+                .filter(url -> url.contains(UploadEnum.ARTICLE.getDir()))
+                .distinct()
+                .collect(Collectors.toList());
+        if (ObjectUtil.isEmpty(validUrls)) {
+            return;
+        }
+
+        Map<String, List<Photo>> photoMap = photoMapper.selectList(new LambdaQueryWrapper<Photo>()
+                        .select(Photo::getId, Photo::getUrl)
+                        .in(Photo::getUrl, validUrls))
+                .stream()
+                .collect(Collectors.groupingBy(Photo::getUrl));
+
+        validUrls.forEach(url -> {
+            try {
+                List<Photo> photos = photoMap.get(url);
+                if (ObjectUtil.isNotEmpty(photos)) {
+                    List<Integer> photoIds = photos.stream()
+                            .map(Photo::getId)
+                            .filter(ObjectUtil::isNotEmpty)
+                            .collect(Collectors.toList());
+                    if (ObjectUtil.isNotEmpty(photoIds)) {
+                        photoMapper.deleteBatchIds(photoIds);
+                    }
+                }
+
+                fileUploadUtils.deleteFiles(List.of(fileUploadUtils.getObjectName(url)));
+            } catch (Exception e) {
+                log.error("清理文章图片失败，url: {}", url, e);
+            }
+        });
+    }
+
     public AuditResult auditPhotoUrlsByStatus(Collection<String> urls) {
         if (ObjectUtil.isEmpty(urls)) {
             return new AuditResult(ExamineStatusEnum.PASS.getCode(), "文章无关联图片");

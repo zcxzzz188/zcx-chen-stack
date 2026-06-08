@@ -20,8 +20,13 @@ import com.zcx.chenstack.domain.result.AuditResult;
 import com.zcx.chenstack.domain.vo.*;
 import com.zcx.chenstack.exception.BlogException;
 import com.zcx.chenstack.mapper.ArticleColumnMapper;
+import com.zcx.chenstack.mapper.ArticleFavoriteMapper;
 import com.zcx.chenstack.mapper.ArticleMapper;
 import com.zcx.chenstack.mapper.ColumnMapper;
+import com.zcx.chenstack.mapper.CommentMapper;
+import com.zcx.chenstack.mapper.FavoriteMapper;
+import com.zcx.chenstack.mapper.HistoryMapper;
+import com.zcx.chenstack.mapper.LikeMapper;
 import com.zcx.chenstack.mapper.SysUserMapper;
 import com.zcx.chenstack.redis.RedisComponent;
 import com.zcx.chenstack.redis.NotificationThreadPool;
@@ -37,6 +42,9 @@ import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.time.LocalDateTime;
 import java.time.LocalTime;
@@ -71,6 +79,16 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
     private ArticleColumnMapper articleColumnMapper;
     @Resource
     private ColumnMapper columnMapper;
+    @Resource
+    private CommentMapper commentMapper;
+    @Resource
+    private LikeMapper likeMapper;
+    @Resource
+    private ArticleFavoriteMapper articleFavoriteMapper;
+    @Resource
+    private FavoriteMapper favoriteMapper;
+    @Resource
+    private HistoryMapper historyMapper;
     @Resource
     private TextAuditUtils textAuditUtils;
     @Resource
@@ -361,6 +379,12 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
     @Override
     public ArticleVo getArticle(Integer articleId) {
         Article article = articleMapper.selectById(articleId);
+        if (article == null) {
+            throw new BlogException(BlogConstants.NotFoundArticle);
+        }
+        if (article == null) {
+            throw new BlogException(BlogConstants.NotFoundArticle);
+        }
         if (ObjectUtil.isEmpty(article)) {
             throw new BlogException(BlogConstants.NotFoundArticle);
         }
@@ -1126,12 +1150,13 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
     }
 
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public void deleteArticle(Integer articleId) {
         Article article = articleMapper.selectById(articleId);
         if (article == null) {
             throw new BlogException(BlogConstants.NotFoundArticle);
         }
-        if (article.getUserId() != SecurityUtils.getUserId()) {
+        if (!Objects.equals(article.getUserId(), SecurityUtils.getUserId())) {
             throw new BlogException(BlogConstants.CannotHandleOthersArticle);
         }
 
@@ -1150,11 +1175,14 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
             });
         }
 
+        List<String> exclusivePhotoUrls = cleanupArticleRelatedData(Collections.singletonList(article));
+
         articleMapper.deleteById(articleId);
         articleColumnMapper.delete(new LambdaQueryWrapper<ArticleColumn>().in(ArticleColumn::getArticleId, articleId));
 
         // 清除文章的所有浏览记录
         redisComponent.clearArticleReads(articleId);
+        registerArticlePhotoCleanupAfterCommit(exclusivePhotoUrls);
     }
 
     @Override
@@ -1456,6 +1484,7 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
     }
 
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public void adminDeleteArticle(Integer articleId) {
         // 获取文章信息
         Article article = articleMapper.selectById(articleId);
@@ -1475,6 +1504,8 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
             });
         }
 
+        List<String> exclusivePhotoUrls = cleanupArticleRelatedData(Collections.singletonList(article));
+
         if (articleMapper.deleteById(articleId) < 1) {
             throw new BlogException(BlogConstants.DeleteArticleError);
         }
@@ -1484,10 +1515,13 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
 
         // 清除文章的所有浏览记录
         redisComponent.clearArticleReads(articleId);
+        registerArticlePhotoCleanupAfterCommit(exclusivePhotoUrls);
     }
 
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public void adminDeleteBatchArticle(List<Integer> articleIds) {
+        List<Article> articles = articleMapper.selectBatchIds(articleIds);
         // 批量处理专栏文章数量
         articleIds.forEach(articleId -> {
             Article article = articleMapper.selectById(articleId);
@@ -1509,6 +1543,7 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
         });
 
         // 批量删除文章
+        List<String> exclusivePhotoUrls = cleanupArticleRelatedData(articles);
         this.removeByIds(articleIds);
 
         // 删除文章与专栏的关联关系
@@ -1516,6 +1551,170 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
 
         // 批量清除文章的所有浏览记录
         redisComponent.batchClearArticleReads(articleIds);
+        registerArticlePhotoCleanupAfterCommit(exclusivePhotoUrls);
+    }
+
+    private List<String> cleanupArticleRelatedData(List<Article> articles) {
+        if (ObjectUtil.isEmpty(articles)) {
+            return Collections.emptyList();
+        }
+
+        List<Integer> articleIds = articles.stream()
+                .map(Article::getId)
+                .filter(Objects::nonNull)
+                .distinct()
+                .collect(Collectors.toList());
+        if (ObjectUtil.isEmpty(articleIds)) {
+            return Collections.emptyList();
+        }
+
+        List<String> exclusivePhotoUrls = findExclusiveArticlePhotoUrls(articles);
+
+        List<Comment> comments = commentMapper.selectList(new LambdaQueryWrapper<Comment>()
+                .select(Comment::getId)
+                .in(Comment::getArticleId, articleIds));
+        List<Integer> commentIds = comments.stream()
+                .map(Comment::getId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toList());
+
+        likeMapper.delete(new LambdaQueryWrapper<Like>()
+                .eq(Like::getType, LikeTypeEnum.ARTICLE.getCode())
+                .in(Like::getTypeId, articleIds));
+        if (ObjectUtil.isNotEmpty(commentIds)) {
+            likeMapper.delete(new LambdaQueryWrapper<Like>()
+                    .eq(Like::getType, LikeTypeEnum.COMMENT.getCode())
+                    .in(Like::getTypeId, commentIds));
+        }
+
+        List<ArticleFavorite> articleFavorites = articleFavoriteMapper.selectList(new LambdaQueryWrapper<ArticleFavorite>()
+                .select(ArticleFavorite::getFavoriteId)
+                .in(ArticleFavorite::getArticleId, articleIds));
+        if (ObjectUtil.isNotEmpty(articleFavorites)) {
+            List<Integer> favoriteIds = articleFavorites.stream()
+                    .map(ArticleFavorite::getFavoriteId)
+                    .filter(Objects::nonNull)
+                    .distinct()
+                    .collect(Collectors.toList());
+            articleFavoriteMapper.delete(new LambdaQueryWrapper<ArticleFavorite>()
+                    .in(ArticleFavorite::getArticleId, articleIds));
+            recalculateFavoriteArticleCounts(favoriteIds);
+        }
+
+        historyMapper.delete(new LambdaQueryWrapper<History>().in(History::getArticleId, articleIds));
+        commentMapper.delete(new LambdaQueryWrapper<Comment>().in(Comment::getArticleId, articleIds));
+        return exclusivePhotoUrls;
+    }
+
+    private void recalculateFavoriteArticleCounts(Collection<Integer> favoriteIds) {
+        if (ObjectUtil.isEmpty(favoriteIds)) {
+            return;
+        }
+
+        favoriteMapper.selectBatchIds(favoriteIds).forEach(favorite -> {
+            Long relationCount = articleFavoriteMapper.selectCount(
+                    new LambdaQueryWrapper<ArticleFavorite>().eq(ArticleFavorite::getFavoriteId, favorite.getId()));
+            favorite.setArticleCount(relationCount == null ? 0 : relationCount.intValue());
+            favoriteMapper.updateById(favorite);
+        });
+    }
+
+    private List<String> findExclusiveArticlePhotoUrls(List<Article> articles) {
+        List<String> candidateUrls = articles.stream()
+                .filter(Objects::nonNull)
+                .flatMap(article -> collectArticlePhotoUrls(article).stream())
+                .filter(ObjectUtil::isNotEmpty)
+                .distinct()
+                .collect(Collectors.toList());
+        if (ObjectUtil.isEmpty(candidateUrls)) {
+            return Collections.emptyList();
+        }
+
+        List<Integer> articleIds = articles.stream()
+                .map(Article::getId)
+                .filter(Objects::nonNull)
+                .distinct()
+                .collect(Collectors.toList());
+        if (ObjectUtil.isEmpty(articleIds)) {
+            return candidateUrls;
+        }
+
+        LambdaQueryWrapper<Article> queryWrapper = new LambdaQueryWrapper<Article>()
+                .select(Article::getId, Article::getCoverUrl, Article::getContent);
+        if (articleIds.size() == 1) {
+            queryWrapper.ne(Article::getId, articleIds.get(0));
+        } else {
+            queryWrapper.notIn(Article::getId, articleIds);
+        }
+
+        Set<String> candidateUrlSet = new HashSet<>(candidateUrls);
+        Set<String> referencedByOthers = new HashSet<>();
+        articleMapper.selectList(queryWrapper).forEach(article -> {
+            for (String url : collectArticlePhotoUrls(article)) {
+                if (candidateUrlSet.contains(url)) {
+                    referencedByOthers.add(url);
+                }
+            }
+        });
+
+        return candidateUrls.stream()
+                .filter(url -> !referencedByOthers.contains(url))
+                .collect(Collectors.toList());
+    }
+
+    private List<String> filterUnreferencedArticlePhotoUrls(Collection<String> photoUrls) {
+        if (ObjectUtil.isEmpty(photoUrls)) {
+            return Collections.emptyList();
+        }
+
+        List<String> candidateUrls = photoUrls.stream()
+                .filter(ObjectUtil::isNotEmpty)
+                .distinct()
+                .collect(Collectors.toList());
+        if (ObjectUtil.isEmpty(candidateUrls)) {
+            return Collections.emptyList();
+        }
+
+        Set<String> candidateUrlSet = new HashSet<>(candidateUrls);
+        Set<String> referencedUrls = new HashSet<>();
+        articleMapper.selectList(new LambdaQueryWrapper<Article>()
+                        .select(Article::getId, Article::getCoverUrl, Article::getContent))
+                .forEach(article -> {
+                    for (String url : collectArticlePhotoUrls(article)) {
+                        if (candidateUrlSet.contains(url)) {
+                            referencedUrls.add(url);
+                        }
+                    }
+                });
+
+        return candidateUrls.stream()
+                .filter(url -> !referencedUrls.contains(url))
+                .collect(Collectors.toList());
+    }
+
+    private void registerArticlePhotoCleanupAfterCommit(Collection<String> photoUrls) {
+        if (ObjectUtil.isEmpty(photoUrls)) {
+            return;
+        }
+
+        Runnable cleanupTask = () -> {
+            List<String> unusedUrls = filterUnreferencedArticlePhotoUrls(photoUrls);
+            if (ObjectUtil.isEmpty(unusedUrls)) {
+                return;
+            }
+            photoServiceImpl.cleanArticlePhotosByUrlsIfUnused(unusedUrls);
+        };
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    cleanupTask.run();
+                }
+            });
+            return;
+        }
+
+        cleanupTask.run();
     }
 
     @Override
