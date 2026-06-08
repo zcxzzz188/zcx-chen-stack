@@ -16,6 +16,7 @@ import com.zcx.chenstack.domain.entity.Comment;
 import com.zcx.chenstack.domain.entity.Like;
 import com.zcx.chenstack.domain.entity.SysUser;
 import com.zcx.chenstack.domain.enums.ExamineStatusEnum;
+import com.zcx.chenstack.domain.enums.LikeTypeEnum;
 import com.zcx.chenstack.domain.enums.MessageTypeEnum;
 import com.zcx.chenstack.domain.result.AuditResult;
 import com.zcx.chenstack.domain.vo.AdminCommentVo;
@@ -280,31 +281,7 @@ public class CommentServiceImpl extends ServiceImpl<CommentMapper, Comment> impl
             throw new BlogException(BlogConstants.CannotDeleteOthersComment);
         }
 
-        // 仅父评论删除时才减少文章评论数（删除父评论及其回复，仅减1）
-        boolean isParentComment = comment.getParentId() != null && comment.getParentId() == 0;
-
-        // 递归删除评论及其所有子评论
-        deleteCommentAndReplies(commentId);
-
-        // 如果是回复评论，更新父评论的回复数（只减少当前评论，不包括子评论）
-        if (comment.getParentId() != null && comment.getParentId() > 0) {
-            LambdaUpdateWrapper<Comment> replyUpdateWrapper = new LambdaUpdateWrapper<>();
-            replyUpdateWrapper.eq(Comment::getId, comment.getParentId())
-                    .setIncrBy(Comment::getReplyCount, -1);
-            commentMapper.update(null, replyUpdateWrapper);
-        }
-
-        // 更新文章评论数（仅父评论减少1，回复删除不减少）
-        if (isParentComment) {
-            LambdaUpdateWrapper<Article> updateWrapper = new LambdaUpdateWrapper<>();
-            updateWrapper.eq(Article::getId, comment.getArticleId())
-                    .setIncrBy(Article::getCommentCount, -1);
-            boolean updateResult = articleMapper.update(null, updateWrapper) > 0;
-            if (!updateResult) {
-                log.warn("更新文章评论数失败，文章ID：{}", comment.getArticleId());
-            }
-        }
-
+        cleanupAndDeleteComments(Collections.singletonList(commentId));
     }
 
     @Override
@@ -951,6 +928,7 @@ public class CommentServiceImpl extends ServiceImpl<CommentMapper, Comment> impl
     }
 
     @Override
+    @Transactional
     public void adminDeleteComment(Integer commentId) {
         if (commentId == null || commentId <= 0) {
             throw new BlogException(BlogConstants.CommentIdRequired);
@@ -959,34 +937,11 @@ public class CommentServiceImpl extends ServiceImpl<CommentMapper, Comment> impl
         Comment comment = getById(commentId);
         EntityCheckUtils.getOrThrowNotDeleted(comment, BlogConstants.NotFoundComment);
 
-        // 仅父评论删除时才减少文章评论数（删除父评论及其回复，仅减1）
-        boolean isParentComment = comment.getParentId() != null && comment.getParentId() == 0;
-
-        // 递归删除评论及其所有子评论
-        deleteCommentAndReplies(commentId);
-
-        // 如果是回复评论，更新父评论的回复数（只减少当前评论，不包括子评论）
-        if (comment.getParentId() != null && comment.getParentId() > 0) {
-            LambdaUpdateWrapper<Comment> replyUpdateWrapper = new LambdaUpdateWrapper<>();
-            replyUpdateWrapper.eq(Comment::getId, comment.getParentId())
-                    .setIncrBy(Comment::getReplyCount, -1);
-            commentMapper.update(null, replyUpdateWrapper);
-        }
-
-        // 更新文章评论数（仅父评论减少1，回复删除不减少）
-        if (isParentComment) {
-            LambdaUpdateWrapper<Article> updateWrapper = new LambdaUpdateWrapper<>();
-            updateWrapper.eq(Article::getId, comment.getArticleId())
-                    .setIncrBy(Article::getCommentCount, -1);
-            boolean updateResult = articleMapper.update(null, updateWrapper) > 0;
-            if (!updateResult) {
-                log.warn("更新文章评论数失败，文章ID：{}", comment.getArticleId());
-            }
-        }
-
+        cleanupAndDeleteComments(Collections.singletonList(commentId));
     }
 
     @Override
+    @Transactional
     public void adminDeleteBatchComment(List<Integer> commentIds) {
         if (commentIds == null || commentIds.isEmpty()) {
             throw new BlogException(BlogConstants.CommentIdRequired);
@@ -1012,89 +967,105 @@ public class CommentServiceImpl extends ServiceImpl<CommentMapper, Comment> impl
             throw new BlogException(BlogConstants.NotFoundComment);
         }
 
-        // 获取实际存在的评论ID
-        List<Integer> existingCommentIds = existingComments.stream()
-                .map(Comment::getId)
+        cleanupAndDeleteComments(validCommentIds);
+    }
+
+    private void cleanupAndDeleteComments(Collection<Integer> rootCommentIds) {
+        if (ObjectUtil.isEmpty(rootCommentIds)) {
+            return;
+        }
+
+        List<Integer> normalizedRootCommentIds = rootCommentIds.stream()
+                .filter(Objects::nonNull)
+                .filter(id -> id > 0)
+                .distinct()
                 .collect(Collectors.toList());
-
-        // 查找所有需要删除的子评论（递归查找）
-        Set<Integer> allCommentIdsToDelete = new HashSet<>(existingCommentIds);
-        for (Integer commentId : existingCommentIds) {
-            collectChildCommentIds(commentId, allCommentIdsToDelete);
+        if (ObjectUtil.isEmpty(normalizedRootCommentIds)) {
+            return;
         }
 
-        // 批量逻辑删除所有相关评论（MyBatis-Plus 自动处理逻辑删除）
-        if (!allCommentIdsToDelete.isEmpty()) {
-            boolean deleted = removeByIds(allCommentIdsToDelete);
-            if (!deleted) {
-                throw new BlogException(BlogConstants.CommentDeleteError);
-            }
+        List<Comment> rootComments = list(new LambdaQueryWrapper<Comment>()
+                .in(Comment::getId, normalizedRootCommentIds)
+                .eq(Comment::getIsDeleted, 0));
+        if (ObjectUtil.isEmpty(rootComments)) {
+            throw new BlogException(BlogConstants.NotFoundComment);
         }
 
+        Map<Integer, Comment> commentsToDelete = new LinkedHashMap<>();
+        rootComments.forEach(comment -> collectCommentTree(comment, commentsToDelete));
+        if (commentsToDelete.isEmpty()) {
+            return;
+        }
+
+        Set<Integer> deletedCommentIds = commentsToDelete.keySet();
+        Set<Integer> affectedArticleIds = commentsToDelete.values().stream()
+                .map(Comment::getArticleId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+        Set<Integer> affectedParentIds = commentsToDelete.values().stream()
+                .map(Comment::getParentId)
+                .filter(Objects::nonNull)
+                .filter(parentId -> parentId > 0)
+                .filter(parentId -> !deletedCommentIds.contains(parentId))
+                .collect(Collectors.toSet());
+
+        likeMapper.delete(new LambdaQueryWrapper<Like>()
+                .eq(Like::getType, LikeTypeEnum.COMMENT.getCode())
+                .in(Like::getTypeId, deletedCommentIds));
+
+        boolean deleted = removeByIds(new ArrayList<>(deletedCommentIds));
+        if (!deleted) {
+            throw new BlogException(BlogConstants.CommentDeleteError);
+        }
+
+        affectedArticleIds.forEach(this::syncArticleCommentCount);
+        syncParentReplyCounts(affectedParentIds);
     }
 
-    /**
-     * 递归统计评论及其所有回复的数量
-     *
-     * @param commentId 评论ID
-     * @return 评论总数（包括当前评论和所有子评论）
-     */
-    private int countCommentAndReplies(Integer commentId) {
-        int count = 1; // 当前评论计数为1
-
-        // 查找所有子评论
-        LambdaQueryWrapper<Comment> queryWrapper = new LambdaQueryWrapper<>();
-        queryWrapper.eq(Comment::getParentId, commentId)
-                .eq(Comment::getIsDeleted, 0);
-        List<Comment> childComments = list(queryWrapper);
-
-        // 递归统计子评论
-        for (Comment childComment : childComments) {
-            count += countCommentAndReplies(childComment.getId());
+    private void collectCommentTree(Comment comment, Map<Integer, Comment> commentsToDelete) {
+        if (comment == null || comment.getId() == null || commentsToDelete.containsKey(comment.getId())) {
+            return;
         }
 
-        return count;
+        commentsToDelete.put(comment.getId(), comment);
+
+        List<Comment> childComments = list(new LambdaQueryWrapper<Comment>()
+                .eq(Comment::getParentId, comment.getId())
+                .eq(Comment::getIsDeleted, 0));
+        if (ObjectUtil.isEmpty(childComments)) {
+            return;
+        }
+
+        childComments.forEach(childComment -> collectCommentTree(childComment, commentsToDelete));
     }
 
-    /**
-     * 递归删除评论及其所有回复
-     *
-     * @param commentId 评论ID
-     */
-    private void deleteCommentAndReplies(Integer commentId) {
-        // 查找所有子评论
-        LambdaQueryWrapper<Comment> queryWrapper = new LambdaQueryWrapper<>();
-        queryWrapper.eq(Comment::getParentId, commentId)
-                .eq(Comment::getIsDeleted, 0);
-        List<Comment> childComments = list(queryWrapper);
-
-        // 递归删除子评论
-        for (Comment childComment : childComments) {
-            deleteCommentAndReplies(childComment.getId());
+    private void syncParentReplyCounts(Collection<Integer> parentIds) {
+        if (ObjectUtil.isEmpty(parentIds)) {
+            return;
         }
 
-        // 删除当前评论
-        removeById(commentId);
-    }
-
-    /**
-     * 递归收集评论及其所有子评论的ID
-     *
-     * @param commentId  评论ID
-     * @param commentIds 收集的评论ID集合
-     */
-    private void collectChildCommentIds(Integer commentId, Set<Integer> commentIds) {
-        // 查询子评论
-        LambdaQueryWrapper<Comment> queryWrapper = new LambdaQueryWrapper<Comment>()
-                .eq(Comment::getParentId, commentId)
-                .eq(Comment::getIsDeleted, 0);
-        List<Comment> childComments = list(queryWrapper);
-
-        // 递归收集子评论ID
-        for (Comment childComment : childComments) {
-            commentIds.add(childComment.getId());
-            collectChildCommentIds(childComment.getId(), commentIds);
+        List<Comment> parentComments = commentMapper.selectBatchIds(parentIds);
+        if (ObjectUtil.isEmpty(parentComments)) {
+            return;
         }
+
+        parentComments.stream()
+                .filter(Objects::nonNull)
+                .filter(parentComment -> parentComment.getId() != null)
+                .forEach(parentComment -> {
+                    long replyCount = count(new LambdaQueryWrapper<Comment>()
+                            .eq(Comment::getParentId, parentComment.getId())
+                            .eq(Comment::getExamineStatus, ExamineStatusEnum.PASS.getCode())
+                            .eq(Comment::getIsDeleted, 0));
+
+                    LambdaUpdateWrapper<Comment> updateWrapper = new LambdaUpdateWrapper<>();
+                    updateWrapper.eq(Comment::getId, parentComment.getId())
+                            .set(Comment::getReplyCount, Math.toIntExact(replyCount));
+                    int updateResult = commentMapper.update(null, updateWrapper);
+                    if (updateResult < 0) {
+                        log.warn("同步父评论回复数失败，父评论ID：{}", parentComment.getId());
+                    }
+                });
     }
 
     @Override
