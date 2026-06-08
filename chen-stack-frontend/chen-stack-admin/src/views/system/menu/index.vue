@@ -41,7 +41,7 @@
           </el-table-column>
           <el-table-column prop="createTime" label="创建时间" sortable width="120" />
           <el-table-column prop="updateTime" label="更新时间" sortable width="120" />
-          <el-table-column label="操作" width="330">
+          <el-table-column label="操作" width="440" fixed="right">
             <template #default="{ row }">
               <div class="table-actions">
                 <el-button size="small" type="success" @click="handleAddMenu(row)" :icon="Plus" v-if="row.children || row.parentId == 0" class="add-button"> 新增 </el-button>
