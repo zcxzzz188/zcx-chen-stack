@@ -732,7 +732,23 @@ const handleBatchReject = () => {
 }
 
 // 处理删除单个专栏
+const resolveColumnId = (rowOrId) => {
+  if (typeof rowOrId === 'number' || typeof rowOrId === 'string') {
+    return rowOrId
+  }
+  if (rowOrId && typeof rowOrId === 'object') {
+    return rowOrId.id ?? rowOrId.columnId ?? null
+  }
+  return null
+}
+
 const handleDeleteColumn = (columnId) => {
+  const resolvedColumnId = resolveColumnId(columnId)
+  if (!resolvedColumnId) {
+    ElMessage.error('删除失败：未找到记录ID')
+    return
+  }
+
   ElMessageBox.confirm('确定要删除该专栏吗？', '警告', {
     confirmButtonText: '确定',
     cancelButtonText: '取消',
@@ -740,7 +756,7 @@ const handleDeleteColumn = (columnId) => {
   })
     .then(async () => {
       try {
-        await adminDeleteColumn(columnId)
+        await adminDeleteColumn(resolvedColumnId)
         ElMessage.success('删除成功')
         await refreshColumnList()
         if (dialogVisible.value) {

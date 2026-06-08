@@ -557,7 +557,23 @@ const handleBatchReject = () => {
 }
 
 // 处理删除单个评论
+const resolveCommentId = (rowOrId) => {
+  if (typeof rowOrId === 'number' || typeof rowOrId === 'string') {
+    return rowOrId
+  }
+  if (rowOrId && typeof rowOrId === 'object') {
+    return rowOrId.id ?? rowOrId.commentId ?? null
+  }
+  return null
+}
+
 const handleDeleteComment = (commentId) => {
+  const resolvedCommentId = resolveCommentId(commentId)
+  if (!resolvedCommentId) {
+    ElMessage.error('删除失败：未找到记录ID')
+    return
+  }
+
   ElMessageBox.confirm('确定要删除该评论吗？', '警告', {
     confirmButtonText: '确定',
     cancelButtonText: '取消',
@@ -565,7 +581,7 @@ const handleDeleteComment = (commentId) => {
   })
     .then(async () => {
       try {
-        await adminDeleteComment(commentId)
+        await adminDeleteComment(resolvedCommentId)
         ElMessage.success('删除成功')
         await refreshCommentList()
         if (dialogVisible.value) {
