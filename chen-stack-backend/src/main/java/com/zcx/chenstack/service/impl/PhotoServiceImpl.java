@@ -13,7 +13,10 @@ import com.zcx.chenstack.domain.constants.RabbitMQConstants;
 import com.zcx.chenstack.domain.dto.MessageDto;
 import com.zcx.chenstack.domain.dto.PhotoAuditDto;
 import com.zcx.chenstack.domain.dto.PhotoDto;
+import com.zcx.chenstack.domain.entity.Article;
+import com.zcx.chenstack.domain.entity.Column;
 import com.zcx.chenstack.domain.entity.Photo;
+import com.zcx.chenstack.domain.entity.PrivateMessage;
 import com.zcx.chenstack.domain.entity.SysUser;
 import com.zcx.chenstack.domain.enums.ExamineStatusEnum;
 import com.zcx.chenstack.domain.enums.MessageTypeEnum;
@@ -22,7 +25,10 @@ import com.zcx.chenstack.domain.result.AuditResult;
 import com.zcx.chenstack.domain.vo.PageVo;
 import com.zcx.chenstack.domain.vo.PhotoVo;
 import com.zcx.chenstack.exception.BlogException;
+import com.zcx.chenstack.mapper.ArticleMapper;
+import com.zcx.chenstack.mapper.ColumnMapper;
 import com.zcx.chenstack.mapper.PhotoMapper;
+import com.zcx.chenstack.mapper.PrivateMessageMapper;
 import com.zcx.chenstack.mapper.SysUserMapper;
 import com.zcx.chenstack.service.MessageService;
 import com.zcx.chenstack.service.PhotoService;
@@ -39,9 +45,11 @@ import org.springframework.web.multipart.MultipartFile;
 
 import java.util.Date;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadPoolExecutor;
@@ -73,6 +81,12 @@ public class PhotoServiceImpl extends ServiceImpl<PhotoMapper, Photo> implements
     private ImageAuditUtils imageAuditUtils;
     @Resource
     private SysUserMapper sysUserMapper;
+    @Resource
+    private ArticleMapper articleMapper;
+    @Resource
+    private ColumnMapper columnMapper;
+    @Resource
+    private PrivateMessageMapper privateMessageMapper;
     @Resource
     private MessageService messageService;
     @Resource
@@ -157,6 +171,67 @@ public class PhotoServiceImpl extends ServiceImpl<PhotoMapper, Photo> implements
                 log.error("清理文章图片失败，url: {}", url, e);
             }
         });
+    }
+
+    public void cleanNonArticlePhotoObjectsByUrlsIfUnused(Collection<String> urls) {
+        if (ObjectUtil.isEmpty(urls)) {
+            return;
+        }
+
+        List<String> validUrls = urls.stream()
+                .filter(ObjectUtil::isNotEmpty)
+                .filter(url -> !url.contains(UploadEnum.ARTICLE.getDir()))
+                .distinct()
+                .collect(Collectors.toList());
+        if (ObjectUtil.isEmpty(validUrls)) {
+            return;
+        }
+
+        validUrls.forEach(url -> {
+            try {
+                if (isUrlReferencedByActiveBusiness(url)) {
+                    return;
+                }
+                fileUploadUtils.deleteFiles(List.of(fileUploadUtils.getObjectName(url)));
+            } catch (Exception e) {
+                log.error("清理非文章图片失败，url: {}", url, e);
+            }
+        });
+    }
+
+    private boolean isUrlReferencedByActiveBusiness(String url) {
+        if (ObjectUtil.isEmpty(url)) {
+            return false;
+        }
+
+        if (sysUserMapper.selectCount(new LambdaQueryWrapper<SysUser>()
+                .eq(SysUser::getAvatar, url)) > 0) {
+            return true;
+        }
+
+        if (columnMapper.selectCount(new LambdaQueryWrapper<Column>()
+                .eq(Column::getCoverUrl, url)) > 0) {
+            return true;
+        }
+
+        if (privateMessageMapper.selectCount(new LambdaQueryWrapper<PrivateMessage>()
+                .and(wrapper -> wrapper
+                        .eq(PrivateMessage::getImageUrl, url)
+                        .or()
+                        .like(PrivateMessage::getContent, url))) > 0) {
+            return true;
+        }
+
+        if (articleMapper.selectCount(new LambdaQueryWrapper<Article>()
+                .eq(Article::getCoverUrl, url)) > 0) {
+            return true;
+        }
+
+        List<Article> articles = articleMapper.selectList(new LambdaQueryWrapper<Article>()
+                .select(Article::getContent)
+                .like(Article::getContent, url)
+                .last("LIMIT 1"));
+        return ObjectUtil.isNotEmpty(articles);
     }
 
     public AuditResult auditPhotoUrlsByStatus(Collection<String> urls) {

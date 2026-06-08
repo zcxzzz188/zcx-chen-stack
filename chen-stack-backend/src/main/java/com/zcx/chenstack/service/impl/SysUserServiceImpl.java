@@ -7,6 +7,7 @@ import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.zcx.chenstack.domain.constants.BlogConstants;
+import com.zcx.chenstack.domain.constants.RedisConstants;
 import com.zcx.chenstack.domain.constants.RabbitMQConstants;
 import com.zcx.chenstack.domain.dto.*;
 import com.zcx.chenstack.domain.entity.*;
@@ -27,20 +28,30 @@ import com.zcx.chenstack.utils.SecurityUtils;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.security.authentication.AuthenticationManager;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.security.MessageDigest;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.HashSet;
+import java.util.Objects;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * <p>
@@ -96,6 +107,28 @@ public class SysUserServiceImpl extends ServiceImpl<SysUserMapper, SysUser> impl
 
     @Resource
     private ColumnMapper columnMapper;
+    @Resource
+    private ArticleColumnMapper articleColumnMapper;
+    @Resource
+    private LikeMapper likeMapper;
+    @Resource
+    private FavoriteMapper favoriteMapper;
+    @Resource
+    private ArticleFavoriteMapper articleFavoriteMapper;
+    @Resource
+    private HistoryMapper historyMapper;
+    @Resource
+    private FollowMapper followMapper;
+    @Resource
+    private MessageMapper messageMapper;
+    @Resource
+    private PrivateMessageMapper privateMessageMapper;
+    @Resource
+    private ConversationMapper conversationMapper;
+    @Resource
+    private SysUserRoleMapper sysUserRoleMapper;
+    @Resource
+    private UserSettingsMapper userSettingsMapper;
 
     @Resource
     private com.zcx.chenstack.service.SysLoginLogService sysLoginLogService;
@@ -105,6 +138,15 @@ public class SysUserServiceImpl extends ServiceImpl<SysUserMapper, SysUser> impl
 
     @Resource
     private NotificationThreadPool notificationThreadPool;
+    @Resource
+    @Lazy
+    private ArticleServiceImpl articleServiceImpl;
+    @Resource
+    private ColumnServiceImpl columnServiceImpl;
+    @Resource
+    private PhotoServiceImpl photoServiceImpl;
+    @Resource
+    private StringRedisTemplate stringRedisTemplate;
 
     @Override
     public String login(LoginDto loginDto) {
@@ -628,21 +670,374 @@ public class SysUserServiceImpl extends ServiceImpl<SysUserMapper, SysUser> impl
 
     // 管理端删除用户
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public void deleteUser(Integer id) {
-        sysUserMapper.deleteById(id);
-        // TODO 异步删除用户相关信息
-        ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
         try {
-            executor.submit(() -> {
-                // 删除用户照片
-                photoMapper.delete(new LambdaQueryWrapper<Photo>().eq(Photo::getUserId, id));
-            });
+            log.info("管理端删除用户开始，userId: {}", id);
+            log.info("管理端删除用户-校验用户存在，userId: {}", id);
+            SysUser sysUser = sysUserMapper.selectById(id);
+            if (sysUser == null) {
+                throw new BlogException(BlogConstants.NotFoundUser);
+            }
+            log.info("管理端删除用户-用户存在校验通过，userId: {}", id);
+
+            log.info("管理端删除用户-收集非文章图片开始，userId: {}", id);
+            Set<String> nonArticlePhotoUrls = collectUserNonArticlePhotoUrls(sysUser, id);
+            log.info("管理端删除用户-收集非文章图片完成，userId: {}, photoUrlCount: {}", id, nonArticlePhotoUrls.size());
+
+            log.info("管理端删除用户-收集相关会话用户开始，userId: {}", id);
+            Set<Integer> relatedConversationUserIds = collectRelatedConversationUserIds(id);
+            log.info("管理端删除用户-收集相关会话用户完成，userId: {}, relatedUserCount: {}", id,
+                    relatedConversationUserIds.size());
+
+            log.info("管理端删除用户-清理用户文章开始，userId: {}", id);
+            articleServiceImpl.cleanupAndDeleteArticlesForUser(id);
+            log.info("管理端删除用户-清理用户文章完成，userId: {}", id);
+
+            log.info("管理端删除用户-清理用户专栏开始，userId: {}", id);
+            nonArticlePhotoUrls.addAll(columnServiceImpl.cleanupAndDeleteColumnsForUser(id));
+            log.info("管理端删除用户-清理用户专栏完成，userId: {}, photoUrlCount: {}", id, nonArticlePhotoUrls.size());
+
+            log.info("管理端删除用户-清理用户评论开始，userId: {}", id);
+            cleanupUserComments(id);
+            log.info("管理端删除用户-清理用户评论完成，userId: {}", id);
+
+            log.info("管理端删除用户-清理点赞开始，userId: {}", id);
+            likeMapper.delete(new LambdaQueryWrapper<Like>().eq(Like::getUserId, id));
+            log.info("管理端删除用户-清理点赞完成，userId: {}", id);
+
+            log.info("管理端删除用户-清理收藏夹开始，userId: {}", id);
+            cleanupUserFavorites(id);
+            log.info("管理端删除用户-清理收藏夹完成，userId: {}", id);
+
+            log.info("管理端删除用户-清理历史记录开始，userId: {}", id);
+            historyMapper.delete(new LambdaQueryWrapper<History>().eq(History::getUserId, id));
+            log.info("管理端删除用户-清理历史记录完成，userId: {}", id);
+
+            log.info("管理端删除用户-清理关注关系开始，userId: {}", id);
+            Set<Integer> affectedFollowUserIds = deleteUserFollowRelations(id);
+            log.info("管理端删除用户-清理关注关系完成，userId: {}, affectedUserCount: {}", id, affectedFollowUserIds.size());
+
+            log.info("管理端删除用户-重算关注计数开始，userId: {}", id);
+            syncFollowCounts(affectedFollowUserIds);
+            log.info("管理端删除用户-重算关注计数完成，userId: {}", id);
+
+            log.info("管理端删除用户-清理通知开始，userId: {}", id);
+            messageMapper.delete(new LambdaQueryWrapper<Message>()
+                    .and(wrapper -> wrapper.eq(Message::getSenderId, id).or().eq(Message::getReceiverId, id)));
+            log.info("管理端删除用户-清理通知完成，userId: {}", id);
+
+            log.info("管理端删除用户-清理私信开始，userId: {}", id);
+            privateMessageMapper.delete(new LambdaQueryWrapper<PrivateMessage>()
+                    .and(wrapper -> wrapper.eq(PrivateMessage::getFromUserId, id).or().eq(PrivateMessage::getToUserId, id)));
+            log.info("管理端删除用户-清理私信完成，userId: {}", id);
+
+            log.info("管理端删除用户-清理会话开始，userId: {}", id);
+            conversationMapper.delete(new LambdaQueryWrapper<Conversation>()
+                    .and(wrapper -> wrapper.eq(Conversation::getUserId, id).or().eq(Conversation::getTargetUserId, id)));
+            log.info("管理端删除用户-清理会话完成，userId: {}", id);
+
+            log.info("管理端删除用户-清理角色/设置/图片记录开始，userId: {}", id);
+            sysUserRoleMapper.delete(new LambdaQueryWrapper<SysUserRole>().eq(SysUserRole::getUserId, id));
+            userSettingsMapper.delete(new LambdaQueryWrapper<UserSettings>().eq(UserSettings::getUserId, id));
+            photoMapper.delete(new LambdaQueryWrapper<Photo>().eq(Photo::getUserId, id));
+            log.info("管理端删除用户-清理角色/设置/图片记录完成，userId: {}", id);
+
+            log.info("管理端删除用户-注册提交后清理任务开始，userId: {}", id);
+            registerUserCleanupAfterCommit(id, nonArticlePhotoUrls, relatedConversationUserIds);
+            log.info("管理端删除用户-注册提交后清理任务完成，userId: {}", id);
+
+            log.info("管理端删除用户-删除用户主表开始，userId: {}", id);
+            sysUserMapper.deleteById(id);
+            log.info("管理端删除用户完成，userId: {}", id);
         } catch (Exception e) {
-            log.error("异步删除用户相关数据失败，用户ID: {}", id, e);
-        } finally {
-            executor.shutdown();
+            log.error("管理端删除用户失败，userId: {}", id, e);
+            throw e;
+        }
+    }
+
+    private Set<String> collectUserNonArticlePhotoUrls(SysUser sysUser, Integer userId) {
+        Set<String> urls = new HashSet<>();
+        addNonEmptyPhotoUrl(urls, sysUser == null ? null : sysUser.getAvatar());
+
+        List<Photo> photos = photoMapper.selectList(new LambdaQueryWrapper<Photo>()
+                .select(Photo::getUrl)
+                .eq(Photo::getUserId, userId));
+        if (ObjectUtil.isNotEmpty(photos)) {
+            photos.stream()
+                    .filter(Objects::nonNull)
+                    .map(Photo::getUrl)
+                    .filter(this::isNonEmptyPhotoUrl)
+                    .forEach(urls::add);
         }
 
+        List<PrivateMessage> privateMessages = privateMessageMapper.selectList(new LambdaQueryWrapper<PrivateMessage>()
+                .select(PrivateMessage::getImageUrl)
+                .and(wrapper -> wrapper
+                        .eq(PrivateMessage::getFromUserId, userId)
+                        .or()
+                        .eq(PrivateMessage::getToUserId, userId)));
+        if (ObjectUtil.isNotEmpty(privateMessages)) {
+            privateMessages.stream()
+                    .filter(Objects::nonNull)
+                    .map(PrivateMessage::getImageUrl)
+                    .filter(this::isNonEmptyPhotoUrl)
+                    .forEach(urls::add);
+        }
+
+        return urls;
+    }
+
+    private void addNonEmptyPhotoUrl(Set<String> urls, String url) {
+        if (urls != null && isNonEmptyPhotoUrl(url)) {
+            urls.add(url);
+        }
+    }
+
+    private boolean isNonEmptyPhotoUrl(String url) {
+        return url != null && !url.trim().isEmpty();
+    }
+
+    private Set<Integer> collectRelatedConversationUserIds(Integer userId) {
+        Set<Integer> relatedUserIds = new HashSet<>();
+
+        privateMessageMapper.selectList(new LambdaQueryWrapper<PrivateMessage>()
+                        .select(PrivateMessage::getFromUserId, PrivateMessage::getToUserId)
+                        .and(wrapper -> wrapper
+                                .eq(PrivateMessage::getFromUserId, userId)
+                                .or()
+                                .eq(PrivateMessage::getToUserId, userId)))
+                .forEach(message -> {
+                    if (!Objects.equals(message.getFromUserId(), userId)) {
+                        relatedUserIds.add(message.getFromUserId());
+                    }
+                    if (!Objects.equals(message.getToUserId(), userId)) {
+                        relatedUserIds.add(message.getToUserId());
+                    }
+                });
+
+        conversationMapper.selectList(new LambdaQueryWrapper<Conversation>()
+                        .select(Conversation::getUserId, Conversation::getTargetUserId)
+                        .and(wrapper -> wrapper
+                                .eq(Conversation::getUserId, userId)
+                                .or()
+                                .eq(Conversation::getTargetUserId, userId)))
+                .forEach(conversation -> {
+                    if (!Objects.equals(conversation.getUserId(), userId)) {
+                        relatedUserIds.add(conversation.getUserId());
+                    }
+                    if (!Objects.equals(conversation.getTargetUserId(), userId)) {
+                        relatedUserIds.add(conversation.getTargetUserId());
+                    }
+                });
+
+        relatedUserIds.remove(userId);
+        return relatedUserIds;
+    }
+
+    private void cleanupUserFavorites(Integer userId) {
+        List<Integer> favoriteIds = favoriteMapper.selectList(new LambdaQueryWrapper<Favorite>()
+                        .select(Favorite::getId)
+                        .eq(Favorite::getUserId, userId))
+                .stream()
+                .map(Favorite::getId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toList());
+        if (ObjectUtil.isEmpty(favoriteIds)) {
+            return;
+        }
+
+        articleFavoriteMapper.delete(new LambdaQueryWrapper<ArticleFavorite>()
+                .in(ArticleFavorite::getFavoriteId, favoriteIds));
+        favoriteMapper.deleteBatchIds(favoriteIds);
+    }
+
+    private void cleanupUserComments(Integer userId) {
+        List<Comment> userComments = commentMapper.selectList(new LambdaQueryWrapper<Comment>()
+                .select(Comment::getId, Comment::getArticleId, Comment::getParentId)
+                .eq(Comment::getUserId, userId));
+
+        if (ObjectUtil.isEmpty(userComments)) {
+            commentMapper.update(null, new LambdaUpdateWrapper<Comment>()
+                    .eq(Comment::getReplyUserId, userId)
+                    .set(Comment::getReplyUserId, null));
+            return;
+        }
+
+        Set<Integer> commentIdsToDelete = userComments.stream()
+                .map(Comment::getId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toCollection(HashSet::new));
+        Set<Integer> affectedArticleIds = userComments.stream()
+                .map(Comment::getArticleId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toCollection(HashSet::new));
+
+        List<Integer> currentParentIds = new ArrayList<>(commentIdsToDelete);
+        while (ObjectUtil.isNotEmpty(currentParentIds)) {
+            List<Comment> childComments = commentMapper.selectList(new LambdaQueryWrapper<Comment>()
+                    .select(Comment::getId, Comment::getArticleId, Comment::getParentId)
+                    .in(Comment::getParentId, currentParentIds));
+            if (ObjectUtil.isEmpty(childComments)) {
+                break;
+            }
+
+            currentParentIds = new ArrayList<>();
+            for (Comment childComment : childComments) {
+                if (childComment == null || childComment.getId() == null || !commentIdsToDelete.add(childComment.getId())) {
+                    continue;
+                }
+                if (childComment.getArticleId() != null) {
+                    affectedArticleIds.add(childComment.getArticleId());
+                }
+                currentParentIds.add(childComment.getId());
+            }
+        }
+
+        Set<Integer> affectedParentCommentIds = userComments.stream()
+                .map(Comment::getParentId)
+                .filter(parentId -> parentId != null && parentId > 0 && !commentIdsToDelete.contains(parentId))
+                .collect(Collectors.toCollection(HashSet::new));
+
+        likeMapper.delete(new LambdaQueryWrapper<Like>()
+                .eq(Like::getType, LikeTypeEnum.COMMENT.getCode())
+                .in(Like::getTypeId, commentIdsToDelete));
+        commentMapper.delete(new LambdaQueryWrapper<Comment>().in(Comment::getId, commentIdsToDelete));
+        commentMapper.update(null, new LambdaUpdateWrapper<Comment>()
+                .eq(Comment::getReplyUserId, userId)
+                .set(Comment::getReplyUserId, null));
+
+        syncParentCommentReplyCounts(affectedParentCommentIds);
+        syncArticleCommentCounts(affectedArticleIds);
+    }
+
+    private void syncParentCommentReplyCounts(Collection<Integer> parentCommentIds) {
+        if (ObjectUtil.isEmpty(parentCommentIds)) {
+            return;
+        }
+
+        parentCommentIds.forEach(parentCommentId -> {
+            long replyCount = commentMapper.selectCount(new LambdaQueryWrapper<Comment>()
+                    .eq(Comment::getParentId, parentCommentId)
+                    .eq(Comment::getExamineStatus, ExamineStatusEnum.PASS.getCode()));
+            commentMapper.update(null, new LambdaUpdateWrapper<Comment>()
+                    .eq(Comment::getId, parentCommentId)
+                    .set(Comment::getReplyCount, Math.toIntExact(replyCount)));
+        });
+    }
+
+    private void syncArticleCommentCounts(Collection<Integer> articleIds) {
+        if (ObjectUtil.isEmpty(articleIds)) {
+            return;
+        }
+
+        articleIds.forEach(articleId -> {
+            long commentCount = commentMapper.selectCount(new LambdaQueryWrapper<Comment>()
+                    .eq(Comment::getArticleId, articleId)
+                    .eq(Comment::getParentId, 0)
+                    .eq(Comment::getExamineStatus, ExamineStatusEnum.PASS.getCode()));
+            articleMapper.update(null, new LambdaUpdateWrapper<Article>()
+                    .eq(Article::getId, articleId)
+                    .set(Article::getCommentCount, Math.toIntExact(commentCount)));
+        });
+    }
+
+    private Set<Integer> deleteUserFollowRelations(Integer userId) {
+        List<Follow> follows = followMapper.selectList(new LambdaQueryWrapper<Follow>()
+                .select(Follow::getFollowerId, Follow::getFollowedId)
+                .and(wrapper -> wrapper
+                        .eq(Follow::getFollowerId, userId)
+                        .or()
+                        .eq(Follow::getFollowedId, userId)));
+
+        Set<Integer> affectedUserIds = new HashSet<>();
+        follows.forEach(follow -> {
+            if (!Objects.equals(follow.getFollowerId(), userId)) {
+                affectedUserIds.add(follow.getFollowerId());
+            }
+            if (!Objects.equals(follow.getFollowedId(), userId)) {
+                affectedUserIds.add(follow.getFollowedId());
+            }
+        });
+
+        followMapper.delete(new LambdaQueryWrapper<Follow>()
+                .and(wrapper -> wrapper
+                        .eq(Follow::getFollowerId, userId)
+                        .or()
+                        .eq(Follow::getFollowedId, userId)));
+        return affectedUserIds;
+    }
+
+    private void syncFollowCounts(Collection<Integer> userIds) {
+        if (ObjectUtil.isEmpty(userIds)) {
+            return;
+        }
+
+        userIds.stream()
+                .filter(Objects::nonNull)
+                .distinct()
+                .forEach(userId -> {
+                    long followCount = followMapper.selectCount(new LambdaQueryWrapper<Follow>()
+                            .eq(Follow::getFollowerId, userId));
+                    long fansCount = followMapper.selectCount(new LambdaQueryWrapper<Follow>()
+                            .eq(Follow::getFollowedId, userId));
+                    SysUser updateUser = new SysUser()
+                            .setId(userId)
+                            .setFollowCount(Math.toIntExact(followCount))
+                            .setFansCount(Math.toIntExact(fansCount));
+                    sysUserMapper.updateById(updateUser);
+                });
+    }
+
+    private void registerUserCleanupAfterCommit(Integer userId, Collection<String> nonArticlePhotoUrls,
+            Collection<Integer> relatedConversationUserIds) {
+        Runnable cleanupTask = () -> {
+            try {
+                log.info("管理端删除用户-afterCommit清理开始，userId: {}", userId);
+                photoServiceImpl.cleanNonArticlePhotoObjectsByUrlsIfUnused(nonArticlePhotoUrls);
+                clearUserRedisKeys(userId, relatedConversationUserIds);
+                log.info("管理端删除用户-afterCommit清理完成，userId: {}", userId);
+            } catch (Exception e) {
+                log.error("管理端删除用户-afterCommit清理失败，userId: {}", userId, e);
+            }
+        };
+
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    cleanupTask.run();
+                }
+            });
+            return;
+        }
+
+        cleanupTask.run();
+    }
+
+    private void clearUserRedisKeys(Integer userId, Collection<Integer> relatedConversationUserIds) {
+        Set<String> keysToDelete = new HashSet<>();
+        keysToDelete.add(RedisConstants.UserDetail + userId);
+        keysToDelete.add(RedisConstants.UserProfile + userId);
+        keysToDelete.add(RedisConstants.UserBehavior + userId);
+        keysToDelete.add(RedisConstants.UserRecommend + userId);
+        keysToDelete.add(RedisConstants.USER_ONLINE_STATUS_KEY + userId);
+        keysToDelete.add(RedisConstants.PRIVATE_MESSAGE_UNREAD_COUNT_KEY + userId);
+        keysToDelete.add(RedisConstants.AiUsage + userId);
+
+        if (ObjectUtil.isNotEmpty(relatedConversationUserIds)) {
+            relatedConversationUserIds.stream()
+                    .filter(Objects::nonNull)
+                    .distinct()
+                    .forEach(relatedUserId -> keysToDelete.add(RedisConstants.PRIVATE_MESSAGE_UNREAD_COUNT_KEY + relatedUserId));
+        }
+
+        stringRedisTemplate.delete(keysToDelete);
+
+        Set<String> aiContentHashKeys = stringRedisTemplate.keys(RedisConstants.AiContentHash + userId + ":*");
+        if (ObjectUtil.isNotEmpty(aiContentHashKeys)) {
+            stringRedisTemplate.delete(aiContentHashKeys);
+        }
     }
 
     // 管理端搜索角色

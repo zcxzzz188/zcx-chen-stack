@@ -35,7 +35,7 @@ public class GlobalException {
 
     @ExceptionHandler(Exception.class)
     Object handleException(Exception e) {
-        log.error("系统异常：{}", e.getMessage(), e);
+        log.error("系统异常，请联系管理员", e);
         return Result.error("系统异常，请联系管理员");
     }
 

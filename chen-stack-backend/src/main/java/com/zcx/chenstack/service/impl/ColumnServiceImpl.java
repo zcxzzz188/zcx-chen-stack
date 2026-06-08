@@ -905,6 +905,31 @@ public class ColumnServiceImpl extends ServiceImpl<ColumnMapper, Column> impleme
         }
     }
 
+    public List<String> cleanupAndDeleteColumnsForUser(Integer userId) {
+        List<Column> columns = columnMapper.selectList(new LambdaQueryWrapper<Column>()
+                .select(Column::getId, Column::getCoverUrl)
+                .eq(Column::getUserId, userId));
+        if (ObjectUtil.isEmpty(columns)) {
+            return new ArrayList<>();
+        }
+
+        List<Integer> columnIds = columns.stream()
+                .map(Column::getId)
+                .filter(Objects::nonNull)
+                .distinct()
+                .collect(Collectors.toList());
+        if (ObjectUtil.isNotEmpty(columnIds)) {
+            articleColumnMapper.delete(new LambdaQueryWrapper<ArticleColumn>().in(ArticleColumn::getColumnId, columnIds));
+            columnMapper.deleteBatchIds(columnIds);
+        }
+
+        return columns.stream()
+                .map(Column::getCoverUrl)
+                .filter(ObjectUtil::isNotEmpty)
+                .distinct()
+                .collect(Collectors.toList());
+    }
+
     @Override
     public void adminDeleteColumn(Integer columnId) {
         Column column = columnMapper.selectById(columnId);

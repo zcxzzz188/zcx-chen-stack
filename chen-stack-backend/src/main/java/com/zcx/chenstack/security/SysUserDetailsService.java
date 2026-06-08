@@ -123,6 +123,8 @@ public class SysUserDetailsService implements UserDetailsService {
         }
 
         List<Integer> roleIds = sysRoles.stream().map(SysRole::getId).collect(Collectors.toList());
+        boolean hasBackendRole = sysRoles.stream()
+                .anyMatch(role -> "admin".equals(role.getRole()) || "viewer".equals(role.getRole()));
 
         // 查询角色对应的菜单
         LambdaQueryWrapper<SysRoleMenu> queryWrapper2 = new LambdaQueryWrapper<>();
@@ -130,6 +132,9 @@ public class SysUserDetailsService implements UserDetailsService {
         List<SysRoleMenu> sysRoleMenus = sysRoleMenuMapper.selectList(queryWrapper2);
 
         if (ObjectUtil.isEmpty(sysRoleMenus)) {
+            if (!hasBackendRole) {
+                return setUserDetailCollections(sysUser, sysRoles, List.of(), List.of());
+            }
             throw new BlogException(BlogConstants.NotFoundMenu);
         }
 
@@ -139,6 +144,9 @@ public class SysUserDetailsService implements UserDetailsService {
         List<SysMenu> sysMenus = sysMenuMapper.selectList(queryWrapper3);
 
         if (ObjectUtil.isEmpty(sysMenus)) {
+            if (!hasBackendRole) {
+                return setUserDetailCollections(sysUser, sysRoles, List.of(), List.of());
+            }
             throw new BlogException(BlogConstants.NotFoundMenu);
         }
 
@@ -148,6 +156,9 @@ public class SysUserDetailsService implements UserDetailsService {
         List<SysRolePermission> sysRolePermissions = sysRolePermissionMapper.selectList(queryWrapper4);
 
         if (ObjectUtil.isEmpty(sysRolePermissions)) {
+            if (!hasBackendRole) {
+                return setUserDetailCollections(sysUser, sysRoles, sysMenus, List.of());
+            }
             throw new BlogException(BlogConstants.NotFoundPermission);
         }
 
@@ -156,16 +167,20 @@ public class SysUserDetailsService implements UserDetailsService {
         List<SysPermission> sysPermissions = sysPermissionMapper.selectList(queryWrapper5);
 
         if (ObjectUtil.isEmpty(sysPermissions)) {
+            if (!hasBackendRole) {
+                return setUserDetailCollections(sysUser, sysRoles, sysMenus, List.of());
+            }
             throw new BlogException(BlogConstants.NotFoundPermission);
         }
 
-        // 将角色加入到用户信息中
-        sysUser.setSysRoles(sysRoles);
-        // 将菜单信息加入到用户信息中
-        sysUser.setSysMenus(sysMenus);
-        // 将权限信息加入到用户信息中
-        sysUser.setSysPermissions(sysPermissions);
+        return setUserDetailCollections(sysUser, sysRoles, sysMenus, sysPermissions);
+    }
 
+    private SysUser setUserDetailCollections(SysUser sysUser, List<SysRole> sysRoles, List<SysMenu> sysMenus,
+            List<SysPermission> sysPermissions) {
+        sysUser.setSysRoles(sysRoles);
+        sysUser.setSysMenus(sysMenus);
+        sysUser.setSysPermissions(sysPermissions);
         return sysUser;
     }
 

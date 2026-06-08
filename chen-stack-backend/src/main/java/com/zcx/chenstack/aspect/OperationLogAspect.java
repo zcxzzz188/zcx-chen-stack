@@ -20,7 +20,9 @@ import org.aspectj.lang.reflect.MethodSignature;
 import org.springframework.stereotype.Component;
 
 import java.lang.reflect.Method;
+import java.util.Collections;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 
 /**
@@ -72,15 +74,38 @@ public class OperationLogAspect {
         }
 
         // 获取当前登录用户
-        SysUser currentUser = SecurityUtils.getUser();
+        SysUser currentUser = null;
+        try {
+            currentUser = SecurityUtils.getUser();
+        } catch (Exception e) {
+            log.warn("获取当前登录用户失败，跳过操作日志记录", e);
+            return joinPoint.proceed();
+        }
+
         if (currentUser == null) {
             // 未登录，不记录
             return joinPoint.proceed();
         }
 
+        List<?> userRoles = Collections.emptyList();
+        try {
+            userRoles = currentUser.getSysRoles() == null ? Collections.emptyList() : currentUser.getSysRoles();
+        } catch (Exception e) {
+            log.warn("获取当前用户角色失败，跳过操作日志记录，userId: {}", currentUser.getId(), e);
+            return joinPoint.proceed();
+        }
+
         // 只记录 admin 和 viewer 角色的操作
-        boolean isAdminOrViewer = currentUser.getSysRoles().stream()
-                .anyMatch(r -> "admin".equals(r.getRole()) || "viewer".equals(r.getRole()));
+        boolean isAdminOrViewer;
+        try {
+            isAdminOrViewer = userRoles.stream()
+                    .filter(com.zcx.chenstack.domain.entity.SysRole.class::isInstance)
+                    .map(com.zcx.chenstack.domain.entity.SysRole.class::cast)
+                    .anyMatch(r -> "admin".equals(r.getRole()) || "viewer".equals(r.getRole()));
+        } catch (Exception e) {
+            log.warn("判断当前用户角色失败，跳过操作日志记录，userId: {}", currentUser.getId(), e);
+            return joinPoint.proceed();
+        }
 
         if (!isAdminOrViewer) {
             // 普通用户，不记录操作日志
@@ -88,11 +113,18 @@ public class OperationLogAspect {
         }
 
         // 确定操作人角色
-        String operatorRole = currentUser.getSysRoles().stream()
-                .filter(r -> "admin".equals(r.getRole()) || "viewer".equals(r.getRole()))
-                .findFirst()
-                .map(r -> r.getRole())
-                .orElse("admin");
+        String operatorRole = "UNKNOWN";
+        try {
+            operatorRole = userRoles.stream()
+                    .filter(com.zcx.chenstack.domain.entity.SysRole.class::isInstance)
+                    .map(com.zcx.chenstack.domain.entity.SysRole.class::cast)
+                    .filter(r -> "admin".equals(r.getRole()) || "viewer".equals(r.getRole()))
+                    .findFirst()
+                    .map(r -> r.getRole())
+                    .orElse("admin");
+        } catch (Exception e) {
+            log.warn("获取操作人角色失败，userId: {}", currentUser.getId(), e);
+        }
 
         // 构建操作日志消息体
         OperationlogMessage message = new OperationlogMessage();
@@ -109,13 +141,31 @@ public class OperationLogAspect {
                 .setDescription(operationLog.description())
                 .setOperation(operation)
                 .setMethod(signature.getDeclaringType().getName() + ":" + signature.getName())
-                .setRequestUrl(WebUtils.getRequestUrl())
                 .setRequestMethod(getRequestMethod())
                 .setOperatorId(currentUser.getId())
-                .setOperatorName(currentUser.getUsername())
+                .setOperatorName(StrUtil.blankToDefault(currentUser.getUsername(), "UNKNOWN"))
                 .setOperatorRole(operatorRole)
-                .setIp(ipUtils.getIp())
-                .setAddress(ipUtils.getAddress());
+                .setRequestUrl("")
+                .setIp("UNKNOWN")
+                .setAddress("UNKNOWN");
+
+        try {
+            message.setRequestUrl(StrUtil.blankToDefault(WebUtils.getRequestUrl(), "UNKNOWN"));
+        } catch (Exception e) {
+            log.warn("获取请求URL失败", e);
+        }
+
+        try {
+            message.setIp(StrUtil.blankToDefault(ipUtils.getIp(), "UNKNOWN"));
+        } catch (Exception e) {
+            log.warn("获取请求IP失败", e);
+        }
+
+        try {
+            message.setAddress(StrUtil.blankToDefault(ipUtils.getAddress(), "UNKNOWN"));
+        } catch (Exception e) {
+            log.warn("获取请求归属地失败", e);
+        }
 
         // 记录请求参数（过滤敏感信息）
         try {

@@ -572,13 +572,27 @@ const userDetail = ref()
 // 用户详情
 const handleDetailUser = async (id) => {
   userDetailDialogVisible.value = true
-  const res = await getUserDetail(id)
-  userDetail.value = res.data.data
-  // 检查菜单数据是否存在，避免空值调用formatMenu导致错误
-  if (userDetail.value.sysMenus && userDetail.value.sysMenus.length > 0) {
-    userDetail.value.sysMenus = formatMenu(userDetail.value.sysMenus)
-  } else {
-    userDetail.value.sysMenus = []
+  userDetail.value = null
+  try {
+    const res = await getUserDetail(id)
+    userDetail.value = res?.data?.data ?? res?.data ?? null
+    if (!userDetail.value) {
+      throw new Error('用户详情为空')
+    }
+    // 检查菜单数据是否存在，避免空值调用formatMenu导致错误
+    if (userDetail.value.sysMenus && userDetail.value.sysMenus.length > 0) {
+      userDetail.value.sysMenus = formatMenu(userDetail.value.sysMenus)
+    } else {
+      userDetail.value.sysMenus = []
+    }
+  } catch (error) {
+    userDetail.value = null
+    userDetailDialogVisible.value = false
+    ElMessage.error('获取用户详情失败')
+  } finally {
+    if (!userDetail.value) {
+      userDetailDialogVisible.value = false
+    }
   }
 }
 

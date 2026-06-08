@@ -1554,6 +1554,45 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
         registerArticlePhotoCleanupAfterCommit(exclusivePhotoUrls);
     }
 
+    @Transactional(rollbackFor = Exception.class)
+    public void cleanupAndDeleteArticlesForUser(Integer userId) {
+        List<Article> articles = articleMapper.selectList(new LambdaQueryWrapper<Article>()
+                .eq(Article::getUserId, userId));
+        if (ObjectUtil.isEmpty(articles)) {
+            return;
+        }
+
+        List<Integer> articleIds = articles.stream()
+                .map(Article::getId)
+                .filter(Objects::nonNull)
+                .distinct()
+                .collect(Collectors.toList());
+        if (ObjectUtil.isEmpty(articleIds)) {
+            return;
+        }
+
+        articles.stream()
+                .filter(Objects::nonNull)
+                .filter(article -> ExamineStatusEnum.PASS.getCode().equals(article.getExamineStatus()))
+                .forEach(article -> {
+                    List<ArticleColumn> articleColumns = articleColumnMapper.selectList(
+                            new LambdaQueryWrapper<ArticleColumn>().eq(ArticleColumn::getArticleId, article.getId()));
+                    articleColumns.forEach(articleColumn -> {
+                        Column column = columnMapper.selectById(articleColumn.getColumnId());
+                        if (column != null && column.getArticleCount() > 0) {
+                            column.setArticleCount(column.getArticleCount() - 1);
+                            columnMapper.updateById(column);
+                        }
+                    });
+                });
+
+        List<String> exclusivePhotoUrls = cleanupArticleRelatedData(articles);
+        this.removeByIds(articleIds);
+        articleColumnMapper.delete(new LambdaQueryWrapper<ArticleColumn>().in(ArticleColumn::getArticleId, articleIds));
+        redisComponent.batchClearArticleReads(articleIds);
+        registerArticlePhotoCleanupAfterCommit(exclusivePhotoUrls);
+    }
+
     private List<String> cleanupArticleRelatedData(List<Article> articles) {
         if (ObjectUtil.isEmpty(articles)) {
             return Collections.emptyList();
