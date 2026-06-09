@@ -424,8 +424,8 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted, computed } from 'vue'
-import { Delete, Close, Check, View, Calendar, Picture, User, Document, Star, ChatDotRound, Collection, Clock, Refresh, Search, ArrowLeft, Top, Edit } from '@element-plus/icons-vue'
+import { ref, onMounted, computed } from 'vue'
+import { Delete, Close, Check, View, Picture, User, Document, Star, ChatDotRound, Clock, Refresh, Search, ArrowLeft, Top } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { getUserListWithArticleCount } from '@/api/user'
 import { getTagList } from '@/api/tag'
@@ -464,13 +464,6 @@ const filteredUserList = computed(() => {
   return userList.value.filter((user) => user.username.toLowerCase().includes(keyword) || user.nickname?.toLowerCase().includes(keyword))
 })
 
-// 审核状态映射
-const examineStatusMap = {
-  0: { text: '待审核', type: 'danger' },
-  1: { text: '已审核', type: 'success' },
-  2: { text: '未通过', type: 'warning' },
-}
-
 // 文章列表数据
 const articleList = ref([])
 const paginatedArticleList = ref([])
@@ -501,7 +494,9 @@ const batchDeleteLoading = ref(false)
 const editDialogVisible = ref(false)
 const editLoading = ref(false)
 const tagOptionsLoading = ref(false)
+const tagOptionsLoaded = ref(false)
 const editFormRef = ref(null)
+const baseTagOptions = ref([])
 const tagOptions = ref([])
 const editForm = ref({
   id: null,
@@ -579,12 +574,19 @@ const mergeTagOptions = (selectedTags, options = []) => {
   return Array.from(optionMap.values())
 }
 
-const loadTagOptions = async (selectedTags = []) => {
+const loadTagOptions = async (selectedTags = [], force = false) => {
+  if (tagOptionsLoaded.value && !force) {
+    tagOptions.value = mergeTagOptions(selectedTags, baseTagOptions.value)
+    return
+  }
+
   tagOptionsLoading.value = true
   try {
     const res = await getTagList()
     const options = flattenTagOptions(res?.data)
+    baseTagOptions.value = options
     tagOptions.value = mergeTagOptions(selectedTags, options)
+    tagOptionsLoaded.value = true
   } catch (error) {
     tagOptions.value = mergeTagOptions(selectedTags)
     ElMessage.error(`获取标签列表失败：${getErrorMessage(error)}`)
@@ -710,11 +712,6 @@ const refreshArticleList = async (deletedCount = 0) => {
 // 表格多选
 const handleSelectionChange = (articles) => {
   selectedArticles.value = articles
-}
-
-// 检查文章是否被选中
-const isArticleSelected = (articleId) => {
-  return selectedArticles.value.some((article) => article.id === articleId)
 }
 
 // 移动端选择处理

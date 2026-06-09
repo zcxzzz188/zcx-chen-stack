@@ -7,12 +7,11 @@ body {
   margin: 0px;
   padding: 0px;
   font-size: 14px;
-  overflow: hidden; // 禁止页面本身滚动
+  overflow: auto;
 }
 
 #app {
-  height: 100%;
-  overflow: hidden;
+  min-height: 100vh;
 }
 
 // ============================================
@@ -361,12 +360,6 @@ html.dark {
   --bg-purple-light-dark: rgba(139, 92, 246, 0.15);
   --bg-blue-light-dark: rgba(59, 130, 246, 0.15);
   --bg-content-dark: #1e293b;
-}
-
-// 防止 Element Plus 对话框打开时页面抖动
-// Element Plus 会添加 padding-right 补偿滚动条，但我们页面本身不滚动，需要重置
-body.el-popup-parent--hidden {
-  padding: 0 !important;
 }
 
 //超链接去掉下划线
