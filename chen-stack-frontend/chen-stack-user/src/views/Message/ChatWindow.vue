@@ -224,6 +224,7 @@ const sendMessage = () => {
     toUserId: targetUserId.value,
     content: content,
     messageType: 1,
+    examineStatus: 0,
     createTime: new Date(),
     isRead: 0,
     isRevoked: 0,
@@ -234,6 +235,10 @@ const sendMessage = () => {
   }
 
   messageStore.addMessageToCurrentChat(tempMessage)
+  messageStore.updateConversation(targetUserId.value, tempMessage, 0, {
+    nickname: targetUser.value?.nickname,
+    avatar: targetUser.value?.avatar,
+  })
   scrollToBottom()
 
   WebSocketClient.sendTextMessage(targetUserId.value, content)
@@ -327,6 +332,7 @@ const handleImageSelect = async (event) => {
       content: '[图片]',
       messageType: 2,
       imageUrl: imageUrl,
+      examineStatus: 0,
       createTime: new Date(),
       isRead: 0,
       isRevoked: 0,
@@ -337,6 +343,10 @@ const handleImageSelect = async (event) => {
     }
 
     messageStore.addMessageToCurrentChat(tempMessage)
+    messageStore.updateConversation(targetUserId.value, tempMessage, 0, {
+      nickname: targetUser.value?.nickname,
+      avatar: targetUser.value?.avatar,
+    })
     scrollToBottom()
 
     // 发送图片消息
@@ -631,6 +641,9 @@ const handleSendSuccess = (data) => {
   if (lastMessage && lastMessage.id > Date.now() - 5000) {
     // 更新最后一条消息的ID
     lastMessage.id = data.messageId
+    if (typeof data.code === 'number') {
+      lastMessage.examineStatus = data.code
+    }
   }
 }
 

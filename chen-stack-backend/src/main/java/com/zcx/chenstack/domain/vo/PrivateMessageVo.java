@@ -30,6 +30,8 @@ public class PrivateMessageVo {
 
     private String imageUrl;
 
+    private Integer examineStatus;
+
     private Integer isRead;
 
     private Integer isRevoked;

@@ -135,6 +135,8 @@ public class PhotoServiceImpl extends ServiceImpl<PhotoMapper, Photo> implements
             }
         }
 
+        syncMessageImagesExamineStatusByUrls(List.of(url), status);
+
         return photo;
     }
 
@@ -376,6 +378,28 @@ public class PhotoServiceImpl extends ServiceImpl<PhotoMapper, Photo> implements
         privateMessageMapper.update(null, updateWrapper);
     }
 
+    private void syncMessageImagesExamineStatusByUrls(Collection<String> urls, Integer examineStatus) {
+        if (ObjectUtil.isEmpty(urls) || ObjectUtil.isEmpty(examineStatus)) {
+            return;
+        }
+
+        List<String> validUrls = urls.stream()
+                .filter(ObjectUtil::isNotEmpty)
+                .filter(url -> url.contains(UploadEnum.MESSAGE.getDir()))
+                .distinct()
+                .collect(Collectors.toList());
+        if (ObjectUtil.isEmpty(validUrls)) {
+            return;
+        }
+
+        LambdaUpdateWrapper<PrivateMessage> updateWrapper = new LambdaUpdateWrapper<>();
+        updateWrapper.in(PrivateMessage::getImageUrl, validUrls)
+                .eq(PrivateMessage::getMessageType, 2)
+                .eq(PrivateMessage::getIsRevoked, 0)
+                .set(PrivateMessage::getExamineStatus, examineStatus);
+        privateMessageMapper.update(null, updateWrapper);
+    }
+
     @Override
     public String uploadArticle(MultipartFile file) {
         Integer userId = SecurityUtils.getUserId();
@@ -486,6 +510,7 @@ public class PhotoServiceImpl extends ServiceImpl<PhotoMapper, Photo> implements
             AuditResult imageAuditResult = imageAuditUtils.auditImageWithDetails(photo.getUrl());
             Photo updatePhoto = setPhotoExamineStatus(photo, imageAuditResult.getStatus());
             photoMapper.updateById(updatePhoto);
+            syncMessageImagesExamineStatusByUrls(List.of(photo.getUrl()), imageAuditResult.getStatus());
         } catch (Exception e) {
             log.error("更新图片审核状态失败，photoId: {}, url: {}", photo.getId(), photo.getUrl(), e);
         }
@@ -539,24 +564,17 @@ public class PhotoServiceImpl extends ServiceImpl<PhotoMapper, Photo> implements
         updateWrapper.set(Photo::getExamineStatus, photoAuditDto.getExamineStatus());
         photoMapper.update(null, updateWrapper);
 
-        // 如果是审核通过
-        if (photoAuditDto.getExamineStatus() == ExamineStatusEnum.NO_PASS.getCode()) {
-            Photo photo = photoMapper.selectById(photoAuditDto.getPhotoId());
-            if (ObjectUtil.isNotEmpty(photo) && ObjectUtil.isNotEmpty(photo.getUrl())) {
-                revokeMessageImagesByUrls(List.of(photo.getUrl()));
-            }
+        Photo photo = photoMapper.selectById(photoAuditDto.getPhotoId());
+        if (ObjectUtil.isEmpty(photo)) {
+            return;
         }
 
-        if (photoAuditDto.getExamineStatus() == ExamineStatusEnum.PASS.getCode()) {
-            Photo photo = photoMapper.selectById(photoAuditDto.getPhotoId());
-            if (ObjectUtil.isEmpty(photo)) {
-                return;
-            }
+        syncMessageImagesExamineStatusByUrls(List.of(photo.getUrl()), photoAuditDto.getExamineStatus());
 
+        if (photoAuditDto.getExamineStatus() == ExamineStatusEnum.PASS.getCode()
+                && photo.getUrl().contains("/user/avatar/")) {
             // 头像审核通过后更新用户头像
-            if (photo.getUrl().contains("/user/avatar/")) {
-                updateUserAvatar(photo.getUserId(), photo.getUrl());
-            }
+            updateUserAvatar(photo.getUserId(), photo.getUrl());
         }
     }
 
@@ -570,14 +588,12 @@ public class PhotoServiceImpl extends ServiceImpl<PhotoMapper, Photo> implements
         updateWrapper.set(Photo::getExamineStatus, photoAuditDto.get(0).getExamineStatus());
         photoMapper.update(null, updateWrapper);
 
-        if (photoAuditDto.get(0).getExamineStatus() == ExamineStatusEnum.NO_PASS.getCode()) {
-            List<String> photoUrls = photos.stream()
-                    .map(Photo::getUrl)
-                    .filter(ObjectUtil::isNotEmpty)
-                    .distinct()
-                    .collect(Collectors.toList());
-            revokeMessageImagesByUrls(photoUrls);
-        }
+        List<String> photoUrls = photos.stream()
+                .map(Photo::getUrl)
+                .filter(ObjectUtil::isNotEmpty)
+                .distinct()
+                .collect(Collectors.toList());
+        syncMessageImagesExamineStatusByUrls(photoUrls, photoAuditDto.get(0).getExamineStatus());
 
         for (PhotoAuditDto dto : photoAuditDto) {
             if (dto.getExamineStatus() == ExamineStatusEnum.PASS.getCode()) {

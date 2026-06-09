@@ -32,8 +32,15 @@
             </div>
           </template>
         </el-image>
+        <div v-if="isMine && message.examineStatus === 0" class="audit-status audit-status--waiting">
+          <span class="audit-status__dot"></span>
+          <span>审核中</span>
+        </div>
+        <div v-else-if="isMine && message.examineStatus === 2" class="audit-status audit-status--failed">
+          <span>未通过审核</span>
+        </div>
       </div>
-      <div v-if="isMine" class="read-status">
+      <div v-if="isMine && (!message.examineStatus || message.examineStatus === 1)" class="read-status">
         <span v-if="message.isRead === 1" class="read-text">已读</span>
         <span v-else class="unread-text">未读</span>
       </div>
@@ -276,6 +283,44 @@ const handleAvatarClick = () => {
           }
         }
       }
+
+      .audit-status {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        margin-top: 8px;
+        font-size: 11px;
+        font-weight: 500;
+        line-height: 1;
+
+        &__dot {
+          width: 8px;
+          height: 8px;
+          border-radius: 50%;
+          background: var(--text-muted);
+          animation: auditPulse 1.4s ease-in-out infinite;
+        }
+
+        @keyframes auditPulse {
+          0%,
+          100% {
+            opacity: 0.45;
+            transform: scale(0.9);
+          }
+          50% {
+            opacity: 1;
+            transform: scale(1.1);
+          }
+        }
+      }
+
+      .audit-status--waiting {
+        color: var(--text-muted);
+      }
+
+      .audit-status--failed {
+        color: var(--danger-color);
+      }
     }
 
     // 已读/未读状态
@@ -300,6 +345,7 @@ html.dark {
     --text-on-accent: #ffffff;
     --accent-color: #3b82f6;
     --success-color: #22c55e;
+    --danger-color: #ef4444;
   }
 }
 </style>

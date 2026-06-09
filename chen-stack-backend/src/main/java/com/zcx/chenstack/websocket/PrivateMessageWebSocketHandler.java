@@ -1,16 +1,22 @@
 package com.zcx.chenstack.websocket;
 
 import com.alibaba.fastjson.JSON;
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.zcx.chenstack.domain.constants.BlogConstants;
 import com.zcx.chenstack.domain.dto.WebSocketMessage;
+import com.zcx.chenstack.domain.entity.Photo;
 import com.zcx.chenstack.domain.entity.PrivateMessage;
 import com.zcx.chenstack.domain.entity.SysUser;
+import com.zcx.chenstack.domain.enums.ExamineStatusEnum;
 import com.zcx.chenstack.domain.enums.WebSocketMessageTypeEnum;
+import com.zcx.chenstack.domain.result.AuditResult;
+import com.zcx.chenstack.mapper.PhotoMapper;
 import com.zcx.chenstack.mapper.SysUserMapper;
 import com.zcx.chenstack.service.ConversationService;
 import com.zcx.chenstack.service.PrivateMessageService;
 import com.zcx.chenstack.service.UserSettingsService;
 import com.zcx.chenstack.utils.EmailUtils;
+import com.zcx.chenstack.utils.TextAuditUtils;
 import com.zcx.chenstack.utils.XssUtils;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
@@ -46,10 +52,16 @@ public class PrivateMessageWebSocketHandler extends TextWebSocketHandler {
     private SysUserMapper sysUserMapper;
 
     @Resource
+    private PhotoMapper photoMapper;
+
+    @Resource
     private UserSettingsService userSettingsService;
 
     @Resource
     private EmailUtils emailUtils;
+
+    @Resource
+    private TextAuditUtils textAuditUtils;
 
     /**
      * WebSocket 连接建立后的处理
@@ -98,7 +110,7 @@ public class PrivateMessageWebSocketHandler extends TextWebSocketHandler {
 
             if (WebSocketMessageTypeEnum.SEND_MESSAGE.getType().equals(type)) {
                 // 发送消息
-                handleSendMessage(fromUserId, wsMessage);
+                handleSendMessage(session, fromUserId, wsMessage);
             } else if (WebSocketMessageTypeEnum.READ_MESSAGE.getType().equals(type)) {
                 // 标记消息已读
                 handleReadMessage(fromUserId, wsMessage);
@@ -153,14 +165,49 @@ public class PrivateMessageWebSocketHandler extends TextWebSocketHandler {
     /**
      * 处理发送消息
      */
-    private void handleSendMessage(Integer fromUserId, WebSocketMessage wsMessage) {
+    private void handleSendMessage(WebSocketSession session, Integer fromUserId, WebSocketMessage wsMessage) {
         Integer toUserId = wsMessage.getToUserId();
         String content = wsMessage.getContent();
         Integer messageType = wsMessage.getMessageType();
         String imageUrl = wsMessage.getImageUrl();
+        Integer examineStatus = ExamineStatusEnum.WAIT.getCode();
+        String ackMessage = "审核中";
 
         // XSS 过滤：防止恶意脚本注入
         content = XssUtils.cleanPlainText(content);
+
+        // 文本消息发送前审核，图片消息按图片审核状态决定初始状态
+        if (!Integer.valueOf(2).equals(messageType)) {
+            if (content == null || content.trim().isEmpty()) {
+                sendMessage(session, WebSocketMessage.error("私信内容不能为空"));
+                return;
+            }
+
+            try {
+                AuditResult auditResult = textAuditUtils.auditTextWithDetailsSplit(content);
+                if (auditResult != null && auditResult.getStatus() != null) {
+                    examineStatus = auditResult.getStatus();
+                }
+                if (ExamineStatusEnum.PASS.getCode().equals(examineStatus)) {
+                    ackMessage = "发送成功";
+                } else if (ExamineStatusEnum.NO_PASS.getCode().equals(examineStatus)) {
+                    ackMessage = auditResult != null && auditResult.getErrorMessage() != null
+                            ? auditResult.getErrorMessage()
+                            : "私信内容未通过审核";
+                }
+            } catch (Exception e) {
+                log.error("私信文本审核异常，fromUserId={}, toUserId={}", fromUserId, toUserId, e);
+                examineStatus = ExamineStatusEnum.WAIT.getCode();
+                ackMessage = "私信内容需要调整或稍后重试";
+            }
+        } else {
+            examineStatus = resolveMessageImageAuditStatus(imageUrl);
+            if (ExamineStatusEnum.PASS.getCode().equals(examineStatus)) {
+                ackMessage = "发送成功";
+            } else if (ExamineStatusEnum.NO_PASS.getCode().equals(examineStatus)) {
+                ackMessage = "图片未通过审核";
+            }
+        }
 
         // 1. 保存消息到数据库
         PrivateMessage privateMessage = new PrivateMessage();
@@ -169,58 +216,65 @@ public class PrivateMessageWebSocketHandler extends TextWebSocketHandler {
         privateMessage.setContent(content);
         privateMessage.setMessageType(messageType);
         privateMessage.setImageUrl(imageUrl);
+        privateMessage.setExamineStatus(examineStatus);
+        privateMessage.setIsRead(0);
+        privateMessage.setIsRevoked(0);
         privateMessageService.save(privateMessage);
 
-        // 2. 更新双方的会话记录
-        conversationService.updateConversation(fromUserId, toUserId, privateMessage);
+        // 2. 仅审核通过的消息更新会话并推送给接收者
+        if (ExamineStatusEnum.PASS.getCode().equals(examineStatus)) {
+            conversationService.updateConversation(fromUserId, toUserId, privateMessage);
 
-        // 3. 查询用户信息
-        SysUser fromUser = sysUserMapper.selectById(fromUserId);
-        SysUser toUser = sysUserMapper.selectById(toUserId);
+            // 3. 查询用户信息
+            SysUser fromUser = sysUserMapper.selectById(fromUserId);
+            SysUser toUser = sysUserMapper.selectById(toUserId);
 
-        // 4. 推送消息给接收者（如果在线）
-        WebSocketSession toSession = sessionManager.getSession(toUserId);
-        if (toSession != null && toSession.isOpen()) {
-            // 查询接收者与发送者的会话未读数
-            Integer unreadCount = conversationService.getUnreadCount(toUserId, fromUserId);
+            // 4. 推送消息给接收者（如果在线）
+            WebSocketSession toSession = sessionManager.getSession(toUserId);
+            if (toSession != null && toSession.isOpen()) {
+                // 查询接收者与发送者的会话未读数
+                Integer unreadCount = conversationService.getUnreadCount(toUserId, fromUserId);
 
-            WebSocketMessage pushMessage = WebSocketMessage.builder()
-                    .type(WebSocketMessageTypeEnum.NEW_MESSAGE.getType())
-                    .messageId(privateMessage.getId())
-                    .fromUserId(fromUserId)
-                    .toUserId(toUserId)
-                    .content(content)
-                    .messageType(messageType)
-                    .imageUrl(imageUrl)
-                    .createTime(privateMessage.getCreateTime())
-                    .unreadCount(unreadCount)
-                    .build();
+                WebSocketMessage pushMessage = WebSocketMessage.builder()
+                        .type(WebSocketMessageTypeEnum.NEW_MESSAGE.getType())
+                        .messageId(privateMessage.getId())
+                        .fromUserId(fromUserId)
+                        .toUserId(toUserId)
+                        .content(content)
+                        .messageType(messageType)
+                        .imageUrl(imageUrl)
+                        .createTime(privateMessage.getCreateTime())
+                        .unreadCount(unreadCount)
+                        .code(privateMessage.getExamineStatus())
+                        .build();
 
-            // 添加用户信息
-            if (fromUser != null) {
-                pushMessage.setFromUserNickname(fromUser.getNickname());
-                pushMessage.setFromUserAvatar(fromUser.getAvatar());
+                // 添加用户信息
+                if (fromUser != null) {
+                    pushMessage.setFromUserNickname(fromUser.getNickname());
+                    pushMessage.setFromUserAvatar(fromUser.getAvatar());
+                }
+                if (toUser != null) {
+                    pushMessage.setToUserNickname(toUser.getNickname());
+                    pushMessage.setToUserAvatar(toUser.getAvatar());
+                }
+
+                sendMessage(toSession, pushMessage);
             }
-            if (toUser != null) {
-                pushMessage.setToUserNickname(toUser.getNickname());
-                pushMessage.setToUserAvatar(toUser.getAvatar());
-            }
 
-            sendMessage(toSession, pushMessage);
+            // 5. 不管接收者是否在线，都检查是否发送邮件通知
+            // 判断条件：1. 接收者开启了邮件通知 2. 接收者绑定了邮箱 3. 这是第一条未读消息
+            sendPrivateMessageEmailNotification(toUserId, fromUser, content, privateMessage.getCreateTime());
         }
 
-        // 5. 不管接收者是否在线，都检查是否发送邮件通知
-        // 判断条件：1. 接收者开启了邮件通知 2. 接收者绑定了邮箱 3. 这是第一条未读消息
-        sendPrivateMessageEmailNotification(toUserId, fromUser, content, privateMessage.getCreateTime());
-
-        // 6. 发送成功回执给发送者
-        WebSocketSession fromSession = sessionManager.getSession(fromUserId);
-        if (fromSession != null && fromSession.isOpen()) {
-            WebSocketMessage ackMessage = WebSocketMessage.builder()
+        // 6. 发送成功回执给发送者，携带审核状态
+        if (session != null && session.isOpen()) {
+            WebSocketMessage ackResponse = WebSocketMessage.builder()
                     .type(WebSocketMessageTypeEnum.SEND_SUCCESS.getType())
                     .messageId(privateMessage.getId())
+                    .code(examineStatus)
+                    .message(ackMessage)
                     .build();
-            sendMessage(fromSession, ackMessage);
+            sendMessage(session, ackResponse);
         }
     }
 
@@ -323,6 +377,27 @@ public class PrivateMessageWebSocketHandler extends TextWebSocketHandler {
                     .build();
             sendMessage(toSession, pushMessage);
         }
+    }
+
+    /**
+     * 获取图片消息当前对应的审核状态
+     *
+     * @param imageUrl 图片地址
+     * @return 审核状态，默认待审核
+     */
+    private Integer resolveMessageImageAuditStatus(String imageUrl) {
+        if (imageUrl == null || imageUrl.trim().isEmpty()) {
+            return ExamineStatusEnum.WAIT.getCode();
+        }
+
+        Photo photo = photoMapper.selectOne(new LambdaQueryWrapper<Photo>()
+                .eq(Photo::getUrl, imageUrl)
+                .orderByDesc(Photo::getId)
+                .last("LIMIT 1"));
+        if (photo == null || photo.getExamineStatus() == null) {
+            return ExamineStatusEnum.WAIT.getCode();
+        }
+        return photo.getExamineStatus();
     }
 
     /**

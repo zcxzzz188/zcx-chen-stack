@@ -257,6 +257,7 @@ CREATE TABLE `private_message`  (
                                     `content` text CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '消息内容',
                                     `message_type` tinyint NOT NULL DEFAULT 1 COMMENT '消息类型 1-文本 2-图片',
                                     `image_url` varchar(400) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '图片url',
+                                    `examine_status` tinyint NOT NULL DEFAULT 0 COMMENT '审核状态：0-待审核 1-通过 2-未通过',
                                     `is_read` tinyint NOT NULL DEFAULT 0 COMMENT '是否已读 0-未读 1-已读',
                                     `is_revoked` tinyint NOT NULL DEFAULT 0 COMMENT '是否撤回 0-正常 1-撤回',
                                     `read_time` datetime NULL DEFAULT NULL COMMENT '阅读时间',

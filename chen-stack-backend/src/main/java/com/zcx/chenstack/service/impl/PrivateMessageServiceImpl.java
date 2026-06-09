@@ -9,6 +9,7 @@ import com.zcx.chenstack.domain.constants.BlogConstants;
 import com.zcx.chenstack.domain.constants.RedisConstants;
 import com.zcx.chenstack.domain.entity.PrivateMessage;
 import com.zcx.chenstack.domain.entity.SysUser;
+import com.zcx.chenstack.domain.enums.ExamineStatusEnum;
 import com.zcx.chenstack.domain.vo.PageVo;
 import com.zcx.chenstack.domain.vo.PrivateMessageVo;
 import com.zcx.chenstack.exception.BlogException;
@@ -51,7 +52,10 @@ public class PrivateMessageServiceImpl extends ServiceImpl<PrivateMessageMapper,
                         .and(w -> w.eq(PrivateMessage::getFromUserId, userId).eq(PrivateMessage::getToUserId,
                                 targetUserId))
                         .or(w -> w.eq(PrivateMessage::getFromUserId, targetUserId).eq(PrivateMessage::getToUserId,
-                                userId)))
+                                userId)
+                                .and(w2 -> w2.eq(PrivateMessage::getExamineStatus, ExamineStatusEnum.PASS.getCode())
+                                        .or()
+                                        .isNull(PrivateMessage::getExamineStatus))))
                 .eq(PrivateMessage::getIsRevoked, 0) // 过滤掉已撤回的消息
                 .orderByDesc(PrivateMessage::getCreateTime);
 
@@ -103,7 +107,10 @@ public class PrivateMessageServiceImpl extends ServiceImpl<PrivateMessageMapper,
                 .set(PrivateMessage::getReadTime, new Date())
                 .eq(PrivateMessage::getFromUserId, fromUserId)
                 .eq(PrivateMessage::getToUserId, toUserId)
-                .eq(PrivateMessage::getIsRead, 0);
+                .eq(PrivateMessage::getIsRead, 0)
+                .and(w -> w.eq(PrivateMessage::getExamineStatus, ExamineStatusEnum.PASS.getCode())
+                        .or()
+                        .isNull(PrivateMessage::getExamineStatus));
 
         privateMessageMapper.update(null, updateWrapper);
 
@@ -172,7 +179,10 @@ public class PrivateMessageServiceImpl extends ServiceImpl<PrivateMessageMapper,
         LambdaQueryWrapper<PrivateMessage> qw = new LambdaQueryWrapper<PrivateMessage>()
                 .eq(PrivateMessage::getToUserId, userId)
                 .eq(PrivateMessage::getIsRead, 0)
-                .eq(PrivateMessage::getIsRevoked, 0); // 过滤掉已撤回的消息
+                .eq(PrivateMessage::getIsRevoked, 0) // 过滤掉已撤回的消息
+                .and(w -> w.eq(PrivateMessage::getExamineStatus, ExamineStatusEnum.PASS.getCode())
+                        .or()
+                        .isNull(PrivateMessage::getExamineStatus));
 
         Integer count = Math.toIntExact(privateMessageMapper.selectCount(qw));
 
