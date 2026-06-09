@@ -354,6 +354,28 @@ public class PhotoServiceImpl extends ServiceImpl<PhotoMapper, Photo> implements
         });
     }
 
+    private void revokeMessageImagesByUrls(Collection<String> urls) {
+        if (ObjectUtil.isEmpty(urls)) {
+            return;
+        }
+
+        List<String> validUrls = urls.stream()
+                .filter(ObjectUtil::isNotEmpty)
+                .filter(url -> url.contains(UploadEnum.MESSAGE.getDir()))
+                .distinct()
+                .collect(Collectors.toList());
+        if (ObjectUtil.isEmpty(validUrls)) {
+            return;
+        }
+
+        LambdaUpdateWrapper<PrivateMessage> updateWrapper = new LambdaUpdateWrapper<>();
+        updateWrapper.in(PrivateMessage::getImageUrl, validUrls)
+                .eq(PrivateMessage::getMessageType, 2)
+                .eq(PrivateMessage::getIsRevoked, 0)
+                .set(PrivateMessage::getIsRevoked, 1);
+        privateMessageMapper.update(null, updateWrapper);
+    }
+
     @Override
     public String uploadArticle(MultipartFile file) {
         Integer userId = SecurityUtils.getUserId();
@@ -484,6 +506,7 @@ public class PhotoServiceImpl extends ServiceImpl<PhotoMapper, Photo> implements
             throw new BlogException(BlogConstants.NotFoundPhoto);
         }
 
+        revokeMessageImagesByUrls(ObjectUtil.isNotEmpty(photo.getUrl()) ? List.of(photo.getUrl()) : List.of());
         photoMapper.deleteById(photoId);
         fileUploadUtils.deleteFiles(List.of(fileUploadUtils.getObjectName(photo.getUrl())));
     }
@@ -495,9 +518,14 @@ public class PhotoServiceImpl extends ServiceImpl<PhotoMapper, Photo> implements
             throw new BlogException(BlogConstants.NotFoundPhoto);
         }
 
-        photoMapper.deleteBatchIds(photoIds);
-        List<String> filePaths = photos.stream()
+        List<String> photoUrls = photos.stream()
                 .map(Photo::getUrl)
+                .filter(ObjectUtil::isNotEmpty)
+                .distinct()
+                .collect(Collectors.toList());
+        revokeMessageImagesByUrls(photoUrls);
+        photoMapper.deleteBatchIds(photoIds);
+        List<String> filePaths = photoUrls.stream()
                 .map(fileUploadUtils::getObjectName)
                 .toList();
         fileUploadUtils.deleteFiles(filePaths);
@@ -512,7 +540,14 @@ public class PhotoServiceImpl extends ServiceImpl<PhotoMapper, Photo> implements
         photoMapper.update(null, updateWrapper);
 
         // 如果是审核通过
-        if (photoAuditDto.getExamineStatus() == 1) {
+        if (photoAuditDto.getExamineStatus() == ExamineStatusEnum.NO_PASS.getCode()) {
+            Photo photo = photoMapper.selectById(photoAuditDto.getPhotoId());
+            if (ObjectUtil.isNotEmpty(photo) && ObjectUtil.isNotEmpty(photo.getUrl())) {
+                revokeMessageImagesByUrls(List.of(photo.getUrl()));
+            }
+        }
+
+        if (photoAuditDto.getExamineStatus() == ExamineStatusEnum.PASS.getCode()) {
             Photo photo = photoMapper.selectById(photoAuditDto.getPhotoId());
             if (ObjectUtil.isEmpty(photo)) {
                 return;
@@ -528,14 +563,24 @@ public class PhotoServiceImpl extends ServiceImpl<PhotoMapper, Photo> implements
     @Override
     public void adminAuditBatch(List<PhotoAuditDto> photoAuditDto) {
         List<Integer> photoIds = photoAuditDto.stream().map(PhotoAuditDto::getPhotoId).collect(Collectors.toList());
+        List<Photo> photos = photoMapper.selectBatchIds(photoIds);
         // 更新照片审核状态
         LambdaUpdateWrapper<Photo> updateWrapper = new LambdaUpdateWrapper<>();
         updateWrapper.in(Photo::getId, photoIds);
         updateWrapper.set(Photo::getExamineStatus, photoAuditDto.get(0).getExamineStatus());
         photoMapper.update(null, updateWrapper);
 
+        if (photoAuditDto.get(0).getExamineStatus() == ExamineStatusEnum.NO_PASS.getCode()) {
+            List<String> photoUrls = photos.stream()
+                    .map(Photo::getUrl)
+                    .filter(ObjectUtil::isNotEmpty)
+                    .distinct()
+                    .collect(Collectors.toList());
+            revokeMessageImagesByUrls(photoUrls);
+        }
+
         for (PhotoAuditDto dto : photoAuditDto) {
-            if (dto.getExamineStatus() == 1) {
+            if (dto.getExamineStatus() == ExamineStatusEnum.PASS.getCode()) {
                 Photo photo = photoMapper.selectById(dto.getPhotoId());
                 if (ObjectUtil.isNotEmpty(photo) && photo.getUrl().contains("/user/avatar/")) {
                     updateUserAvatar(photo.getUserId(), photo.getUrl());
