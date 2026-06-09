@@ -113,6 +113,31 @@ public class PhotoServiceImpl extends ServiceImpl<PhotoMapper, Photo> implements
         return updatePhoto;
     }
 
+    private Photo savePhotoAndAudit(Integer userId, String url, boolean updateUserAvatarOnPass) {
+        Photo photo = new Photo();
+        photo.setUserId(userId);
+        photo.setUrl(url);
+        photo.setExamineStatus(ExamineStatusEnum.WAIT.getCode());
+        photo.setCreateTime(new Date());
+        photo.setUpdateTime(new Date());
+        photoMapper.insert(photo);
+
+        Integer status = ExamineStatusEnum.WAIT.getCode();
+        if (chenStackConfig.isPhotoAutoAudit()) {
+            AuditResult imageAuditResult = imageAuditUtils.auditImageWithDetails(url);
+            status = imageAuditResult.getStatus();
+            Photo updatePhoto = setPhotoExamineStatus(photo, status);
+            photoMapper.updateById(updatePhoto);
+            photo.setExamineStatus(status);
+
+            if (updateUserAvatarOnPass && ExamineStatusEnum.PASS.getCode().equals(status)) {
+                updateUserAvatar(userId, url);
+            }
+        }
+
+        return photo;
+    }
+
     public void passPhotosByUrls(Collection<String> urls) {
         if (ObjectUtil.isEmpty(urls)) {
             return;
@@ -359,24 +384,19 @@ public class PhotoServiceImpl extends ServiceImpl<PhotoMapper, Photo> implements
         // 上传图片
         String url = fileUploadUtils.upload(UploadEnum.MESSAGE, file);
 
-        // 异步记录到图片表（不阻塞返回，不做审核）
+        // 异步记录到图片表并触发图片审核（不阻塞返回）
         recordMessagePhotoAsync(userId, url);
 
         return url;
     }
 
     /**
-     * 异步记录私信图片到图片表
-     * 仅用于追溯和管理，不做审核
+     * 异步记录私信图片到图片表并复用图片审核逻辑
      */
     private void recordMessagePhotoAsync(Integer userId, String url) {
         executorService.execute(() -> {
             try {
-                Photo photo = new Photo();
-                photo.setUserId(userId);
-                photo.setUrl(url);
-                photo.setExamineStatus(ExamineStatusEnum.WAIT.getCode()); // 直接标记为待审核，不做审核
-                photoMapper.insert(photo);
+                savePhotoAndAudit(userId, url, false);
             } catch (Exception e) {
                 // 记录失败不影响用户使用，只记录日志
                 log.error("记录私信图片失败，userId: {}, url: {}", userId, url, e);
@@ -388,27 +408,9 @@ public class PhotoServiceImpl extends ServiceImpl<PhotoMapper, Photo> implements
     private void auditAndUpdate(Integer userId, String url) {
         executorService.execute(() -> {
             try {
-                // 保存图片信息到数据库
-                Photo photo = new Photo();
-                photo.setUserId(userId);
-                photo.setUrl(url);
-                photo.setExamineStatus(ExamineStatusEnum.WAIT.getCode());// 初始设置为待审核状态
-                photo.setCreateTime(new Date()); // 异步线程中手动设置时间，MyBatis-Plus 自动填充不生效
-                photo.setUpdateTime(new Date());
-                photoMapper.insert(photo);
+                Photo photo = savePhotoAndAudit(userId, url, false);
 
-                Integer status = 0;
-                // 图片自动审核
-                if (chenStackConfig.isPhotoAutoAudit()) {
-                    AuditResult imageAuditResult = imageAuditUtils.auditImageWithDetails(url);
-                    status = imageAuditResult.getStatus();
-                    // 根据审核结果设置审核状态
-                    Photo updatePhoto = setPhotoExamineStatus(photo, status);
-                    // 更新图片审核状态
-                    photoMapper.updateById(updatePhoto);
-                }
-
-                if (!chenStackConfig.isPhotoAutoAudit() || status.equals(ExamineStatusEnum.WAIT.getCode())) {
+                if (!chenStackConfig.isPhotoAutoAudit() || photo.getExamineStatus().equals(ExamineStatusEnum.WAIT.getCode())) {
                     // 需要人工审核，发送消息给管理员
                     String text = MessageConstants.ImageNeedReview(photo.getId());
                     MessageDto messageDto = new MessageDto();
@@ -432,30 +434,9 @@ public class PhotoServiceImpl extends ServiceImpl<PhotoMapper, Photo> implements
     private void auditAvatarAndUpdate(Integer userId, String url) {
         executorService.execute(() -> {
             try {
-                // 保存图片信息到数据库
-                Photo photo = new Photo();
-                photo.setUserId(userId);
-                photo.setUrl(url);
-                photo.setExamineStatus(ExamineStatusEnum.WAIT.getCode());
-                photo.setCreateTime(new Date()); // 异步线程中手动设置时间，MyBatis-Plus 自动填充不生效
-                photo.setUpdateTime(new Date());
-                photoMapper.insert(photo);
+                Photo photo = savePhotoAndAudit(userId, url, true);
 
-                Integer status = 0;
-                // 图片自动审核
-                if (chenStackConfig.isPhotoAutoAudit()) {
-                    AuditResult imageAuditResult = imageAuditUtils.auditImageWithDetails(url);
-                    status = imageAuditResult.getStatus();
-                    Photo updatePhoto = setPhotoExamineStatus(photo, status);
-                    photoMapper.updateById(updatePhoto);
-
-                    // 审核通过，更新用户头像
-                    if (status.equals(ExamineStatusEnum.PASS.getCode())) {
-                        updateUserAvatar(userId, url);
-                    }
-                }
-
-                if (!chenStackConfig.isPhotoAutoAudit() || status.equals(ExamineStatusEnum.WAIT.getCode())) {
+                if (!chenStackConfig.isPhotoAutoAudit() || photo.getExamineStatus().equals(ExamineStatusEnum.WAIT.getCode())) {
                     // 需要人工审核，发送消息给管理员
                     String text = MessageConstants.AvatarNeedReview(userId, photo.getId());
                     MessageDto messageDto = new MessageDto();
