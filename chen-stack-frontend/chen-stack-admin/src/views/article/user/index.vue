@@ -72,7 +72,18 @@
 
       <!-- 批量操作按钮 -->
       <template #batch-actions>
-        <BatchActions :selectedCount="selectedArticles.length" :showBatchDelete="true" @batchDelete="handleBatchDelete" />
+        <BatchActions
+          :selectedCount="selectedArticles.length"
+          :showBatchAudit="true"
+          :showBatchReject="true"
+          :showBatchDelete="true"
+          :batchAuditLoading="batchAuditLoading"
+          :batchRejectLoading="batchRejectLoading"
+          :batchDeleteLoading="batchDeleteLoading"
+          @batch-audit="handleBatchAudit"
+          @batch-reject="handleBatchReject"
+          @batch-delete="handleBatchDelete"
+        />
       </template>
 
       <!-- 桌面端表格视图 -->
@@ -135,7 +146,7 @@
           <!-- 审核状态列 -->
           <el-table-column prop="examineStatus" label="审核状态" width="80">
             <template #default="{ row }">
-              <StatusBadge :status="row.examineStatus" :statusMap="examineStatusMap" />
+              <StatusBadge :value="normalizeExamineStatus(row.examineStatus)" type="examine" />
             </template>
           </el-table-column>
           <!-- 阅读量列 -->
@@ -172,7 +183,7 @@
           <template #custom="{ item }">
             <div class="mobile-meta">
               <el-tag :type="item.reprintType === 0 ? 'success' : 'warning'" size="small">{{ item.reprintType === 0 ? '原创' : '转载' }}</el-tag>
-              <StatusBadge :status="item.examineStatus" :statusMap="examineStatusMap" />
+              <StatusBadge :value="normalizeExamineStatus(item.examineStatus)" type="examine" />
             </div>
             <div class="mobile-stats">
               <span
@@ -266,7 +277,7 @@
 
                 <div class="badge-group">
                   <span class="badge-label">审核状态:</span>
-                  <StatusBadge :status="currentArticle?.examineStatus || 0" :statusMap="examineStatusMap" />
+                  <StatusBadge :value="normalizeExamineStatus(currentArticle?.examineStatus)" type="examine" />
                 </div>
               </div>
             </div>
@@ -343,8 +354,8 @@
       <template #footer>
         <div class="dialog-footer">
           <el-button @click="dialogVisible = false" :icon="Close">关闭</el-button>
-          <el-button type="primary" @click="handleAuditArticle(currentArticle?.id)" :icon="Check" :disabled="!currentArticle || (currentArticle?.examineStatus || 0) === 1"> 审核通过 </el-button>
-          <el-button type="warning" @click="handleRejectArticle(currentArticle?.id)" :icon="Close" :disabled="!currentArticle || (currentArticle?.examineStatus || 0) === 2"> 审核拒绝 </el-button>
+          <el-button type="primary" @click="handleAuditArticle(currentArticle?.id)" :icon="Check" :disabled="!currentArticle || normalizeExamineStatus(currentArticle?.examineStatus) === 1"> 审核通过 </el-button>
+          <el-button type="warning" @click="handleRejectArticle(currentArticle?.id)" :icon="Close" :disabled="!currentArticle || normalizeExamineStatus(currentArticle?.examineStatus) === 2"> 审核拒绝 </el-button>
         </div>
       </template>
     </el-dialog>
@@ -361,7 +372,9 @@
         </el-form-item>
 
         <el-form-item label="文章标签" prop="tag">
-          <el-input v-model="editForm.tag" placeholder="请输入文章标签" clearable maxlength="255" show-word-limit />
+          <el-select v-model="editForm.tag" multiple filterable clearable :loading="tagOptionsLoading" placeholder="请选择文章标签" style="width: 100%">
+            <el-option v-for="option in tagOptions" :key="option.value" :label="option.label" :value="option.value" />
+          </el-select>
         </el-form-item>
 
         <el-form-item label="文章类型" prop="reprintType">
@@ -415,6 +428,7 @@ import { ref, onMounted, onUnmounted, computed } from 'vue'
 import { Delete, Close, Check, View, Calendar, Picture, User, Document, Star, ChatDotRound, Collection, Clock, Refresh, Search, ArrowLeft, Top, Edit } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { getUserListWithArticleCount } from '@/api/user'
+import { getTagList } from '@/api/tag'
 import {
   adminGetArticlesByUserId,
   adminDeleteArticle,
@@ -486,12 +500,14 @@ const batchDeleteLoading = ref(false)
 // 修改文章相关状态
 const editDialogVisible = ref(false)
 const editLoading = ref(false)
+const tagOptionsLoading = ref(false)
 const editFormRef = ref(null)
+const tagOptions = ref([])
 const editForm = ref({
   id: null,
   title: '',
   description: '',
-  tag: '',
+  tag: [],
   reprintType: 0,
   reprintUrl: '',
   visibleRange: 0,
@@ -505,7 +521,76 @@ const editRules = {
     { min: 1, max: 50, message: '标题长度应在1-50个字符之间', trigger: 'blur' },
   ],
   description: [{ max: 255, message: '描述长度不能超过255个字符', trigger: 'blur' }],
-  tag: [{ max: 255, message: '标签长度不能超过255个字符', trigger: 'blur' }],
+}
+
+const getErrorMessage = (error, fallback = '请求失败') => {
+  if (typeof error === 'string' && error.trim()) {
+    return error
+  }
+  return error?.response?.data?.msg || error?.msg || error?.message || fallback
+}
+
+const normalizeExamineStatus = (status) => {
+  if (status === '' || status == null) {
+    return null
+  }
+  const normalizedStatus = Number(status)
+  return Number.isNaN(normalizedStatus) ? status : normalizedStatus
+}
+
+const normalizeTagValues = (tagValue) => {
+  if (Array.isArray(tagValue)) {
+    return [...new Set(tagValue.map((item) => (typeof item === 'string' ? item.trim() : '')).filter(Boolean))]
+  }
+  if (typeof tagValue === 'string') {
+    return [...new Set(tagValue.split(',').map((item) => item.trim()).filter(Boolean))]
+  }
+  return []
+}
+
+const flattenTagOptions = (tagMap) => {
+  const optionMap = new Map()
+  Object.values(tagMap || {}).forEach((tags) => {
+    ;(tags || []).forEach((tag) => {
+      const tagName = typeof tag?.name === 'string' ? tag.name.trim() : ''
+      if (tagName && !optionMap.has(tagName)) {
+        optionMap.set(tagName, {
+          label: tagName,
+          value: tagName,
+          isHistory: false,
+        })
+      }
+    })
+  })
+  return Array.from(optionMap.values())
+}
+
+const mergeTagOptions = (selectedTags, options = []) => {
+  const optionMap = new Map(options.map((option) => [option.value, option]))
+  selectedTags.forEach((tagName) => {
+    if (!optionMap.has(tagName)) {
+      optionMap.set(tagName, {
+        label: `${tagName}（历史标签）`,
+        value: tagName,
+        isHistory: true,
+      })
+    }
+  })
+  return Array.from(optionMap.values())
+}
+
+const loadTagOptions = async (selectedTags = []) => {
+  tagOptionsLoading.value = true
+  try {
+    const res = await getTagList()
+    const options = flattenTagOptions(res?.data)
+    tagOptions.value = mergeTagOptions(selectedTags, options)
+  } catch (error) {
+    tagOptions.value = mergeTagOptions(selectedTags)
+    ElMessage.error(`获取标签列表失败：${getErrorMessage(error)}`)
+  } finally {
+    tagOptionsLoading.value = false
+  }
 }
 
 // 获取用户列表
@@ -649,7 +734,13 @@ const handleDialogClose = () => {
 }
 
 // 查看文章详情
-const handleViewArticle = async (articleId) => {
+const handleViewArticle = async (payload) => {
+  const articleId = resolveArticleId(payload)
+  if (articleId == null || articleId === '') {
+    ElMessage.error('文章ID不存在')
+    return
+  }
+
   try {
     detailLoading.value = true
     currentArticle.value = null
@@ -664,7 +755,7 @@ const handleViewArticle = async (articleId) => {
       throw new Error('文章数据为空或格式错误')
     }
   } catch (error) {
-    ElMessage.error('获取文章详情失败: ' + (error.message || '未知错误'))
+    ElMessage.error(`获取文章详情失败：${getErrorMessage(error, '获取文章详情失败')}`)
     dialogVisible.value = false
   } finally {
     detailLoading.value = false
@@ -675,11 +766,11 @@ const handleViewArticle = async (articleId) => {
 const handleAuditArticle = async (articleId) => {
   try {
     await adminExamineArticle({ articleId: articleId, examineStatus: 1 })
-    ElMessage.success('审核成功')
     await refreshArticleList()
     if (dialogVisible.value) {
       dialogVisible.value = false
     }
+    ElMessage.success('审核成功')
   } catch (error) {
     ElMessage.error('审核失败')
   }
@@ -687,6 +778,11 @@ const handleAuditArticle = async (articleId) => {
 
 // 处理批量审核
 const handleBatchAudit = () => {
+  if (selectedArticles.value.length === 0) {
+    ElMessage.warning('请选择文章')
+    return
+  }
+
   ElMessageBox.confirm(`确定要审核通过选中的 ${selectedArticles.value.length} 篇文章吗？`, '确认', {
     confirmButtonText: '确定',
     cancelButtonText: '取消',
@@ -717,11 +813,11 @@ const handleBatchAudit = () => {
 const handleRejectArticle = async (articleId) => {
   try {
     await adminExamineArticle({ articleId: articleId, examineStatus: 2 })
-    ElMessage.success('拒绝成功')
     await refreshArticleList()
     if (dialogVisible.value) {
       dialogVisible.value = false
     }
+    ElMessage.success('拒绝成功')
   } catch (error) {
     ElMessage.error('拒绝失败')
   }
@@ -729,6 +825,11 @@ const handleRejectArticle = async (articleId) => {
 
 // 处理批量拒绝
 const handleBatchReject = () => {
+  if (selectedArticles.value.length === 0) {
+    ElMessage.warning('请选择文章')
+    return
+  }
+
   ElMessageBox.confirm(`确定要拒绝选中的 ${selectedArticles.value.length} 篇文章吗？`, '确认', {
     confirmButtonText: '确定',
     cancelButtonText: '取消',
@@ -847,20 +948,22 @@ const getEditStatusType = (editStatus) => {
 // 处理修改文章
 const handleEditArticle = async (article) => {
   try {
+    const selectedTags = normalizeTagValues(article?.tag)
     editForm.value = {
       id: article.id,
       title: article.title || '',
       description: article.description || '',
-      tag: article.tag || '',
+      tag: selectedTags,
       reprintType: article.reprintType || 0,
       reprintUrl: article.reprintUrl || '',
       visibleRange: article.visibleRange || 0,
       editStatus: article.editStatus || 0,
     }
+    await loadTagOptions(selectedTags)
     editDialogVisible.value = true
   } catch (error) {
     console.error('修改文章出错:', error)
-    ElMessage.error('修改文章失败')
+    ElMessage.error(`修改文章失败：${getErrorMessage(error, '修改文章失败')}`)
   }
 }
 
@@ -873,7 +976,7 @@ const handleEditDialogClose = () => {
     id: null,
     title: '',
     description: '',
-    tag: '',
+    tag: [],
     reprintType: 0,
     reprintUrl: '',
     visibleRange: 0,
@@ -895,7 +998,7 @@ const handleUpdateArticle = async () => {
       id: editForm.value.id,
       title: editForm.value.title,
       description: editForm.value.description,
-      tag: editForm.value.tag,
+      tag: normalizeTagValues(editForm.value.tag).join(','),
       reprintType: editForm.value.reprintType,
       reprintUrl: editForm.value.reprintUrl,
       visibleRange: editForm.value.visibleRange,
@@ -907,7 +1010,7 @@ const handleUpdateArticle = async () => {
     editDialogVisible.value = false
     await refreshArticleList()
   } catch (error) {
-    ElMessage.error('修改文章失败：' + (error.message || '未知错误'))
+    ElMessage.error(`修改文章失败：${getErrorMessage(error, '修改文章失败')}`)
   } finally {
     editLoading.value = false
   }
@@ -1429,16 +1532,16 @@ onMounted(() => {
             border-color: var(--admin-info);
 
             .stat-icon {
-              color: var(--admin-primary);
+              color: rgba(255, 255, 255, 0.95);
             }
 
             .stat-label {
-              color: var(--admin-primary);
+              color: rgba(255, 255, 255, 0.95);
               font-weight: 600;
             }
 
             .stat-value {
-              color: var(--admin-primary);
+              color: rgba(255, 255, 255, 0.95);
               font-size: 12px;
               font-weight: 600;
             }

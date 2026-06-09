@@ -60,13 +60,15 @@ request.interceptors.response.use(
     return Promise.reject(response.data)
   },
   (error) => {
-    let { status, data } = error.response
+    const status = error.response?.status
+    const message = error.response?.data?.msg || error.message || '请求失败'
+    error.message = message
     if (status === 401) {
       // 401 代表token过期，需要重新登录
       // 使用锁防止多个请求同时 401 时弹出多个弹窗
       if (!isHandlingAuthError) {
         isHandlingAuthError = true
-        ElMessage.error(data.msg || '登录已过期，请重新登录')
+        ElMessage.error(message)
         // 清除useStore数据和localStorage中的jwt
         RemoveJwt()
         // 需要重新登陆，跳转到登录页面
