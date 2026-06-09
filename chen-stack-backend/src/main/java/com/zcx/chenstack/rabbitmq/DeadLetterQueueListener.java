@@ -79,8 +79,6 @@ public class DeadLetterQueueListener {
                 handleEmailDeadLetter(messageBody, sourceQueue, sourceExchange, sourceRoutingKey, retryCount);
             } else if (RabbitMQConstants.Examine_Queue.equals(sourceQueue)) {
                 handleExamineDeadLetter(messageBody, sourceQueue, sourceExchange, sourceRoutingKey, retryCount);
-            } else if (RabbitMQConstants.Blacklist_Queue.equals(sourceQueue)) {
-                handleBlacklistDeadLetter(messageBody, sourceQueue, sourceExchange, sourceRoutingKey, retryCount);
             } else if (RabbitMQConstants.WebSocket_Queue.equals(sourceQueue)) {
                 handleWebSocketDeadLetter(messageBody, sourceQueue, sourceExchange, sourceRoutingKey, retryCount);
             } else if (RabbitMQConstants.Operationlog_Queue.equals(sourceQueue)) {
@@ -115,15 +113,6 @@ public class DeadLetterQueueListener {
         saveDeadLetterNotice("审核通知", messageBody, sourceQueue, sourceExchange, sourceRoutingKey, retryCount);
     }
     
-    /**
-     * 处理黑名单通知死信
-     */
-    private void handleBlacklistDeadLetter(String messageBody, String sourceQueue, String sourceExchange,
-            String sourceRoutingKey, Integer retryCount) {
-        log.error("黑名单通知发送失败，已达最大重试次数，消息内容: {}", messageBody);
-        saveDeadLetterNotice("黑名单通知", messageBody, sourceQueue, sourceExchange, sourceRoutingKey, retryCount);
-    }
-
     /**
      * 处理 WebSocket 死信
      */

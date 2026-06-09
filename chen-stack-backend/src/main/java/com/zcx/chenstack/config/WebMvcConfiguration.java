@@ -1,11 +1,9 @@
 package com.zcx.chenstack.config;
 
 import com.zcx.chenstack.aspect.OriginCheckInterceptor;
-import com.zcx.chenstack.aspect.SysBlacklistInterceptor;
 import jakarta.annotation.Resource;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.web.servlet.config.annotation.InterceptorRegistry;
-import org.springframework.web.servlet.config.annotation.PathMatchConfigurer;
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 
 /**
@@ -19,17 +17,10 @@ import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 public class WebMvcConfiguration implements WebMvcConfigurer {
 
     @Resource
-    private SysBlacklistInterceptor sysBlacklistInterceptor;
-
-    @Resource
     private OriginCheckInterceptor originCheckInterceptor;
 
     @Override
     public void addInterceptors(InterceptorRegistry registry) {
-        // 注册黑名单拦截器
-        registry.addInterceptor(sysBlacklistInterceptor)
-                .addPathPatterns("/**"); // 拦截所有请求
-
         // 注册来源校验拦截器
         registry.addInterceptor(originCheckInterceptor)
                 .addPathPatterns("/**"); // 拦截所有请求

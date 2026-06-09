@@ -157,28 +157,6 @@ public class RabbitMQConfig {
                 .with(RabbitMQConstants.Visitor_Routing_Key);
     }
 
-    // ==================== 黑名单通知队列配置 ====================
-
-    @Bean
-    public DirectExchange blacklistExchange() {
-        return new DirectExchange(RabbitMQConstants.Blacklist_Exchange, true, false);
-    }
-
-    @Bean
-    public Queue blacklistQueue() {
-        return QueueBuilder.durable(RabbitMQConstants.Blacklist_Queue)
-                .withArguments(DEAD_LETTER_ARGS)
-                .build();
-    }
-
-    @Bean
-    public Binding bindingBlacklistQueueToExchange() {
-        return BindingBuilder
-                .bind(blacklistQueue())
-                .to(blacklistExchange())
-                .with(RabbitMQConstants.Blacklist_Routing_Key);
-    }
-
     // ==================== WebSocket 消息队列配置 ====================
 
     /**

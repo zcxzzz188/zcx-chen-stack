@@ -114,7 +114,6 @@ public class BlogConstants {
 
     // 限流相关错误信息
     public static final String RateLimitExceeded = "操作繁忙，请稍候再试";
-    public static final String BlacklistedUser = "您的访问已被限制，请稍后再试";
 
     // 访客日志相关错误信息
     public static final String VisitorLogIdsRequired = "访客日志ID列表不能为空";

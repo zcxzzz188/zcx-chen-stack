@@ -17,7 +17,6 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.amqp.rabbit.annotation.RabbitListener;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
-import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.messaging.handler.annotation.Payload;
 import org.springframework.stereotype.Component;
 
@@ -47,9 +46,6 @@ public class RabbitMqListener {
 
     @Resource
     private IpUtils ipUtils;
-
-    @Resource
-    private RedisTemplate<String, String> redisTemplate;
 
     @Resource
     private WebSocketSessionManager webSocketSessionManager;
@@ -213,47 +209,6 @@ public class RabbitMqListener {
         } catch (Exception e) {
             log.error("处理访客记录时出现异常，message={}", message, e);
             // 不抛出异常，避免重试（访客记录丢失影响不大）
-        }
-    }
-
-    /**
-     * 监听黑名单通知队列
-     * 处理黑名单通知邮件发送
-     * <p>
-     * 重试机制：
-     * - 最大重试次数：5 次（包括首次消费）
-     * - 重试间隔：5s, 10s, 20s, 30s（指数退避）
-     * - 重试失败后：消息进入死信队列
-     */
-    @RabbitListener(queues = RabbitMQConstants.Blacklist_Queue)
-    public void receiveBlacklistNotification(Map<String, Object> message) {
-        try {
-            String userId = String.valueOf(message.get("userId"));
-            String ip = (String) message.get("ip");
-            String address = (String) message.get("address");
-            String reason = (String) message.get("reason");
-            String banDuration = (String) message.get("banDuration");
-            String banTime = (String) message.get("banTime");
-
-            // 发送邮件给管理员
-            emailUtils.sendHtmlMailToAdmin(
-                    MailEnum.BLACKLIST_NOTIFICATION.getSubject(),
-                    MailEnum.BLACKLIST_NOTIFICATION.getTemplateName(),
-                    Map.of(
-                            "userId", userId,
-                            "ip", ip,
-                            "address", address,
-                            "reason", reason,
-                            "banDuration", banDuration,
-                            "banTime", banTime,
-                            "frontendAdminHost", frontendAdminHost
-                    )
-            );
-
-        } catch (Exception e) {
-            log.error("处理黑名单通知邮件发送请求时出现异常，message={}", message, e);
-            // 抛出异常触发重试机制
-            throw new RuntimeException("黑名单通知邮件发送失败：" + e.getMessage(), e);
         }
     }
 

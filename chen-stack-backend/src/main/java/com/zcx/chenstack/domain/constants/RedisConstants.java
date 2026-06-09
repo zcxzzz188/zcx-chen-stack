@@ -41,19 +41,6 @@ public class RedisConstants {
     public static final String RateLimit = RedisKeyPrefix + "RateLimit:";
 
     /**
-     * 黑名单缓存键前缀
-     * 格式：chen_stack:Blacklist:用户标识
-     */
-    public static final String Blacklist = RedisKeyPrefix + "Blacklist:";
-
-    /**
-     * 黑名单日志限流缓存键前缀
-     * 格式：chen_stack:BlacklistLog:用户标识
-     * 用于防止黑名单用户频繁访问导致日志刷屏，5分钟内同一用户只打印一次警告日志
-     */
-    public static final String BlacklistLog = RedisKeyPrefix + "BlacklistLog:";
-
-    /**
      * 热门文章缓存键（近7天访问量排行）
      * 格式：chen_stack:HotArticles:7Days
      * 存储结构：ZSet，score为访问量，member为文章ID

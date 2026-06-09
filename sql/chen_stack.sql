@@ -270,32 +270,6 @@ CREATE TABLE `private_message`  (
 
 
 -- ----------------------------
--- Table structure for sys_blacklist
--- ----------------------------
-DROP TABLE IF EXISTS `sys_blacklist`;
-CREATE TABLE `sys_blacklist`  (
-                                  `id` int NOT NULL AUTO_INCREMENT COMMENT '黑名单id',
-                                  `type` tinyint NOT NULL COMMENT '黑名单类型 0-用户 1-ip地址',
-                                  `user_id` int NULL DEFAULT NULL COMMENT '用户id',
-                                  `ip` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT 'ip地址',
-                                  `reason` varchar(200) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '拉黑原因',
-                                  `ban_time` datetime NOT NULL COMMENT '拉黑时间',
-                                  `expire_time` datetime NULL DEFAULT NULL COMMENT '到期时间',
-                                  `create_time` datetime NOT NULL COMMENT '创建时间',
-                                  `update_time` datetime NOT NULL COMMENT '更新时间',
-                                  `is_deleted` tinyint NOT NULL DEFAULT 0 COMMENT '是否删除 0-未删除 1-已删除',
-                                  PRIMARY KEY (`id`) USING BTREE,
-                                  UNIQUE INDEX `uk_type_ip`(`type` ASC, `ip` ASC) USING BTREE,
-                                  INDEX `idx_user_expire`(`user_id` ASC, `expire_time` ASC) USING BTREE,
-                                  INDEX `idx_ip_expire`(`ip` ASC, `expire_time` ASC) USING BTREE,
-                                  INDEX `idx_type_ban_time`(`type` ASC, `ban_time` DESC) USING BTREE
-) ENGINE = InnoDB AUTO_INCREMENT = 66 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci ROW_FORMAT = DYNAMIC;
-
--- ----------------------------
--- Records of sys_blacklist
--- ----------------------------
-
--- ----------------------------
 -- Table structure for sys_loginlog
 -- ----------------------------
 DROP TABLE IF EXISTS `sys_loginlog`;
