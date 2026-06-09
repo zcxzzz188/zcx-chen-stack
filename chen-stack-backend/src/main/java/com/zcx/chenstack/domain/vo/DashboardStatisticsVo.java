@@ -31,9 +31,19 @@ public class DashboardStatisticsVo implements Serializable {
     private Long todayActiveUserCount;
 
     /**
+     * 今日新增用户数
+     */
+    private Long todayNewUserCount;
+
+    /**
      * 文章统计数据
      */
     private ArticleStatisticsVo articleStatistics;
+
+    /**
+     * 今日新增文章数
+     */
+    private Long todayNewArticleCount;
 
     /**
      * 今日访问量

@@ -13,8 +13,8 @@
     <!-- 统计卡片区域 -->
     <div class="stats-section">
       <div class="stats-grid">
-        <StatCard label="用户总数" :value="userCount" :icon="User" type="user" :loading="statisticsLoading" trend-type="positive" trend-text="较昨日 +12" />
-        <StatCard label="文章总数" :value="articleStatistics?.totalCount || 0" :icon="Document" type="article" :loading="statisticsLoading" trend-type="positive" trend-text="较昨日 +5" />
+        <StatCard label="用户总数" :value="userCount" :icon="User" type="user" :loading="statisticsLoading" trend-type="positive" :trend-text="userTrendText" />
+        <StatCard label="文章总数" :value="articleStatistics?.totalCount || 0" :icon="Document" type="article" :loading="statisticsLoading" trend-type="positive" :trend-text="articleTrendText" />
         <StatCard label="总访问量" :value="totalVisits" :icon="Monitor" type="visits" :loading="statisticsLoading" trend-type="positive" trend-text="累计数据" />
         <StatCard label="今日访问" :value="todayVisits" :icon="View" type="today" :loading="statisticsLoading" trend-type="neutral" trend-text="实时数据" />
       </div>
@@ -94,7 +94,9 @@ const loading = ref(false)
 const statisticsLoading = ref(true)
 const userCount = ref(0)
 const todayActiveUserCount = ref(0)
+const todayNewUserCount = ref(0)
 const articleStatistics = ref(null)
+const todayNewArticleCount = ref(0)
 const totalVisits = ref(0)
 const todayVisits = ref(0)
 const trendDays = ref(7)
@@ -109,6 +111,8 @@ const weeklyTrend = ref([])
 const weeklyTrendLoading = ref(false)
 const interactionTrend = ref([])
 const interactionTrendLoading = ref(false)
+const userTrendText = computed(() => `今日新增 +${todayNewUserCount.value}`)
+const articleTrendText = computed(() => `今日新增 +${todayNewArticleCount.value}`)
 
 // 使用聚合接口获取所有数据，大幅减少请求次数
 const fetchAllData = async () => {
@@ -123,7 +127,9 @@ const fetchAllData = async () => {
     // 基础统计
     userCount.value = data.statistics?.userTotalCount || 0
     todayActiveUserCount.value = data.statistics?.todayActiveUserCount || 0
+    todayNewUserCount.value = data.statistics?.todayNewUserCount || 0
     articleStatistics.value = data.statistics?.articleStatistics || null
+    todayNewArticleCount.value = data.statistics?.todayNewArticleCount || 0
     totalVisits.value = data.statistics?.totalVisits || 0
     todayVisits.value = data.statistics?.todayVisits || 0
     visitorTrend.value = data.statistics?.visitorTrend || []

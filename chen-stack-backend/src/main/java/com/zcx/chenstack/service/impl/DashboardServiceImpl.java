@@ -106,7 +106,10 @@ public class DashboardServiceImpl implements DashboardService {
         if (cached instanceof DashboardStatisticsVo) {
             DashboardStatisticsVo cachedVo = (DashboardStatisticsVo) cached;
             // 如果缓存中的趋势天数与请求的不一致，需要重新获取趋势数据
-            if (cachedVo.getVisitorTrend() != null && cachedVo.getVisitorTrend().size() == trendDays) {
+            if (cachedVo.getVisitorTrend() != null
+                && cachedVo.getVisitorTrend().size() == trendDays
+                && cachedVo.getTodayNewUserCount() != null
+                && cachedVo.getTodayNewArticleCount() != null) {
                 return cachedVo;
             }
         }
@@ -116,9 +119,11 @@ public class DashboardServiceImpl implements DashboardService {
 
         // 2.1 获取用户总数
         result.setUserTotalCount(getUserTotalCount());
+        result.setTodayNewUserCount(getTodayNewUserCount());
 
         // 2.2 获取文章统计数据
         result.setArticleStatistics(articleService.getAdminStatistics());
+        result.setTodayNewArticleCount(getTodayNewArticleCount());
 
         // 2.3 获取今日访问量和总访问量
         result.setTodayVisits(visitorLogService.getTodayVisitorCount());
@@ -216,6 +221,42 @@ public class DashboardServiceImpl implements DashboardService {
         } catch (Exception e) {
             log.error("获取用户总数失败", e);
             throw new BlogException(BlogConstants.SystemInternalError);
+        }
+    }
+
+    /**
+     * 获取今日新增用户数
+     *
+     * @return 今日新增用户数
+     */
+    private Long getTodayNewUserCount() {
+        try {
+            LocalDate today = LocalDate.now();
+            LambdaQueryWrapper<SysUser> wrapper = new LambdaQueryWrapper<>();
+            wrapper.ge(SysUser::getCreateTime, today.atStartOfDay())
+                .lt(SysUser::getCreateTime, today.plusDays(1).atStartOfDay());
+            return sysUserMapper.selectCount(wrapper);
+        } catch (Exception e) {
+            log.error("获取今日新增用户数失败", e);
+            return 0L;
+        }
+    }
+
+    /**
+     * 获取今日新增文章数
+     *
+     * @return 今日新增文章数
+     */
+    private Long getTodayNewArticleCount() {
+        try {
+            LocalDate today = LocalDate.now();
+            LambdaQueryWrapper<Article> wrapper = new LambdaQueryWrapper<>();
+            wrapper.ge(Article::getCreateTime, today.atStartOfDay())
+                .lt(Article::getCreateTime, today.plusDays(1).atStartOfDay());
+            return articleMapper.selectCount(wrapper);
+        } catch (Exception e) {
+            log.error("获取今日新增文章数失败", e);
+            return 0L;
         }
     }
 
