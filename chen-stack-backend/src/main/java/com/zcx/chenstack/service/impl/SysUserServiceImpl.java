@@ -1139,35 +1139,37 @@ public class SysUserServiceImpl extends ServiceImpl<SysUserMapper, SysUser> impl
     public Map<String, Object> getCommunityStats() {
         Map<String, Object> stats = new HashMap<>();
 
-        // 获取文章总数（已发布且审核通过）
-        LambdaQueryWrapper<Article> articleQuery = new LambdaQueryWrapper<Article>()
+        List<Article> publicArticles = articleMapper.selectList(new LambdaQueryWrapper<Article>()
+                .select(Article::getUserId, Article::getReadCount)
+                .eq(Article::getIsDeleted, 0)
                 .eq(Article::getEditStatus, EditStatusEnum.PUBLISHED.getCode())
-                .eq(Article::getExamineStatus, ExamineStatusEnum.PASS.getCode());
-        Long articleCount = articleMapper.selectCount(articleQuery);
+                .eq(Article::getExamineStatus, ExamineStatusEnum.PASS.getCode())
+                .eq(Article::getVisibleRange, VisibleRangeEnum.ALL.getCode()));
+
+        Long articleCount = (long) publicArticles.size();
 
         // 获取用户总数（未删除）
         LambdaQueryWrapper<SysUser> userQuery = new LambdaQueryWrapper<SysUser>()
                 .eq(SysUser::getIsDeleted, 0);
         Long userCount = this.count(userQuery);
 
-        // 获取总阅读量（所有文章的阅读数之和）
-        // 注意：MyBatis-Plus 的 selectCount 不支持 SUM 聚合函数
-        // 临时使用估算值：文章数 * 平均阅读量（100）
-        // 后续可通过自定义 SQL 或从 visitor_log 表统计获得精确值
-        Long totalViews = articleCount * 100;
+        // 获取总阅读量（符合首页公开口径文章的 readCount 求和）
+        Long totalViews = publicArticles.stream()
+                .map(Article::getReadCount)
+                .filter(Objects::nonNull)
+                .mapToLong(Integer::longValue)
+                .sum();
 
-        // 获取活跃作者数（有已发布文章的用户数）
-        // 使用 distinct 查询不同的 userId 数量
-        List<Integer> userIds = articleMapper.selectList(
-            new LambdaQueryWrapper<Article>()
-                .eq(Article::getEditStatus, EditStatusEnum.PUBLISHED.getCode())
-                .eq(Article::getExamineStatus, ExamineStatusEnum.PASS.getCode())
-                .select(Article::getUserId)
-        ).stream()
-            .map(Article::getUserId)
-            .distinct()
-            .toList();
-        Long authorCount = (long) userIds.size();
+        Set<Integer> authorUserIds = publicArticles.stream()
+                .map(Article::getUserId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+        Long authorCount = 0L;
+        if (ObjectUtil.isNotEmpty(authorUserIds)) {
+            authorCount = sysUserMapper.selectCount(new LambdaQueryWrapper<SysUser>()
+                    .in(SysUser::getId, authorUserIds)
+                    .eq(SysUser::getIsDeleted, 0));
+        }
 
         stats.put("articleCount", articleCount);
         stats.put("userCount", userCount);

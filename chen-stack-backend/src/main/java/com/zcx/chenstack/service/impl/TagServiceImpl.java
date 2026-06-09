@@ -2,12 +2,18 @@ package com.zcx.chenstack.service.impl;
 
 import cn.hutool.core.bean.BeanUtil;
 import cn.hutool.core.util.ObjectUtil;
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.zcx.chenstack.domain.constants.BlogConstants;
 import com.zcx.chenstack.domain.dto.CategorySortDto;
 import com.zcx.chenstack.domain.dto.TagDto;
+import com.zcx.chenstack.domain.entity.Article;
 import com.zcx.chenstack.domain.entity.Tag;
+import com.zcx.chenstack.domain.enums.EditStatusEnum;
+import com.zcx.chenstack.domain.enums.ExamineStatusEnum;
+import com.zcx.chenstack.domain.enums.VisibleRangeEnum;
 import com.zcx.chenstack.exception.BlogException;
+import com.zcx.chenstack.mapper.ArticleMapper;
 import com.zcx.chenstack.mapper.TagMapper;
 import com.zcx.chenstack.service.TagService;
 import jakarta.annotation.Resource;
@@ -15,8 +21,13 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 /**
@@ -31,8 +42,13 @@ import java.util.stream.Collectors;
 @Slf4j
 public class TagServiceImpl extends ServiceImpl<TagMapper, Tag> implements TagService {
 
+    private static final int MAX_HOT_TAG_LIMIT = 100;
+
     @Resource
     private TagMapper tagMapper;
+
+    @Resource
+    private ArticleMapper articleMapper;
 
     @Override
     public void addTag(TagDto tagDto) {
@@ -149,12 +165,68 @@ public class TagServiceImpl extends ServiceImpl<TagMapper, Tag> implements TagSe
 
     @Override
     public List<Tag> getHotTags(Integer limit) {
-        // 查询热门标签，按排序值升序排列，限制返回数量
-        // 添加参数边界验证，防止负数或过大值导致 SQL 错误
-        return this.lambdaQuery()
-                .orderByAsc(Tag::getSort)
-                .last("LIMIT " + Math.min(Math.max(1, limit), 100))
+        int normalizedLimit = Math.min(Math.max(limit == null ? 10 : limit, 1), MAX_HOT_TAG_LIMIT);
+
+        List<Article> articles = articleMapper.selectList(new LambdaQueryWrapper<Article>()
+                .select(Article::getTag)
+                .eq(Article::getIsDeleted, 0)
+                .eq(Article::getEditStatus, EditStatusEnum.PUBLISHED.getCode())
+                .eq(Article::getExamineStatus, ExamineStatusEnum.PASS.getCode())
+                .eq(Article::getVisibleRange, VisibleRangeEnum.ALL.getCode())
+                .isNotNull(Article::getTag)
+                .ne(Article::getTag, ""));
+        if (articles.isEmpty()) {
+            return Collections.emptyList();
+        }
+
+        Map<String, Long> tagUsageCount = new HashMap<>();
+        for (Article article : articles) {
+            extractUniqueTags(article.getTag()).forEach(tagName ->
+                    tagUsageCount.merge(tagName, 1L, Long::sum));
+        }
+        if (tagUsageCount.isEmpty()) {
+            return Collections.emptyList();
+        }
+
+        List<String> hotTagNames = tagUsageCount.entrySet().stream()
+                .sorted((left, right) -> {
+                    int compareCount = Long.compare(right.getValue(), left.getValue());
+                    if (compareCount != 0) {
+                        return compareCount;
+                    }
+                    return left.getKey().compareToIgnoreCase(right.getKey());
+                })
+                .limit(normalizedLimit)
+                .map(Map.Entry::getKey)
+                .toList();
+
+        List<Tag> existingTags = this.lambdaQuery()
+                .in(Tag::getName, hotTagNames)
                 .list();
+        Map<String, Tag> existingTagMap = existingTags.stream()
+                .filter(tag -> ObjectUtil.isNotEmpty(tag.getName()))
+                .collect(Collectors.toMap(Tag::getName, tag -> tag, (left, right) -> left));
+
+        return hotTagNames.stream()
+                .map(tagName -> {
+                    Tag existingTag = existingTagMap.get(tagName);
+                    if (existingTag != null) {
+                        return existingTag;
+                    }
+                    return new Tag().setName(tagName);
+                })
+                .collect(Collectors.toList());
+    }
+
+    private Set<String> extractUniqueTags(String tagString) {
+        if (ObjectUtil.isEmpty(tagString)) {
+            return Collections.emptySet();
+        }
+
+        return Arrays.stream(tagString.split(","))
+                .map(String::trim)
+                .filter(ObjectUtil::isNotEmpty)
+                .collect(Collectors.toCollection(LinkedHashSet::new));
     }
 
 }
