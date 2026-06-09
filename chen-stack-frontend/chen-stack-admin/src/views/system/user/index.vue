@@ -1,5 +1,5 @@
 <template>
-  <ManagementCard title="用户管理" :showTimeFilter="false" :showPagination="true" :modelCurrentPage="currentPage" :modelPageSize="pageSize" :total="total" @search="fetchUsers">
+  <ManagementCard title="用户管理" :showTimeFilter="false" :showPagination="true" v-model:model-current-page="currentPage" v-model:model-page-size="pageSize" :total="total" @search="fetchUsers">
     <!-- 筛选器 -->
     <template #filters>
       <KeywordSearch v-model="searchUsername" placeholder="搜索用户名称" label="用户名" :debounce="500" @search="handleSearch" />

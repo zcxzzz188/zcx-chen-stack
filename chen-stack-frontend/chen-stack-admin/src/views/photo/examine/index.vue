@@ -3,8 +3,8 @@
     title="图片审核"
     :showTimeFilter="true"
     :showPagination="true"
-    :modelCurrentPage="currentPage"
-    :modelPageSize="pageSize"
+    v-model:model-current-page="currentPage"
+    v-model:model-page-size="pageSize"
     :total="total"
     @search="fetchPhotos"
     @timeChange="handleTimeChange"
@@ -141,6 +141,7 @@ const selectedPhotos = ref([])
 const batchAuditLoading = ref(false)
 const batchRejectLoading = ref(false)
 const batchDeleteLoading = ref(false)
+let latestPhotoRequestId = 0
 
 // 构建搜索参数
 const buildSearchPayload = () => ({
@@ -162,6 +163,7 @@ const applyPageData = (pageData) => {
 
 // 获取图片列表
 const fetchPhotos = async () => {
+  const requestId = ++latestPhotoRequestId
   loading.value = true
   try {
     let pageData = null
@@ -175,11 +177,19 @@ const fetchPhotos = async () => {
       })
       pageData = res.data
     }
+    if (requestId !== latestPhotoRequestId) {
+      return
+    }
     applyPageData(pageData)
   } catch {
+    if (requestId !== latestPhotoRequestId) {
+      return
+    }
     ElMessage.error(hasSearchConditions() ? '搜索图片失败' : '获取图片列表失败')
   } finally {
-    loading.value = false
+    if (requestId === latestPhotoRequestId) {
+      loading.value = false
+    }
   }
 }
 

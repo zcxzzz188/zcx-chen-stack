@@ -8,6 +8,7 @@ import com.zcx.chenstack.utils.IpUtils;
 import com.zcx.chenstack.utils.RedisUtils;
 import com.zcx.chenstack.utils.SecurityUtils;
 import jakarta.annotation.Resource;
+import jakarta.servlet.http.HttpServletRequest;
 import lombok.extern.slf4j.Slf4j;
 import org.aspectj.lang.ProceedingJoinPoint;
 import org.aspectj.lang.annotation.Around;
@@ -15,6 +16,8 @@ import org.aspectj.lang.annotation.Aspect;
 import org.aspectj.lang.reflect.MethodSignature;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
+import org.springframework.web.context.request.RequestContextHolder;
+import org.springframework.web.context.request.ServletRequestAttributes;
 
 import java.lang.reflect.Method;
 import java.util.Objects;
@@ -68,6 +71,12 @@ public class RateLimitAspect {
             return joinPoint.proceed();
         }
 
+        HttpServletRequest request = getCurrentRequest();
+        if (request != null && isAdminRequest(request.getRequestURI())) {
+            // 管理端后台接口不做普通限流，避免影响后台分页、审核、统计等操作体验。
+            return joinPoint.proceed();
+        }
+
         // 获取用户标识（登录用户ID或IP地址）
         String identifier;
         Integer userId = SecurityUtils.getUserId();
@@ -114,5 +123,17 @@ public class RateLimitAspect {
 
         // 通过限流检查，执行目标方法
         return joinPoint.proceed();
+    }
+
+    private HttpServletRequest getCurrentRequest() {
+        ServletRequestAttributes attributes = (ServletRequestAttributes) RequestContextHolder.getRequestAttributes();
+        return attributes == null ? null : attributes.getRequest();
+    }
+
+    private boolean isAdminRequest(String requestUri) {
+        if (StrUtil.isBlank(requestUri)) {
+            return false;
+        }
+        return requestUri.contains("/admin/") || requestUri.endsWith("/admin");
     }
 }

@@ -1,5 +1,5 @@
 <template>
-  <ManagementCard title="角色管理" :showTimeFilter="false" :showPagination="true" :modelCurrentPage="currentPage" :modelPageSize="pageSize" :total="total" @search="fetchRoles">
+  <ManagementCard title="角色管理" :showTimeFilter="false" :showPagination="true" v-model:model-current-page="currentPage" v-model:model-page-size="pageSize" :total="total" @search="fetchRoles">
     <!-- 筛选器 -->
     <template #filters>
       <KeywordSearch v-model="searchQuery" placeholder="搜索角色名称" :debounce="500" @search="handleSearch" />

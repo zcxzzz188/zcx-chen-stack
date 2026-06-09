@@ -1,5 +1,5 @@
 <template>
-  <ManagementCard title="菜单管理" :showTimeFilter="false" :showPagination="true" :modelCurrentPage="currentPage" :modelPageSize="pageSize" :total="total" @search="fetchMenus">
+  <ManagementCard title="菜单管理" :showTimeFilter="false" :showPagination="true" v-model:model-current-page="currentPage" v-model:model-page-size="pageSize" :total="total" @search="fetchMenus">
     <!-- 筛选器 -->
     <template #filters>
       <KeywordSearch v-model="searchQuery" placeholder="搜索菜单名称" :debounce="500" @search="handleSearch" />

@@ -1,5 +1,5 @@
 <template>
-  <ManagementCard title="权限管理" :showTimeFilter="false" :showPagination="true" :modelCurrentPage="currentPage" :modelPageSize="pageSize" :total="total" @search="fetchPermissions">
+  <ManagementCard title="权限管理" :showTimeFilter="false" :showPagination="true" v-model:model-current-page="currentPage" v-model:model-page-size="pageSize" :total="total" @search="fetchPermissions">
     <!-- 筛选器 -->
     <template #filters>
       <KeywordSearch v-model="searchDescription" placeholder="搜索权限描述" :debounce="500" @search="handleSearch" />

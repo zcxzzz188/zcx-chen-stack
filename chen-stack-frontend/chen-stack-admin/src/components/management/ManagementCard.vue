@@ -70,7 +70,7 @@
  * ```
  */
 
-import { ref, onMounted, onUnmounted, watch } from 'vue'
+import { ref, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import Pagination from '@/components/data/Pagination.vue'
 import TimeRangePicker from '@/components/search/TimeRangePicker.vue'
 
@@ -129,12 +129,6 @@ watch(
   },
 )
 
-// 监听内部状态变化并同步到 props
-watch([currentPage, pageSize], ([newPage, newSize]) => {
-  emit('update:modelCurrentPage', newPage)
-  emit('update:modelPageSize', newSize)
-})
-
 // 窗口大小变化处理
 const handleResize = () => {
   isMobileView.value = window.innerWidth <= 768
@@ -142,14 +136,20 @@ const handleResize = () => {
 }
 
 // 分页处理
-const handleSizeChange = (size) => {
+const handleSizeChange = async (size) => {
   pageSize.value = size
   currentPage.value = 1
+  emit('update:modelPageSize', size)
+  emit('update:modelCurrentPage', 1)
+  await nextTick()
   emit('search')
 }
 
-const handleCurrentChange = (current) => {
+const handleCurrentChange = async (current) => {
   currentPage.value = current
+  emit('update:modelCurrentPage', current)
+  emit('update:modelPageSize', pageSize.value)
+  await nextTick()
   emit('search')
 }
 
@@ -161,6 +161,7 @@ const handleTimeChange = () => {
 // 公开方法
 const resetPagination = () => {
   currentPage.value = 1
+  emit('update:modelCurrentPage', 1)
 }
 
 // 暴露给父组件
