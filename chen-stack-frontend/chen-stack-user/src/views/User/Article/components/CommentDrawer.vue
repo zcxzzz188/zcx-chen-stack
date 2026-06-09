@@ -132,6 +132,7 @@ const currentPage = ref(1) // 当前页码
 const pageSize = ref(10) // 每页数量
 const commentTotal = ref(0) // 评论总数
 const hasMore = ref(true) // 是否还有更多数据
+const lastLoadedArticleId = ref(null) // 最近一次加载的文章ID
 
 // 路由和状态管理
 const router = useRouter()
@@ -143,12 +144,17 @@ const drawerVisible = computed({
   set: (value) => emit('update:modelValue', value), // 更新父组件的显示状态
 })
 
-// 监听抽屉开关，初次打开时加载数据
+// 监听抽屉开关和文章ID，确保自动打开时使用的是已准备好的 articleId
 watch(
-  () => props.modelValue,
-  (newVisible) => {
-    if (newVisible && commentList.value.length === 0) {
+  () => [props.modelValue, props.articleId],
+  ([newVisible, articleId]) => {
+    if (!newVisible || !articleId) {
+      return
+    }
+
+    if (commentList.value.length === 0 || lastLoadedArticleId.value !== articleId) {
       fetchCommentList(true)
+      lastLoadedArticleId.value = articleId
     }
   },
   { immediate: true },

@@ -62,7 +62,7 @@
 </template>
 
 <script setup>
-import { ref } from 'vue'
+import { nextTick, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Star, StarFilled, ChatLineRound, ArrowUp } from '@element-plus/icons-vue'
@@ -80,6 +80,10 @@ const props = defineProps({
     type: Object,
     default: () => null,
   },
+  targetCommentId: {
+    type: [Number, String],
+    default: '',
+  },
 })
 
 // Emits 定义
@@ -91,11 +95,35 @@ const commentDrawerVisible = ref(false) // 评论抽屉显示状态
 const commentTotal = ref(0) // 评论总数
 const commentDrawerRef = ref(null) // 评论抽屉引用
 const favoriteDialogVisible = ref(false) // 收藏对话框显示状态
+const lastHandledCommentId = ref('')
 
 // 使用统一的数字格式化工具函数
 const formatCount = (value) => {
   return formatCompactNumber(value)
 }
+
+watch(
+  () => [props.targetCommentId, props.article?.id],
+  async ([targetCommentId, articleId]) => {
+    if (!targetCommentId || !articleId) {
+      return
+    }
+
+    const normalizedCommentId = String(targetCommentId)
+    if (lastHandledCommentId.value === normalizedCommentId) {
+      return
+    }
+
+    await nextTick()
+    if (!props.article?.id || !props.targetCommentId) {
+      return
+    }
+
+    commentDrawerVisible.value = true
+    lastHandledCommentId.value = normalizedCommentId
+  },
+  { immediate: true },
+)
 
 // 点赞文章
 const handleLike = async () => {

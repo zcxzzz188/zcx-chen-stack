@@ -124,4 +124,15 @@ public interface CommentService extends IService<Comment> {
      */
     PageVo<List<UserCommentManageVo>> getUserCommentManageList(Integer pageNum, Integer pageSize, CommentFilterDto commentFilterDto);
 
+    /**
+     * 获取当前用户文章下收到的评论列表
+     *
+     * @param pageNum          页码
+     * @param pageSize         页大小
+     * @param commentFilterDto 评论筛选条件
+     * @return 收到的评论列表
+     */
+    PageVo<List<UserCommentManageVo>> getUserReceivedCommentManageList(Integer pageNum, Integer pageSize,
+            CommentFilterDto commentFilterDto);
+
 }

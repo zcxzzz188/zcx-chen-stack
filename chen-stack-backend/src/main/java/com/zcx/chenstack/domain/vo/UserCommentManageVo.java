@@ -31,6 +31,21 @@ public class UserCommentManageVo implements Serializable {
     private Integer replyUserId;
 
     /**
+     * 评论用户ID
+     */
+    private Integer commentUserId;
+
+    /**
+     * 评论用户昵称
+     */
+    private String commentUserNickname;
+
+    /**
+     * 评论用户头像
+     */
+    private String commentUserAvatar;
+
+    /**
      * 回复的用户昵称
      */
     private String replyUserNickname;
@@ -64,6 +79,11 @@ public class UserCommentManageVo implements Serializable {
      * 文章ID
      */
     private Integer articleId;
+
+    /**
+     * 文章作者ID
+     */
+    private Integer articleUserId;
 
     /**
      * 创建时间

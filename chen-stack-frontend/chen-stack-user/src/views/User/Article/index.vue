@@ -37,13 +37,14 @@
     <ArticleActions
       v-if="articleInfo"
       :article="articleInfo"
+      :target-comment-id="targetCommentId"
       @updateArticle="handleUpdateArticle"
     />
   </div>
 </template>
 
 <script setup>
-import { ref, onMounted, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { getArticleDetail } from '@/api/article'
 import { getUserInfoById } from '@/api/user'
@@ -55,12 +56,18 @@ import { useSeoMeta } from '@/plugins/seo'
 
 // 路由参数
 const route = useRoute()
-const userId = route.params.userId
-const articleId = route.params.articleId
+const userId = computed(() => route.params.userId)
+const articleId = computed(() => route.params.articleId)
+const targetCommentId = computed(() => {
+  const queryValue = Array.isArray(route.query.commentId)
+    ? route.query.commentId[0]
+    : route.query.commentId
+  return queryValue ? String(queryValue) : ''
+})
 
 // 调试：打印路由参数
 // 防御性检查：确保参数存在
-if (!articleId) {
+if (!articleId.value) {
   // 静默处理
 }
 
@@ -76,7 +83,7 @@ const accessMessage = ref('')
 const fetchUserInfo = async () => {
   try {
     userLoading.value = true
-    const response = await getUserInfoById(userId)
+    const response = await getUserInfoById(userId.value)
     userInfo.value = response.data
   } catch (error) {
     // 静默处理
@@ -92,7 +99,7 @@ const fetchArticleDetail = async () => {
     articleLoading.value = true
     accessState.value = ''
     accessMessage.value = ''
-    const response = await getArticleDetail(articleId)
+    const response = await getArticleDetail(articleId.value)
     articleInfo.value = response.data
     // 注意：阅读量统计已集成到后端获取文章详情接口中，会自动异步统计，无需前端单独调用
   } catch (error) {
@@ -127,7 +134,7 @@ watch(articleInfo, (article) => {
         '辰栈文章',
       keywords: article.tags?.join(',') || '技术文章,博客',
       image: article.coverImage,
-      url: `${baseUrl}/user/${userId}/article/${articleId}`,
+      url: `${baseUrl}/user/${userId.value}/article/${articleId.value}`,
     })
   }
 })

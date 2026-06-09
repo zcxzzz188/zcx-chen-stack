@@ -116,3 +116,22 @@ export const getUserCommentManageList = (pageNum, pageSize, commentFilterDto) =>
     data: commentFilterDto,
   })
 }
+
+/**
+ * 获取当前用户文章下收到的评论列表
+ * @param {number} pageNum 页码
+ * @param {number} pageSize 页大小
+ * @param {Object} commentFilterDto 评论筛选条件
+ * @returns {Promise}
+ */
+export const getReceivedCommentManageList = (pageNum, pageSize, commentFilterDto) => {
+  return request({
+    url: '/comment/manage/received/list',
+    method: 'post',
+    params: {
+      pageNum,
+      pageSize,
+    },
+    data: commentFilterDto,
+  })
+}

@@ -1,6 +1,13 @@
 <template>
   <div class="comment-manage-container">
     <div class="main-content">
+      <div class="tab-section">
+        <el-tabs v-model="activeTab" class="comment-tabs" @tab-change="handleTabChange">
+          <el-tab-pane label="收到的评论" :name="COMMENT_TABS.RECEIVED" />
+          <el-tab-pane label="我的评论" :name="COMMENT_TABS.MINE" />
+        </el-tabs>
+      </div>
+
       <!-- 筛选区域 -->
       <div class="filter-section">
         <div class="filter-row">
@@ -69,7 +76,7 @@
         </div>
 
         <div v-else-if="comments.length === 0" class="empty-container">
-          <el-empty description="暂无评论数据"></el-empty>
+          <el-empty :description="emptyDescription"></el-empty>
         </div>
 
         <div v-else class="comment-cards">
@@ -90,16 +97,16 @@
                   </template>
                 </el-image>
                 <div class="article-details">
-                  <h4 class="article-title" @click="goToArticle(comment.articleId)">
+                  <h4 class="article-title" @click="goToArticle(comment)">
                     {{ comment.articleTitle }}
                   </h4>
                 </div>
               </div>
 
-              <!-- 评论内容区域 -->
-              <div class="comment-content">
-                <!-- 回复信息区域 -->
-                <div v-if="comment.replyUserId" class="reply-info">
+                <!-- 评论内容区域 -->
+                <div class="comment-content">
+                  <!-- 回复信息区域 -->
+                  <div v-if="comment.replyUserId" class="reply-info">
                   <div class="reply-user">
                     <el-avatar :size="24" :src="comment.replyUserAvatar" class="reply-avatar" />
                     <el-tooltip
@@ -129,10 +136,10 @@
                   </div>
                 </div>
 
-                <!-- 我的评论内容 -->
+                <!-- 评论内容 -->
                 <div class="my-comment">
                   <div class="comment-author">
-                    <span class="author-name">我</span>
+                    <span class="author-name">{{ getCommentAuthorName(comment) }}</span>
                     <span class="comment-time">{{ formatTime(comment.createTime) }}</span>
                   </div>
                   <el-tooltip
@@ -167,11 +174,11 @@
 
                 <!-- 评论操作 -->
                 <div class="comment-actions">
-                  <el-button type="primary" text @click="goToArticle(comment.articleId)"
+                  <el-button type="primary" text @click="goToArticle(comment)"
                     >查看详情</el-button
                   >
                   <el-button type="danger" text @click="handleDeleteComment(comment.id)"
-                    >删除评论</el-button
+                    >{{ deleteButtonText }}</el-button
                   >
                 </div>
               </div>
@@ -190,16 +197,25 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { Search, Picture, ChatLineRound } from '@element-plus/icons-vue'
-import { getUserCommentManageList, deleteComment } from '@/api/comment'
+import {
+  getReceivedCommentManageList,
+  getUserCommentManageList,
+  deleteComment,
+} from '@/api/comment'
 import { useUserStore } from '@/stores/userStore'
 import { formatTime } from '@/utils/formatTime'
 import { formatCompactNumber } from '@/utils/formatNumber'
 
 const router = useRouter()
 const userStore = useUserStore()
+const COMMENT_TABS = {
+  RECEIVED: 'received',
+  MINE: 'mine',
+}
+const COMMENT_MANAGE_STATE_KEY = 'chen_stack_comment_manage_state'
 
 // 评论列表数据
 const comments = ref([])
@@ -221,9 +237,124 @@ const listContainer = ref(null)
 const selectedYear = ref(null)
 const selectedMonth = ref(null)
 const availableYears = ref([])
+const activeTab = ref(COMMENT_TABS.RECEIVED)
 
 const formatDisplayNumber = (value) => {
   return formatCompactNumber(value)
+}
+
+const emptyDescription = computed(() =>
+  activeTab.value === COMMENT_TABS.RECEIVED ? '暂无收到的评论' : '暂无我的评论',
+)
+
+const deleteButtonText = computed(() =>
+  activeTab.value === COMMENT_TABS.RECEIVED ? '删除评论' : '删除评论',
+)
+
+const normalizeTab = (tab) => {
+  return tab === COMMENT_TABS.MINE ? COMMENT_TABS.MINE : COMMENT_TABS.RECEIVED
+}
+
+const parseStateNumber = (value) => {
+  if (value === undefined || value === null || value === '') {
+    return null
+  }
+
+  const parsedValue = Number(value)
+  return Number.isInteger(parsedValue) && parsedValue > 0 ? parsedValue : null
+}
+
+const getLoadedPageNum = () => {
+  return Math.max(currentPage.value - 1, 1)
+}
+
+const saveCommentManageState = () => {
+  const state = {
+    activeTab: activeTab.value,
+    keyword: searchKeyword.value.trim(),
+    year: selectedYear.value,
+    month: selectedMonth.value,
+    pageNum: getLoadedPageNum(),
+  }
+  sessionStorage.setItem(COMMENT_MANAGE_STATE_KEY, JSON.stringify(state))
+}
+
+const restoreCommentManageState = () => {
+  const rawState = sessionStorage.getItem(COMMENT_MANAGE_STATE_KEY)
+  if (!rawState) {
+    return 1
+  }
+
+  sessionStorage.removeItem(COMMENT_MANAGE_STATE_KEY)
+
+  try {
+    const state = JSON.parse(rawState)
+    activeTab.value = normalizeTab(state?.activeTab)
+    searchKeyword.value = typeof state?.keyword === 'string' ? state.keyword.trim() : ''
+    selectedYear.value = parseStateNumber(state?.year)
+    selectedMonth.value = parseStateNumber(state?.month)
+    return parseStateNumber(state?.pageNum) || 1
+  } catch (error) {
+    activeTab.value = COMMENT_TABS.RECEIVED
+    searchKeyword.value = ''
+    selectedYear.value = null
+    selectedMonth.value = null
+    return 1
+  }
+}
+
+const resetFiltersToDefault = () => {
+  activeTab.value = COMMENT_TABS.RECEIVED
+  searchKeyword.value = ''
+  selectedYear.value = null
+  selectedMonth.value = null
+}
+
+const buildFilterParams = () => {
+  const filterParams = {}
+
+  if (searchKeyword.value.trim()) {
+    filterParams.keyword = searchKeyword.value.trim()
+  }
+
+  if (selectedYear.value) {
+    filterParams.year = selectedYear.value
+  }
+
+  if (selectedMonth.value) {
+    filterParams.month = selectedMonth.value
+  }
+
+  return filterParams
+}
+
+const getCommentListApi = () => {
+  return activeTab.value === COMMENT_TABS.RECEIVED
+    ? getReceivedCommentManageList
+    : getUserCommentManageList
+}
+
+const resetCommentsState = () => {
+  currentPage.value = 1
+  comments.value = []
+  hasMore.value = true
+  availableYears.value = []
+}
+
+const resetCommentsAndReload = () => {
+  resetCommentsState()
+  loadComments(true)
+}
+
+const reloadCommentsFromSavedState = async () => {
+  const targetPageNum = restoreCommentManageState()
+  resetCommentsState()
+
+  await loadComments(true)
+
+  for (let page = 2; page <= targetPageNum && hasMore.value; page++) {
+    await loadComments(false)
+  }
 }
 
 // 加载评论列表
@@ -241,50 +372,27 @@ const loadComments = async (reset = false) => {
   }
 
   try {
-    // 构建筛选参数
-    const filterParams = {}
-
-    // 搜索关键词
-    if (searchKeyword.value.trim()) {
-      filterParams.keyword = searchKeyword.value.trim()
-    }
-
-    // 年份筛选
-    if (selectedYear.value) {
-      filterParams.year = selectedYear.value
-    }
-
-    // 月份筛选
-    if (selectedMonth.value) {
-      filterParams.month = selectedMonth.value
-    }
-
-    // 发送请求获取评论列表
-    const res = await getUserCommentManageList(currentPage.value, pageSize.value, filterParams)
+    const filterParams = buildFilterParams()
+    const requestApi = getCommentListApi()
+    const res = await requestApi(currentPage.value, pageSize.value, filterParams)
     const newComments = res.data.data || []
     const total = res.data.total || 0
 
     if (reset) {
-      // 初次加载或筛选条件改变时
       comments.value = newComments
-      // 从评论数据中提取年份信息并更新筛选选项
       updateDateFiltersFromComments(newComments)
     } else {
-      // 无限滚动时加载下一页数据
       comments.value = [...comments.value, ...newComments]
-      // 合并新数据后更新筛选选项
       updateDateFiltersFromComments(comments.value)
     }
 
-    // 判断是否还有更多数据
     hasMore.value = comments.value.length < total
 
-    // 更新页码
     if (hasMore.value && newComments.length > 0) {
       currentPage.value++
     }
   } catch (error) {
-    // 静默处理
+    ElMessage.error('评论列表加载失败')
   } finally {
     // 重置加载状态
     loading.value = false
@@ -294,41 +402,35 @@ const loadComments = async (reset = false) => {
 
 // 处理搜索
 const handleSearch = () => {
-  currentPage.value = 1
-  comments.value = []
-  hasMore.value = true
-  loadComments(true)
+  resetCommentsAndReload()
 }
 
 // 处理日期筛选变化
 const handleDateFilterChange = () => {
-  currentPage.value = 1
-  comments.value = []
-  hasMore.value = true
-  loadComments(true)
+  resetCommentsAndReload()
+}
+
+const handleTabChange = () => {
+  resetCommentsAndReload()
 }
 
 // 处理滚动事件 - 自定义无限滚动
 const handleScroll = () => {
-  // 如果没有列表容器或正在加载中或加载更多中或没有更多内容时,不用加载下一页了
   if (!listContainer.value || loading.value || loadingMore.value || !hasMore.value) {
     return
   }
 
   const container = listContainer.value
-  // 当滚动到底部附近时加载更多
   if (container.scrollTop + container.clientHeight >= container.scrollHeight - 100) {
     loadComments()
   }
 }
 
-// 从评论列表中提取年份选项
 const updateDateFiltersFromComments = (commentList) => {
   if (!commentList || commentList.length === 0) {
     availableYears.value = []
     return
   }
-  // 提取所有评论的年份并去重排序
   const years = [
     ...new Set(
       commentList.map((comment) => {
@@ -340,17 +442,28 @@ const updateDateFiltersFromComments = (commentList) => {
   availableYears.value = years
 }
 
-// 跳转至文章详情页
-const goToArticle = (articleId) => {
-  const currentUser = userStore.user
-  if (currentUser && currentUser.id) {
-    router.push(`/user/${currentUser.id}/article/${articleId}`)
+const getCommentAuthorName = (comment) => {
+  if (activeTab.value === COMMENT_TABS.RECEIVED) {
+    return comment.commentUserNickname || '匿名用户'
+  }
+  return '我'
+}
+
+const goToArticle = async (comment) => {
+  const articleUserId = comment?.articleUserId || userStore.user?.id
+  if (articleUserId) {
+    saveCommentManageState()
+    router.push({
+      path: `/user/${articleUserId}/article/${comment.articleId}`,
+      query: {
+        commentId: String(comment.id),
+      },
+    })
   } else {
     ElMessage.error('获取用户信息失败，无法跳转')
   }
 }
 
-// 删除评论
 const handleDeleteComment = async (commentId) => {
   try {
     await ElMessageBox.confirm('确定要删除这条评论吗？此操作不可恢复', '删除评论', {
@@ -361,12 +474,9 @@ const handleDeleteComment = async (commentId) => {
 
     await deleteComment(commentId)
     ElMessage.success('评论删除成功')
+    window.dispatchEvent(new CustomEvent('creation-comment-updated'))
 
-    // 重新加载评论列表
-    currentPage.value = 1
-    comments.value = []
-    hasMore.value = true
-    loadComments(true)
+    resetCommentsAndReload()
   } catch (error) {
     if (error !== 'cancel') {
       // 静默处理
@@ -374,14 +484,12 @@ const handleDeleteComment = async (commentId) => {
   }
 }
 
-// 组件挂载时的处理
-onMounted(() => {
-  loadComments(true)
+onMounted(async () => {
+  resetFiltersToDefault()
+  await reloadCommentsFromSavedState()
 })
 
-// 组件卸载时的处理
 onUnmounted(() => {
-  // 清理资源
   listContainer.value = null
 })
 </script>
@@ -393,6 +501,20 @@ onUnmounted(() => {
   height: calc(100vh - 48px);
 
   .main-content {
+    .tab-section {
+      background-color: var(--el-bg-color);
+      border-radius: 4px;
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+      padding: 0 16px;
+      margin-bottom: 16px;
+
+      .comment-tabs {
+        :deep(.el-tabs__header) {
+          margin: 0;
+        }
+      }
+    }
+
     // 筛选区域
     .filter-section {
       background-color: var(--el-bg-color);

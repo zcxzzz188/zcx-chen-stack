@@ -98,6 +98,25 @@ public class CommentController {
     }
 
     /**
+     * 获取当前用户文章下收到的评论列表(评论管理)
+     *
+     * @param pageNum          页码
+     * @param pageSize         页大小
+     * @param commentFilterDto 评论筛选条件
+     * @return 收到的评论列表
+     */
+    @RateLimit
+    @PostMapping("/manage/received/list")
+    public Result<PageVo<List<UserCommentManageVo>>> getUserReceivedCommentManageList(
+            @RequestParam(defaultValue = "1") @NotNull(message = "页码不能为空") Integer pageNum,
+            @RequestParam(defaultValue = "10") @NotNull(message = "每页大小不能为空") Integer pageSize,
+            @RequestBody @Valid CommentFilterDto commentFilterDto) {
+        PageVo<List<UserCommentManageVo>> commentList = commentService.getUserReceivedCommentManageList(pageNum,
+                pageSize, commentFilterDto);
+        return Result.success(commentList);
+    }
+
+    /**
      * 获取评论的回复列表
      *
      * @param commentId 评论id

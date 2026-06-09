@@ -1809,11 +1809,26 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
         // 同时计算总阅读量和总点赞量
         Long totalReadCount = 0L;
         Long totalLikeCount = 0L;
-        Long totalCommentCount = 0L;
         if (!articles.isEmpty()) {
             totalReadCount = articles.stream().mapToLong(Article::getReadCount).sum();
             totalLikeCount = articles.stream().mapToLong(Article::getLikeCount).sum();
-            totalCommentCount = articles.stream().mapToLong(Article::getCommentCount).sum();
+        }
+
+        List<Integer> ownedArticleIds = articleMapper.selectList(new LambdaQueryWrapper<Article>()
+                        .eq(Article::getUserId, userId)
+                        .eq(Article::getIsDeleted, 0)
+                        .select(Article::getId))
+                .stream()
+                .map(Article::getId)
+                .filter(Objects::nonNull)
+                .distinct()
+                .collect(Collectors.toList());
+        Long totalCommentCount = 0L;
+        if (ObjectUtil.isNotEmpty(ownedArticleIds)) {
+            totalCommentCount = commentMapper.selectCount(new LambdaQueryWrapper<Comment>()
+                    .in(Comment::getArticleId, ownedArticleIds)
+                    .eq(Comment::getExamineStatus, ExamineStatusEnum.PASS.getCode())
+                    .eq(Comment::getIsDeleted, 0));
         }
 
         // 获取用户信息

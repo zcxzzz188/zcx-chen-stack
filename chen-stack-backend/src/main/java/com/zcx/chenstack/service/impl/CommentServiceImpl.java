@@ -276,8 +276,16 @@ public class CommentServiceImpl extends ServiceImpl<CommentMapper, Comment> impl
         Comment comment = getById(commentId);
         EntityCheckUtils.getOrThrowNotDeleted(comment, BlogConstants.NotFoundComment);
 
-        // 只能删除自己的评论
-        if (!comment.getUserId().equals(currentUserId)) {
+        boolean isCommentOwner = comment.getUserId() != null && comment.getUserId().equals(currentUserId);
+        boolean isArticleOwner = false;
+        if (!isCommentOwner) {
+            Article article = articleMapper.selectById(comment.getArticleId());
+            EntityCheckUtils.getOrThrowNotDeleted(article, BlogConstants.NotFoundArticle);
+            isArticleOwner = article.getUserId() != null && article.getUserId().equals(currentUserId);
+        }
+
+        // 只有评论作者本人或文章作者可以删除
+        if (!isCommentOwner && !isArticleOwner) {
             throw new BlogException(BlogConstants.CannotDeleteOthersComment);
         }
 
@@ -1082,41 +1090,111 @@ public class CommentServiceImpl extends ServiceImpl<CommentMapper, Comment> impl
         Page<Comment> page = new Page<>(pageNum, pageSize);
         LambdaQueryWrapper<Comment> qw = new LambdaQueryWrapper<Comment>()
                 .eq(Comment::getUserId, currentUserId) // 只查询当前用户的评论
+                .eq(Comment::getIsDeleted, 0)
                 .eq(Comment::getExamineStatus, ExamineStatusEnum.PASS.getCode()) // 只返回审核通过的评论
                 .orderByDesc(Comment::getCreateTime); // 按创建时间倒序
 
-        // 添加关键词搜索条件
-        if (ObjectUtil.isNotEmpty(commentFilterDto.getKeyword())) {
-            qw.like(Comment::getContent, commentFilterDto.getKeyword());
-        }
-
-        // 添加根据年月查询的条件
-        if (ObjectUtil.isNotEmpty(commentFilterDto.getYear()) || ObjectUtil.isNotEmpty(commentFilterDto.getMonth())) {
-            if (ObjectUtil.isNotEmpty(commentFilterDto.getMonth())) {
-                // 确定年份：如果有指定年份则使用，否则使用当前年份
-                int year = ObjectUtil.isNotEmpty(commentFilterDto.getYear()) ? commentFilterDto.getYear()
-                        : LocalDateTime.now().getYear();
-
-                // 查询指定年份的指定月份
-                LocalDateTime firstDayOfMonth = LocalDateTime.of(year, commentFilterDto.getMonth(), 1, 0, 0, 0);
-                LocalDateTime lastDayOfMonth = firstDayOfMonth.with(TemporalAdjusters.lastDayOfMonth())
-                        .with(LocalTime.MAX);
-                qw.between(Comment::getCreateTime, firstDayOfMonth, lastDayOfMonth);
-            } else {
-                // 如果只指定了年份，查询整年
-                LocalDateTime firstDayOfYear = LocalDateTime.of(commentFilterDto.getYear(), 1, 1, 0, 0, 0);
-                LocalDateTime lastDayOfYear = LocalDateTime.of(commentFilterDto.getYear(), 12, 31, 23, 59, 59);
-                qw.between(Comment::getCreateTime, firstDayOfYear, lastDayOfYear);
-            }
-        }
+        applyCommentManageKeywordFilter(qw, commentFilterDto, findArticleIdsByTitleKeyword(commentFilterDto));
+        applyCommentManageDateFilter(qw, commentFilterDto);
 
         List<Comment> comments = commentMapper.selectPage(page, qw).getRecords();
+        List<UserCommentManageVo> userCommentManageVos = buildUserCommentManageVos(comments, Collections.emptyMap());
 
-        // 转换为 UserCommentManageVo
-        List<UserCommentManageVo> userCommentManageVos = comments.stream().map(comment -> {
+        return new PageVo<>(userCommentManageVos, page.getTotal());
+    }
+
+    @Override
+    public PageVo<List<UserCommentManageVo>> getUserReceivedCommentManageList(Integer pageNum, Integer pageSize,
+            CommentFilterDto commentFilterDto) {
+        Integer currentUserId = SecurityUtils.getUserId();
+
+        List<Article> ownedArticles = articleMapper.selectList(new LambdaQueryWrapper<Article>()
+                .eq(Article::getUserId, currentUserId)
+                .eq(Article::getIsDeleted, 0)
+                .select(Article::getId, Article::getUserId, Article::getTitle, Article::getCoverUrl));
+        if (ObjectUtil.isEmpty(ownedArticles)) {
+            return new PageVo<>(new ArrayList<>(), 0L);
+        }
+
+        Map<Integer, Article> articleMap = ownedArticles.stream()
+                .filter(Objects::nonNull)
+                .filter(article -> article.getId() != null)
+                .collect(Collectors.toMap(Article::getId, article -> article, (left, right) -> left));
+        List<Integer> ownedArticleIds = new ArrayList<>(articleMap.keySet());
+        if (ownedArticleIds.isEmpty()) {
+            return new PageVo<>(new ArrayList<>(), 0L);
+        }
+
+        Page<Comment> page = new Page<>(pageNum, pageSize);
+        LambdaQueryWrapper<Comment> qw = new LambdaQueryWrapper<Comment>()
+                .in(Comment::getArticleId, ownedArticleIds)
+                .eq(Comment::getIsDeleted, 0)
+                .eq(Comment::getExamineStatus, ExamineStatusEnum.PASS.getCode())
+                .orderByDesc(Comment::getCreateTime);
+
+        applyCommentManageKeywordFilter(qw, commentFilterDto, findMatchedOwnedArticleIdsByKeyword(commentFilterDto, articleMap));
+        applyCommentManageDateFilter(qw, commentFilterDto);
+
+        List<Comment> comments = commentMapper.selectPage(page, qw).getRecords();
+        List<UserCommentManageVo> userCommentManageVos = buildUserCommentManageVos(comments, articleMap);
+        return new PageVo<>(userCommentManageVos, page.getTotal());
+    }
+
+    private List<UserCommentManageVo> buildUserCommentManageVos(List<Comment> comments, Map<Integer, Article> preloadedArticleMap) {
+        if (ObjectUtil.isEmpty(comments)) {
+            return new ArrayList<>();
+        }
+
+        Map<Integer, Article> articleMap = new HashMap<>();
+        if (preloadedArticleMap != null) {
+            articleMap.putAll(preloadedArticleMap);
+        }
+
+        Set<Integer> missingArticleIds = comments.stream()
+                .map(Comment::getArticleId)
+                .filter(Objects::nonNull)
+                .filter(articleId -> !articleMap.containsKey(articleId))
+                .collect(Collectors.toSet());
+        if (ObjectUtil.isNotEmpty(missingArticleIds)) {
+            articleMapper.selectBatchIds(missingArticleIds).stream()
+                    .filter(Objects::nonNull)
+                    .filter(article -> article.getId() != null)
+                    .forEach(article -> articleMap.put(article.getId(), article));
+        }
+
+        Set<Integer> userIds = new HashSet<>();
+        Set<Integer> parentIds = new HashSet<>();
+        comments.forEach(comment -> {
+            if (comment.getUserId() != null) {
+                userIds.add(comment.getUserId());
+            }
+            if (comment.getReplyUserId() != null) {
+                userIds.add(comment.getReplyUserId());
+            }
+            if (comment.getParentId() != null && comment.getParentId() > 0) {
+                parentIds.add(comment.getParentId());
+            }
+        });
+
+        Map<Integer, SysUser> userMap = new HashMap<>();
+        if (ObjectUtil.isNotEmpty(userIds)) {
+            sysUserMapper.selectList(new LambdaQueryWrapper<SysUser>()
+                            .in(SysUser::getId, userIds)
+                            .select(SysUser::getId, SysUser::getNickname, SysUser::getAvatar))
+                    .forEach(user -> userMap.put(user.getId(), user));
+        }
+
+        Map<Integer, Comment> parentCommentMap = new HashMap<>();
+        if (ObjectUtil.isNotEmpty(parentIds)) {
+            commentMapper.selectList(new LambdaQueryWrapper<Comment>()
+                            .in(Comment::getId, parentIds)
+                            .eq(Comment::getIsDeleted, 0)
+                            .select(Comment::getId, Comment::getContent))
+                    .forEach(comment -> parentCommentMap.put(comment.getId(), comment));
+        }
+
+        return comments.stream().map(comment -> {
             UserCommentManageVo vo = new UserCommentManageVo();
-
-            // 设置评论基本信息
             vo.setId(comment.getId());
             vo.setContent(comment.getContent());
             vo.setCreateTime(comment.getCreateTime());
@@ -1124,35 +1202,125 @@ public class CommentServiceImpl extends ServiceImpl<CommentMapper, Comment> impl
             vo.setReplyCount(comment.getReplyCount());
             vo.setArticleId(comment.getArticleId());
 
-            // 获取回复用户信息（如果存在）
-            if (ObjectUtil.isNotEmpty(comment.getReplyUserId())) {
-                SysUser replyUser = sysUserMapper.selectById(comment.getReplyUserId());
-                if (ObjectUtil.isNotEmpty(replyUser)) {
-                    vo.setReplyUserId(replyUser.getId());
+            SysUser commentUser = userMap.get(comment.getUserId());
+            if (commentUser != null) {
+                vo.setCommentUserId(commentUser.getId());
+                vo.setCommentUserNickname(commentUser.getNickname());
+                vo.setCommentUserAvatar(commentUser.getAvatar());
+            } else {
+                vo.setCommentUserId(comment.getUserId());
+            }
+
+            if (comment.getReplyUserId() != null) {
+                SysUser replyUser = userMap.get(comment.getReplyUserId());
+                vo.setReplyUserId(comment.getReplyUserId());
+                if (replyUser != null) {
                     vo.setReplyUserNickname(replyUser.getNickname());
                     vo.setReplyUserAvatar(replyUser.getAvatar());
                 }
+            }
 
-                // 获取回复的评论内容（通过parentId查询）
-                if (ObjectUtil.isNotEmpty(comment.getParentId()) && comment.getParentId() != 0) {
-                    Comment parentComment = commentMapper.selectById(comment.getParentId());
-                    if (ObjectUtil.isNotEmpty(parentComment)) {
-                        vo.setReplyCommentContent(parentComment.getContent());
-                    }
+            if (comment.getParentId() != null && comment.getParentId() > 0) {
+                Comment parentComment = parentCommentMap.get(comment.getParentId());
+                if (parentComment != null) {
+                    vo.setReplyCommentContent(parentComment.getContent());
                 }
             }
 
-            // 获取文章信息
-            Article article = articleMapper.selectById(comment.getArticleId());
-            if (ObjectUtil.isNotEmpty(article)) {
+            Article article = articleMap.get(comment.getArticleId());
+            if (article != null) {
                 vo.setArticleTitle(article.getTitle());
                 vo.setArticleCoverUrl(article.getCoverUrl());
+                vo.setArticleUserId(article.getUserId());
             }
 
             return vo;
         }).collect(Collectors.toList());
+    }
 
-        return new PageVo<>(userCommentManageVos, page.getTotal());
+    private void applyCommentManageKeywordFilter(LambdaQueryWrapper<Comment> queryWrapper,
+            CommentFilterDto commentFilterDto, Collection<Integer> matchedArticleIds) {
+        if (commentFilterDto == null || ObjectUtil.isEmpty(commentFilterDto.getKeyword())) {
+            return;
+        }
+
+        String keyword = commentFilterDto.getKeyword().trim();
+        if (keyword.isEmpty()) {
+            return;
+        }
+
+        if (ObjectUtil.isEmpty(matchedArticleIds)) {
+            queryWrapper.like(Comment::getContent, keyword);
+            return;
+        }
+
+        queryWrapper.and(wrapper -> wrapper
+                .like(Comment::getContent, keyword)
+                .or()
+                .in(Comment::getArticleId, matchedArticleIds));
+    }
+
+    private void applyCommentManageDateFilter(LambdaQueryWrapper<Comment> queryWrapper, CommentFilterDto commentFilterDto) {
+        if (commentFilterDto == null
+                || (ObjectUtil.isEmpty(commentFilterDto.getYear()) && ObjectUtil.isEmpty(commentFilterDto.getMonth()))) {
+            return;
+        }
+
+        if (ObjectUtil.isNotEmpty(commentFilterDto.getMonth())) {
+            int year = ObjectUtil.isNotEmpty(commentFilterDto.getYear()) ? commentFilterDto.getYear()
+                    : LocalDateTime.now().getYear();
+            LocalDateTime firstDayOfMonth = LocalDateTime.of(year, commentFilterDto.getMonth(), 1, 0, 0, 0);
+            LocalDateTime lastDayOfMonth = firstDayOfMonth.with(TemporalAdjusters.lastDayOfMonth())
+                    .with(LocalTime.MAX);
+            queryWrapper.between(Comment::getCreateTime, firstDayOfMonth, lastDayOfMonth);
+            return;
+        }
+
+        LocalDateTime firstDayOfYear = LocalDateTime.of(commentFilterDto.getYear(), 1, 1, 0, 0, 0);
+        LocalDateTime lastDayOfYear = LocalDateTime.of(commentFilterDto.getYear(), 12, 31, 23, 59, 59);
+        queryWrapper.between(Comment::getCreateTime, firstDayOfYear, lastDayOfYear);
+    }
+
+    private List<Integer> findArticleIdsByTitleKeyword(CommentFilterDto commentFilterDto) {
+        if (commentFilterDto == null || ObjectUtil.isEmpty(commentFilterDto.getKeyword())) {
+            return Collections.emptyList();
+        }
+
+        String keyword = commentFilterDto.getKeyword().trim();
+        if (keyword.isEmpty()) {
+            return Collections.emptyList();
+        }
+
+        return articleMapper.selectList(new LambdaQueryWrapper<Article>()
+                        .like(Article::getTitle, keyword)
+                        .eq(Article::getIsDeleted, 0)
+                        .select(Article::getId))
+                .stream()
+                .map(Article::getId)
+                .filter(Objects::nonNull)
+                .distinct()
+                .collect(Collectors.toList());
+    }
+
+    private List<Integer> findMatchedOwnedArticleIdsByKeyword(CommentFilterDto commentFilterDto,
+            Map<Integer, Article> articleMap) {
+        if (commentFilterDto == null || ObjectUtil.isEmpty(commentFilterDto.getKeyword()) || ObjectUtil.isEmpty(articleMap)) {
+            return Collections.emptyList();
+        }
+
+        String keyword = commentFilterDto.getKeyword().trim();
+        if (keyword.isEmpty()) {
+            return Collections.emptyList();
+        }
+
+        return articleMap.values().stream()
+                .filter(Objects::nonNull)
+                .filter(article -> ObjectUtil.isNotEmpty(article.getTitle()))
+                .filter(article -> article.getTitle().contains(keyword))
+                .map(Article::getId)
+                .filter(Objects::nonNull)
+                .distinct()
+                .collect(Collectors.toList());
     }
 
 }
