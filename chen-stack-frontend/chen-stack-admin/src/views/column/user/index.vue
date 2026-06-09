@@ -72,7 +72,18 @@
 
       <!-- 批量操作按钮 -->
       <template #batch-actions>
-        <BatchActions :selectedCount="selectedColumns.length" :showBatchDelete="true" @batchDelete="handleBatchDelete" />
+        <BatchActions
+          :selectedCount="selectedColumns.length"
+          :showBatchAudit="true"
+          :showBatchReject="true"
+          :showBatchDelete="true"
+          :batch-audit-loading="batchAuditLoading"
+          :batch-reject-loading="batchRejectLoading"
+          :batch-delete-loading="batchDeleteLoading"
+          @batch-audit="handleBatchAudit"
+          @batch-reject="handleBatchReject"
+          @batch-delete="handleBatchDelete"
+        />
       </template>
 
       <!-- 桌面端表格视图 -->
@@ -120,7 +131,7 @@
           <!-- 审核状态列 -->
           <el-table-column prop="examineStatus" label="审核状态" width="80">
             <template #default="{ row }">
-              <StatusBadge :status="row.examineStatus" :statusMap="examineStatusMap" />
+              <StatusBadge :value="normalizeExamineStatus(row.examineStatus)" type="examine" />
             </template>
           </el-table-column>
           <!-- 关注数列 -->
@@ -151,7 +162,7 @@
           <template #custom="{ item }">
             <div class="mobile-meta">
               <el-tag :type="item.showStatus === 0 ? 'success' : 'warning'" size="small">{{ item.showStatus === 0 ? '公开' : '私密' }}</el-tag>
-              <StatusBadge :status="item.examineStatus" :statusMap="examineStatusMap" />
+              <StatusBadge :value="normalizeExamineStatus(item.examineStatus)" type="examine" />
             </div>
             <div class="mobile-stats">
               <span
@@ -224,7 +235,7 @@
                 </div>
                 <div class="badge-group">
                   <span class="badge-label">审核状态:</span>
-                  <StatusBadge :status="currentColumn?.examineStatus || 0" :statusMap="examineStatusMap" />
+                  <StatusBadge :value="normalizeExamineStatus(currentColumn?.examineStatus)" type="examine" />
                 </div>
               </div>
             </div>
@@ -303,7 +314,7 @@
                     <span>{{ article.createTime }}</span>
                   </div>
                   <div class="meta-item">
-                    <StatusBadge :status="article.examineStatus" :statusMap="examineStatusMap" />
+                    <StatusBadge :value="normalizeExamineStatus(article.examineStatus)" type="examine" />
                   </div>
                 </div>
               </div>
@@ -329,8 +340,8 @@
       <template #footer>
         <div class="dialog-footer">
           <el-button @click="dialogVisible = false" :icon="Close">关闭</el-button>
-          <el-button type="primary" @click="handleAuditColumn(currentColumn?.id)" :icon="Check" :disabled="!currentColumn || (currentColumn?.examineStatus || 0) === 1"> 审核通过 </el-button>
-          <el-button type="warning" @click="handleRejectColumn(currentColumn?.id)" :icon="Close" :disabled="!currentColumn || (currentColumn?.examineStatus || 0) === 2"> 审核拒绝 </el-button>
+          <el-button type="primary" @click="handleAuditColumn(currentColumn?.id)" :icon="Check" :disabled="!currentColumn || normalizeExamineStatus(currentColumn?.examineStatus) === 1"> 审核通过 </el-button>
+          <el-button type="warning" @click="handleRejectColumn(currentColumn?.id)" :icon="Close" :disabled="!currentColumn || normalizeExamineStatus(currentColumn?.examineStatus) === 2"> 审核拒绝 </el-button>
         </div>
       </template>
     </el-dialog>
@@ -374,7 +385,7 @@
 
 <script setup>
 import { ref, onMounted, computed } from 'vue'
-import { Delete, Close, Check, View, Search, ArrowLeft, User, Collection, Star, Clock, Document, Picture, Edit, ChatDotRound } from '@element-plus/icons-vue'
+import { Close, Check, View, Search, ArrowLeft, User, Collection, Star, Clock, Document, Picture, ChatDotRound } from '@element-plus/icons-vue'
 import { getUserListWithColumnCount } from '@/api/column'
 import {
   adminGetColumnsByUserId,
@@ -410,13 +421,6 @@ const filteredUserList = computed(() => {
   const keyword = searchUserKeyword.value.toLowerCase()
   return userList.value.filter((user) => user.username.toLowerCase().includes(keyword) || user.nickname?.toLowerCase().includes(keyword))
 })
-
-// 审核状态映射
-const examineStatusMap = {
-  0: { text: '待审核', type: 'danger' },
-  1: { text: '已审核', type: 'success' },
-  2: { text: '未通过', type: 'warning' },
-}
 
 // 专栏列表数据
 const columnList = ref([])
@@ -503,6 +507,15 @@ const handleTimeChange = ({ startTime, endTime }) => {
 }
 
 const hasSearchConditions = () => !!(searchExamineStatus.value || searchKeyword.value || searchStartTime.value || searchEndTime.value)
+
+const normalizeExamineStatus = (status) => {
+  if (status === '' || status == null) {
+    return 0
+  }
+
+  const normalizedStatus = Number(status)
+  return [0, 1, 2].includes(normalizedStatus) ? normalizedStatus : 0
+}
 
 const buildSearchPayload = () => ({
   pageNum: currentPage.value,
