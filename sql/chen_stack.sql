@@ -378,7 +378,7 @@ CREATE TABLE `sys_permission`  (
 -- ----------------------------
 -- Records of sys_permission
 -- ----------------------------
-INSERT INTO `sys_permission` VALUES (1, '获取用户菜单', 'system:menu:list', 3, '2025-08-06 15:57:43', '2025-08-06 15:57:45', 0);
+INSERT INTO `sys_permission` VALUES (1, '获取用户菜单', 'backend:menu:list', 3, '2025-08-06 15:57:43', '2025-08-06 15:57:45', 0);
 INSERT INTO `sys_permission` VALUES (2, '获取菜单列表', 'system:menu:listAll', 3, '2025-08-08 20:27:02', '2025-08-08 20:27:06', 0);
 INSERT INTO `sys_permission` VALUES (3, '新增菜单', 'system:menu:add', 3, '2025-08-06 16:20:13', '2025-08-06 16:20:16', 0);
 INSERT INTO `sys_permission` VALUES (4, '修改菜单', 'system:menu:update', 3, '2025-08-06 16:20:13', '2025-08-06 16:20:16', 0);
@@ -450,8 +450,8 @@ INSERT INTO `sys_permission` VALUES (83, '删除访客日志', 'system:visitorLo
 INSERT INTO `sys_permission` VALUES (84, '获取操作日志', 'system:operationlog:list', 24, '2026-03-09 15:59:15', '2026-03-09 15:59:15', 0);
 INSERT INTO `sys_permission` VALUES (85, '搜索操作日志', 'system:operationlog:search', 24, '2026-03-09 15:59:38', '2026-03-09 15:59:38', 0);
 INSERT INTO `sys_permission` VALUES (86, '删除操作日志', 'system:operationlog:delete', 24, '2026-03-09 15:59:52', '2026-03-09 15:59:52', 0);
-INSERT INTO `sys_permission` VALUES (93, '获取 Dashboard 统计数据', 'system:dashboard:list', 1, '2026-03-15 15:49:58', '2026-03-15 15:49:58', 0);
-INSERT INTO `sys_permission` VALUES (94, '刷新 Dashboard 缓存', 'system:dashboard:refresh', 1, '2026-03-15 15:49:58', '2026-03-15 15:49:58', 0);
+INSERT INTO `sys_permission` VALUES (93, '获取 Dashboard 统计数据', 'backend:dashboard:list', 1, '2026-03-15 15:49:58', '2026-03-15 15:49:58', 0);
+INSERT INTO `sys_permission` VALUES (94, '刷新 Dashboard 缓存', 'admin:dashboard:refresh', 1, '2026-03-15 15:49:58', '2026-03-15 15:49:58', 0);
 INSERT INTO `sys_permission` VALUES (95, '角色分配菜单权限', 'system:role:menu:assign', 4, '2026-03-28 17:36:09', '2026-03-28 17:36:09', 0);
 INSERT INTO `sys_permission` VALUES (100, '获取通知列表', 'message:list', 28, '2026-03-30 00:00:00', '2026-03-30 00:00:00', 0);
 INSERT INTO `sys_permission` VALUES (101, '标记通知未读', 'message:unread', 1, '2026-06-11 00:00:00', '2026-06-11 00:00:00', 0);
@@ -661,7 +661,6 @@ INSERT INTO `sys_role_permission` VALUES (199, 2, 75);
 INSERT INTO `sys_role_permission` VALUES (200, 2, 76);
 INSERT INTO `sys_role_permission` VALUES (201, 2, 77);
 INSERT INTO `sys_role_permission` VALUES (202, 2, 93);
-INSERT INTO `sys_role_permission` VALUES (203, 2, 94);
 INSERT INTO `sys_role_permission` VALUES (206, 2, 101);
 
 -- ----------------------------
@@ -708,7 +707,7 @@ CREATE TABLE `sys_user_role`  (
                                   `user_id` int NOT NULL COMMENT '用户id',
                                   `role_id` int NOT NULL COMMENT '角色id',
                                   PRIMARY KEY (`id`) USING BTREE,
-                                  INDEX `idx_user_id`(`user_id` ASC) USING BTREE
+                                  UNIQUE INDEX `uk_user_id`(`user_id` ASC) USING BTREE
 ) ENGINE = InnoDB AUTO_INCREMENT = 58 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci ROW_FORMAT = DYNAMIC;
 
 -- ----------------------------

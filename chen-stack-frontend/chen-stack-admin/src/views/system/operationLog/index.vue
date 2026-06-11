@@ -47,9 +47,9 @@
           </template>
         </el-table-column>
         <!-- 角色列 -->
-        <el-table-column prop="operatorRole" label="角色" width="80">
+        <el-table-column prop="operatorRole" label="角色" width="130">
           <template #default="{ row }">
-            <div class="role-type" :class="getRoleTypeClass(row.operatorRole)">
+            <div class="role-type role-type-table" :class="getRoleTypeClass(row.operatorRole)">
               {{ row.operatorRole === 'admin' ? '超级管理员' : '内容管理员' }}
             </div>
           </template>
@@ -574,6 +574,12 @@ onMounted(() => {
     background-color: var(--el-color-primary-light-9);
     color: var(--el-color-primary);
   }
+}
+
+.role-type-table {
+  min-width: 84px;
+  white-space: nowrap;
+  text-align: center;
 }
 
 // 操作类型样式

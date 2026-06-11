@@ -170,9 +170,8 @@ const rules = ref({
 
 // 初始化登录表单默认值
 const initLoginForm = () => {
-  const lastLogoutUsername = window.sessionStorage.getItem(LAST_LOGOUT_USERNAME_KEY)?.trim()
-  formData.value.username = lastLogoutUsername || 'test'
-  formData.value.password = lastLogoutUsername ? '' : '123456'
+  formData.value.username = ''
+  formData.value.password = ''
   formData.value.checkCode = ''
 }
 

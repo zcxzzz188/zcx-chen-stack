@@ -23,12 +23,12 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
-import java.util.stream.Collectors;
 
 /**
  * <p>
@@ -52,90 +52,7 @@ public class SysUserRoleServiceImpl extends ServiceImpl<SysUserRoleMapper, SysUs
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void addUser(SysUserRoleDto sysUserRoleDto) {
-        List<Integer> userIds = sysUserRoleDto.getUserIds();
-        Integer roleId = sysUserRoleDto.getRoleId();
-        Integer adminRoleId = getAdminRoleId();
-
-        if (adminRoleId.equals(roleId)) {
-            if (ObjectUtil.isEmpty(userIds)) {
-                throw new BlogException(BlogConstants.SuperAdminMustBeUnique);
-            }
-
-            List<Integer> distinctUserIds = userIds.stream().distinct().toList();
-            if (distinctUserIds.size() != 1) {
-                throw new BlogException(BlogConstants.SuperAdminMustBeUnique);
-            }
-
-            Integer adminUserId = distinctUserIds.get(0);
-            this.remove(Wrappers.<SysUserRole>lambdaQuery()
-                    .eq(SysUserRole::getRoleId, roleId)
-                    .ne(SysUserRole::getUserId, adminUserId));
-
-            boolean hasAdminRole = this.lambdaQuery()
-                    .eq(SysUserRole::getRoleId, roleId)
-                    .eq(SysUserRole::getUserId, adminUserId)
-                    .count() > 0;
-
-            if (!hasAdminRole) {
-                SysUserRole sysUserRole = new SysUserRole();
-                sysUserRole.setUserId(adminUserId);
-                sysUserRole.setRoleId(roleId);
-                boolean exist = this.save(sysUserRole);
-                if (!exist) {
-                    throw new BlogException(BlogConstants.ExistUserRole);
-                }
-            }
-
-            return;
-        }
-
-        if (ObjectUtil.isEmpty(userIds)) {
-            // 用户没有选择, 删除所有关联记录
-            this.remove(Wrappers.<SysUserRole>lambdaQuery().eq(SysUserRole::getRoleId, roleId));
-            return;
-        }
-
-        // 已经存在的关联记录
-        List<SysUserRole> existSysUserRoles = this.lambdaQuery()
-                .in(SysUserRole::getUserId, userIds)
-                .eq(SysUserRole::getRoleId, roleId)
-                .list();
-
-        Set<Integer> existUserIds = existSysUserRoles.stream().map(SysUserRole::getUserId).collect(Collectors.toSet());
-
-        // 过滤掉已存在的关联记录-需要新增的关联记录
-        List<SysUserRole> sysUserRoles = userIds.stream()
-                .filter(userId -> !existUserIds.contains(userId))
-                .map(userId -> {
-                    SysUserRole sysUserRole = new SysUserRole();
-                    sysUserRole.setUserId(userId);
-                    sysUserRole.setRoleId(roleId);
-                    return sysUserRole;
-                })
-                .collect(Collectors.toList());
-
-        // 批量保存关联记录
-        if (ObjectUtil.isNotEmpty(sysUserRoles)) {
-            boolean exist = this.saveBatch(sysUserRoles);
-            if (!exist) {
-                throw new BlogException(BlogConstants.ExistUserRole);
-            }
-        }
-
-        // 删除用户没有传过来的用户id的关联记录
-        List<SysUserRole> notExistSysUserRoles = this.lambdaQuery()
-                .notIn(SysUserRole::getUserId, userIds)
-                .eq(SysUserRole::getRoleId, roleId)
-                .list();
-
-        if (ObjectUtil.isNotEmpty(notExistSysUserRoles)) {
-            boolean exist = this.removeBatchByIds(notExistSysUserRoles);
-            if (!exist) {
-                throw new BlogException(BlogConstants.ExistUserRole);
-            }
-        }
-
-
+        throw new BlogException(BlogConstants.AssignRoleFromUserManagement);
     }
 
     // 获取拥有当前角色的用户列表
@@ -161,71 +78,76 @@ public class SysUserRoleServiceImpl extends ServiceImpl<SysUserRoleMapper, SysUs
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void addRole(SysUserRoleDto sysUserRoleDto) {
-        List<Integer> roleIds = sysUserRoleDto.getRoleIds();
         Integer userId = sysUserRoleDto.getUserId();
-        Integer adminRoleId = getAdminRoleId();
-        List<Integer> distinctRoleIds = ObjectUtil.isEmpty(roleIds)
+        SysUser sysUser = sysUserMapper.selectById(userId);
+        if (ObjectUtil.isEmpty(sysUser)) {
+            throw new BlogException(BlogConstants.NotFoundUser);
+        }
+
+        List<Integer> distinctRoleIds = sysUserRoleDto.getRoleIds() == null
                 ? List.of()
-                : roleIds.stream().distinct().toList();
+                : sysUserRoleDto.getRoleIds().stream()
+                .filter(Objects::nonNull)
+                .distinct()
+                .toList();
+
+        if (distinctRoleIds.size() != 1) {
+            throw new BlogException(BlogConstants.UserMustHaveSingleRole);
+        }
+
+        Integer selectedRoleId = distinctRoleIds.get(0);
+        SysRole selectedRole = sysRoleMapper.selectById(selectedRoleId);
+        if (ObjectUtil.isEmpty(selectedRole)) {
+            throw new BlogException(BlogConstants.NotFoundRole);
+        }
+        if (!isBuiltInRole(selectedRole.getRole())) {
+            throw new BlogException(BlogConstants.UserCanOnlyUseBuiltInRole);
+        }
+
+        Integer adminRoleId = getAdminRoleId();
+        boolean currentUserIsAdmin = isAdminUser(userId, adminRoleId);
+        boolean selectedAdminRole = adminRoleId.equals(selectedRoleId);
+
+        if (currentUserIsAdmin && !selectedAdminRole) {
+            throw new BlogException(BlogConstants.SuperAdminRoleCannotChangeNormally);
+        }
+        if (!currentUserIsAdmin && selectedAdminRole) {
+            throw new BlogException(BlogConstants.SuperAdminMustUseTransfer);
+        }
 
         long otherAdminCount = this.lambdaQuery()
                 .eq(SysUserRole::getRoleId, adminRoleId)
                 .ne(SysUserRole::getUserId, userId)
                 .count();
 
-        boolean wantsAdminRole = distinctRoleIds.contains(adminRoleId);
-        long finalAdminCount = otherAdminCount + (wantsAdminRole ? 1 : 0);
+        long finalAdminCount = otherAdminCount + (selectedAdminRole ? 1 : 0);
         if (finalAdminCount != 1) {
             throw new BlogException(BlogConstants.SuperAdminMustBeUnique);
         }
 
-        if (distinctRoleIds.isEmpty()) {
-            // 用户没有选择, 删除所有关联记录
-            this.remove(Wrappers.<SysUserRole>lambdaQuery().eq(SysUserRole::getUserId, userId));
+        List<SysUserRole> currentUserRoles = this.lambdaQuery()
+                .eq(SysUserRole::getUserId, userId)
+                .list();
+
+        if (currentUserRoles.size() == 1
+                && Objects.equals(currentUserRoles.get(0).getRoleId(), selectedRoleId)) {
             return;
         }
 
-        List<SysUserRole> existSysUserRoles = this.lambdaQuery()
-                .in(SysUserRole::getRoleId, distinctRoleIds)
-                .eq(SysUserRole::getUserId, userId)
-                .list();
-
-        Set<Integer> existRoleIds = existSysUserRoles.stream()
-                .map(SysUserRole::getRoleId)
-                .collect(Collectors.toSet());
-
-        // 过滤掉已存在的关联记录- 需要新增的关联记录
-        List<SysUserRole> sysUserRoles = distinctRoleIds.stream()
-                .filter(roleId -> !existRoleIds.contains(roleId))
-                .map(roleId -> {
-                    SysUserRole sysUserRole = new SysUserRole();
-                    sysUserRole.setUserId(userId);
-                    sysUserRole.setRoleId(roleId);
-                    return sysUserRole;
-                })
-                .collect(Collectors.toList());
-
-        if (ObjectUtil.isNotEmpty(sysUserRoles)) {
-            // 批量保存关联记录
-            boolean exist = this.saveBatch(sysUserRoles);
-            if (!exist) {
+        if (ObjectUtil.isNotEmpty(currentUserRoles)) {
+            boolean removed = this.remove(Wrappers.<SysUserRole>lambdaQuery().eq(SysUserRole::getUserId, userId));
+            if (!removed) {
                 throw new BlogException(BlogConstants.ExistUserRole);
             }
         }
 
-        // 删除用户没有传过来的角色id的关联记录
-        List<SysUserRole> notExistSysUserRoles = this.lambdaQuery()
-                .notIn(SysUserRole::getRoleId, distinctRoleIds)
-                .eq(SysUserRole::getUserId, userId)
-                .list();
-
-        if (ObjectUtil.isNotEmpty(notExistSysUserRoles)) {
-            boolean exist = this.removeBatchByIds(notExistSysUserRoles);
-            if (!exist) {
-                throw new BlogException(BlogConstants.ExistUserRole);
-            }
+        SysUserRole sysUserRole = new SysUserRole();
+        sysUserRole.setUserId(userId);
+        sysUserRole.setRoleId(selectedRoleId);
+        boolean exist = this.save(sysUserRole);
+        if (!exist) {
+            throw new BlogException(BlogConstants.ExistUserRole);
         }
-
     }
 
     private Integer getAdminRoleId() {
@@ -236,7 +158,21 @@ public class SysUserRoleServiceImpl extends ServiceImpl<SysUserRoleMapper, SysUs
         return adminRole.getId();
     }
 
+    private boolean isAdminUser(Integer userId, Integer adminRoleId) {
+        if (ObjectUtil.hasEmpty(userId, adminRoleId)) {
+            return false;
+        }
+        return this.lambdaQuery()
+                .eq(SysUserRole::getUserId, userId)
+                .eq(SysUserRole::getRoleId, adminRoleId)
+                .count() > 0;
+    }
+
     // 获取当前用户拥有的角色列表
+    private boolean isBuiltInRole(String roleCode) {
+        return roleCode != null && Set.of("admin", "content_admin", "user").contains(roleCode);
+    }
+
     @Override
     public List<SysUserVo> getUsers(Integer roleId) {
         // 根据角色ID查询用户列表

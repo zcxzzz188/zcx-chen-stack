@@ -1,8 +1,6 @@
 package com.zcx.chenstack.service.impl;
 
 import cn.hutool.core.bean.BeanUtil;
-import cn.hutool.core.util.ObjectUtil;
-import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.zcx.chenstack.domain.constants.BlogConstants;
 import com.zcx.chenstack.domain.dto.SysRolePermissionDto;
@@ -18,8 +16,6 @@ import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Set;
-import java.util.stream.Collectors;
 
 /**
  * <p>
@@ -37,56 +33,7 @@ public class SysRolePermissionServiceImpl extends ServiceImpl<SysRolePermissionM
 
     @Override
     public void add(SysRolePermissionDto sysRolePermissionDto) {
-
-        List<Integer> roleIds = sysRolePermissionDto.getRoleIds();
-        Integer permissionId = sysRolePermissionDto.getPermissionId();
-
-        if (ObjectUtil.isEmpty(roleIds)) {
-            // 用户没有选择角色，直接全部删除原有关联记录
-            this.remove(Wrappers.<SysRolePermission>lambdaQuery().eq(SysRolePermission::getPermissionId, permissionId));
-            return;
-        }
-
-        List<SysRolePermission> sysRolePermissions = this.lambdaQuery()
-                .in(SysRolePermission::getRoleId, roleIds)
-                .eq(SysRolePermission::getPermissionId, permissionId)
-                .list();
-
-        Set<Integer> existRoleIds = sysRolePermissions.stream()
-                .map(SysRolePermission::getRoleId)
-                .collect(Collectors.toSet());
-
-        // 过滤掉已存在的关联记录- 需要新增的关联记录
-        List<SysRolePermission> newSysRolePermissions = roleIds.stream()
-                .filter(roleId -> !existRoleIds.contains(roleId))
-                .map(roleId -> {
-                    SysRolePermission sysRolePermission = new SysRolePermission();
-                    sysRolePermission.setRoleId(roleId);
-                    sysRolePermission.setPermissionId(permissionId);
-                    return sysRolePermission;
-                })
-                .collect(Collectors.toList());
-
-        if (ObjectUtil.isNotEmpty(newSysRolePermissions)) {
-            // 批量保存关联记录
-            boolean exist = this.saveBatch(newSysRolePermissions);
-            if (!exist) {
-                throw new BlogException(BlogConstants.ExistRolePermission);
-            }
-        }
-
-        // 删除用户没有传过来的角色id的关联记录
-        List<SysRolePermission> notExistSysRolePermissions = this.lambdaQuery()
-                .notIn(SysRolePermission::getRoleId, roleIds)
-                .eq(SysRolePermission::getPermissionId, permissionId)
-                .list();
-
-        if (ObjectUtil.isNotEmpty(notExistSysRolePermissions)) {
-            boolean exist = this.removeBatchByIds(notExistSysRolePermissions);
-            if (!exist) {
-                throw new BlogException(BlogConstants.ExistUserRole);
-            }
-        }
+        throw new BlogException(BlogConstants.GenericPermissionAssignmentDisabled);
     }
 
     @Override
@@ -109,45 +56,6 @@ public class SysRolePermissionServiceImpl extends ServiceImpl<SysRolePermissionM
 
     @Override
     public void addBatch(SysRolePermissionDto sysRolePermissionDto) {
-        List<Integer> roleIds = sysRolePermissionDto.getRoleIds();
-        List<Integer> permissionIds = sysRolePermissionDto.getPermissionIds();
-
-        if (ObjectUtil.isEmpty(roleIds) || ObjectUtil.isEmpty(permissionIds)) {
-            return;
-        }
-
-        // 查询已存在的角色权限关联
-        List<SysRolePermission> existRolePermissions = this.lambdaQuery()
-                .in(SysRolePermission::getRoleId, roleIds)
-                .in(SysRolePermission::getPermissionId, permissionIds)
-                .list();
-
-        // 构建已存在的角色权限对的集合 (roleId_permissionId)
-        Set<String> existPair = existRolePermissions.stream()
-                .map(rp -> rp.getRoleId() + "_" + rp.getPermissionId())
-                .collect(Collectors.toSet());
-
-        // 构建需要新增的角色权限关联列表
-        List<SysRolePermission> newRolePermissions = new ArrayList<>();
-        for (Integer roleId : roleIds) {
-            for (Integer permissionId : permissionIds) {
-                String pair = roleId + "_" + permissionId;
-                // 如果该角色权限对不存在，则添加到新增列表中
-                if (!existPair.contains(pair)) {
-                    SysRolePermission rolePermission = new SysRolePermission();
-                    rolePermission.setRoleId(roleId);
-                    rolePermission.setPermissionId(permissionId);
-                    newRolePermissions.add(rolePermission);
-                }
-            }
-        }
-
-        // 批量保存新增的角色权限关联
-        if (ObjectUtil.isNotEmpty(newRolePermissions)) {
-            boolean saved = this.saveBatch(newRolePermissions);
-            if (!saved) {
-                throw new BlogException(BlogConstants.ExistRolePermission);
-            }
-        }
+        throw new BlogException(BlogConstants.GenericPermissionAssignmentDisabled);
     }
 }

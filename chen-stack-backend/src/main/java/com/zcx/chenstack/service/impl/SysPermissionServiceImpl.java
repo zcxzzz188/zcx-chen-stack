@@ -9,13 +9,11 @@ import com.zcx.chenstack.domain.constants.BlogConstants;
 import com.zcx.chenstack.domain.dto.SysPermissionDto;
 import com.zcx.chenstack.domain.entity.SysMenu;
 import com.zcx.chenstack.domain.entity.SysPermission;
-import com.zcx.chenstack.domain.entity.SysRolePermission;
 import com.zcx.chenstack.domain.vo.PageVo;
 import com.zcx.chenstack.domain.vo.SysPermissionVo;
 import com.zcx.chenstack.exception.BlogException;
 import com.zcx.chenstack.mapper.SysMenuMapper;
 import com.zcx.chenstack.mapper.SysPermissionMapper;
-import com.zcx.chenstack.mapper.SysRolePermissionMapper;
 import com.zcx.chenstack.service.SysPermissionService;
 import jakarta.annotation.Resource;
 import org.springframework.stereotype.Service;
@@ -36,9 +34,6 @@ public class SysPermissionServiceImpl extends ServiceImpl<SysPermissionMapper, S
     @Resource
     private SysMenuMapper sysMenuMapper;
 
-    @Resource
-    private SysRolePermissionMapper sysRolePermissionMapper;
-
     @Override
     public List<SysPermissionVo> listPermission() {
         List<SysPermission> sysPermissions = this.lambdaQuery().orderByAsc(SysPermission::getId).list();
@@ -56,24 +51,17 @@ public class SysPermissionServiceImpl extends ServiceImpl<SysPermissionMapper, S
 
     @Override
     public void add(SysPermissionDto sysPermissionDto) {
-        SysPermission sysPermission = BeanUtil.copyProperties(sysPermissionDto, SysPermission.class);
-        this.save(sysPermission);
+        throw new BlogException(BlogConstants.PermissionDefinitionReadOnly);
     }
 
     @Override
     public void update(SysPermissionDto sysPermissionDto) {
-        SysPermission sysPermission = BeanUtil.copyProperties(sysPermissionDto, SysPermission.class);
-        this.updateById(sysPermission);
+        throw new BlogException(BlogConstants.PermissionDefinitionReadOnly);
     }
 
     @Override
     public void delete(Integer permissionId) {
-        boolean exist = this.removeById(permissionId);
-        if (!exist) {
-            throw new BlogException(BlogConstants.NotFoundPermission);
-        }
-        // 删除角色_权限关联表
-        sysRolePermissionMapper.delete(new LambdaQueryWrapper<SysRolePermission>().eq(SysRolePermission::getPermissionId, permissionId));
+        throw new BlogException(BlogConstants.PermissionDefinitionReadOnly);
     }
 
     @Override

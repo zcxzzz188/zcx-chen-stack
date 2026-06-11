@@ -99,7 +99,7 @@ public class SysUserDetailsService implements UserDetailsService {
             LoginUser loginUser = new LoginUser(setUserDetail(sysUser));
             return loginUser;
         }
-        return new LoginUser(sysUser);
+        return new LoginUser(setUserDetailCollections(sysUser, sysRoles, List.of(), List.of()));
     }
 
     // 设置管理端登录用户的角色,菜单,权限信息

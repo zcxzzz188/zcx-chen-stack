@@ -50,7 +50,7 @@ public class DashboardController {
      * @return Dashboard 统计数据
      */
     @OperationLog(module = "Dashboard", type = OperationTypeEnum.GET, description = "管理员获取首页统计数据")
-    @PreAuthorize("hasAuthority('system:dashboard:list')")
+    @PreAuthorize("hasAuthority('backend:dashboard:list')")
     @GetMapping("/statistics")
     public Result<DashboardStatisticsVo> getStatistics(
             @RequestParam(defaultValue = "7") @NotNull(message = "趋势天数不能为空")
@@ -67,7 +67,7 @@ public class DashboardController {
      * @return 操作结果
      */
     @OperationLog(module = "Dashboard", type = OperationTypeEnum.OTHER, description = "管理员刷新首页缓存")
-    @PreAuthorize("hasAuthority('system:dashboard:refresh')")
+    @PreAuthorize("@adminSecurity.isAdmin() and hasAuthority('admin:dashboard:refresh')")
     @PostMapping("/refresh")
     public Result<Void> refreshCache() {
         dashboardService.refreshDashboardCache();
@@ -81,7 +81,7 @@ public class DashboardController {
      * @return 周趋势数据列表
      */
     @OperationLog(module = "Dashboard", type = OperationTypeEnum.GET, description = "管理员获取周趋势数据")
-    @PreAuthorize("hasAuthority('system:dashboard:list')")
+    @PreAuthorize("hasAuthority('backend:dashboard:list')")
     @GetMapping("/weekly-trend")
     public Result<List<WeeklyTrendVo>> getWeeklyTrend() {
         List<WeeklyTrendVo> trend = dashboardService.getWeeklyTrend();
@@ -95,7 +95,7 @@ public class DashboardController {
      * @return 用户分布数据列表
      */
     @OperationLog(module = "Dashboard", type = OperationTypeEnum.GET, description = "管理员获取用户分布数据")
-    @PreAuthorize("hasAuthority('system:dashboard:list')")
+    @PreAuthorize("hasAuthority('backend:dashboard:list')")
     @GetMapping("/user-distribution")
     public Result<List<UserDistributionVo>> getUserDistribution() {
         List<UserDistributionVo> distribution = dashboardService.getUserDistribution();
@@ -109,7 +109,7 @@ public class DashboardController {
      * @return 内容活跃度数据列表
      */
     @OperationLog(module = "Dashboard", type = OperationTypeEnum.GET, description = "管理员获取内容活跃度数据")
-    @PreAuthorize("hasAuthority('system:dashboard:list')")
+    @PreAuthorize("hasAuthority('backend:dashboard:list')")
     @GetMapping("/content-activity")
     public Result<List<ContentActivityVo>> getContentActivity() {
         List<ContentActivityVo> activity = dashboardService.getContentActivity();
@@ -123,7 +123,7 @@ public class DashboardController {
      * @return 待审核数量（文章、评论、图片）
      */
     @OperationLog(module = "Dashboard", type = OperationTypeEnum.GET, description = "管理员获取待审核数量")
-    @PreAuthorize("hasAuthority('system:dashboard:list')")
+    @PreAuthorize("hasAuthority('backend:dashboard:list')")
     @GetMapping("/examine-count")
     public Result<ExamineCountVo> getExamineCount() {
         ExamineCountVo count = dashboardService.getExamineCount();
@@ -138,7 +138,7 @@ public class DashboardController {
      * @return 访客趋势数据列表
      */
     @OperationLog(module = "Dashboard", type = OperationTypeEnum.GET, description = "管理员获取访客趋势数据")
-    @PreAuthorize("hasAuthority('system:dashboard:list')")
+    @PreAuthorize("hasAuthority('backend:dashboard:list')")
     @GetMapping("/visitor-trend")
     public Result<List<VisitorTrendVo>> getVisitorTrend(
             @RequestParam(defaultValue = "7") @NotNull(message = "天数不能为空")
@@ -155,7 +155,7 @@ public class DashboardController {
      * @return 互动趋势数据列表
      */
     @OperationLog(module = "Dashboard", type = OperationTypeEnum.GET, description = "管理员获取互动趋势数据")
-    @PreAuthorize("hasAuthority('system:dashboard:list')")
+    @PreAuthorize("hasAuthority('backend:dashboard:list')")
     @GetMapping("/interaction-trend")
     public Result<List<InteractionTrendVo>> getInteractionTrend() {
         List<InteractionTrendVo> trend = dashboardService.getInteractionTrend();
@@ -171,7 +171,7 @@ public class DashboardController {
      * @return 完整的 Dashboard 数据
      */
     @OperationLog(module = "Dashboard", type = OperationTypeEnum.GET, description = "管理员获取首页完整数据")
-    @PreAuthorize("hasAuthority('system:dashboard:list')")
+    @PreAuthorize("hasAuthority('backend:dashboard:list')")
     @GetMapping("/all")
     public Result<DashboardAllVo> getDashboardAll(
             @RequestParam(defaultValue = "7") @NotNull(message = "趋势天数不能为空")

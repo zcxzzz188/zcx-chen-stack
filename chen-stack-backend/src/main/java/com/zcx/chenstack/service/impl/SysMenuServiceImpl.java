@@ -7,14 +7,15 @@ import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.zcx.chenstack.domain.constants.BlogConstants;
 import com.zcx.chenstack.domain.dto.SysMenuDto;
 import com.zcx.chenstack.domain.entity.SysMenu;
+import com.zcx.chenstack.domain.entity.SysRole;
 import com.zcx.chenstack.domain.entity.SysRoleMenu;
+import com.zcx.chenstack.domain.entity.SysUser;
 import com.zcx.chenstack.domain.entity.SysUserRole;
 import com.zcx.chenstack.domain.enums.StatusEnum;
 import com.zcx.chenstack.domain.vo.PageVo;
 import com.zcx.chenstack.domain.vo.SysMenuVo;
 import com.zcx.chenstack.exception.BlogException;
 import com.zcx.chenstack.mapper.SysMenuMapper;
-import com.zcx.chenstack.mapper.SysRoleMapper;
 import com.zcx.chenstack.mapper.SysRoleMenuMapper;
 import com.zcx.chenstack.mapper.SysUserRoleMapper;
 import com.zcx.chenstack.service.SysMenuService;
@@ -27,6 +28,7 @@ import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -94,6 +96,12 @@ public class SysMenuServiceImpl extends ServiceImpl<SysMenuMapper, SysMenu> impl
                 .orderByAsc(SysMenu::getId)
                 .list();
 
+        if (!isCurrentUserAdmin()) {
+            sysMenus = sysMenus.stream()
+                    .filter(menu -> !isSystemManagementMenu(menu))
+                    .toList();
+        }
+
         // 4. 转换为 VO 返回
         return BeanUtil.copyToList(sysMenus, SysMenuVo.class);
     }
@@ -117,6 +125,19 @@ public class SysMenuServiceImpl extends ServiceImpl<SysMenuMapper, SysMenu> impl
     // 新增菜单
     @Override
     public void add(SysMenuDto sysMenuDto) {
+        if (isSystemManagementPath(sysMenuDto.getPath())) {
+            throw new BlogException(BlogConstants.CustomMenuCannotUseSystemPath);
+        }
+        Integer parentId = sysMenuDto.getParentId();
+        if (parentId != null && parentId != 0) {
+            SysMenu parentMenu = this.getById(parentId);
+            if (parentMenu == null) {
+                throw new BlogException(BlogConstants.NotFoundMenu);
+            }
+            if (isSystemManagementMenu(parentMenu)) {
+                throw new BlogException(BlogConstants.SystemMenuStructureCannotModify);
+            }
+        }
         sysMenuDto.setStatus(0);// 默认状态为正常
         SysMenu sysMenu = BeanUtil.copyProperties(sysMenuDto, SysMenu.class);
         this.save(sysMenu);
@@ -125,6 +146,41 @@ public class SysMenuServiceImpl extends ServiceImpl<SysMenuMapper, SysMenu> impl
     // 更新菜单
     @Override
     public void update(SysMenuDto sysMenuDto) {
+        SysMenu originalMenu = this.getById(sysMenuDto.getId());
+        if (originalMenu == null) {
+            throw new BlogException(BlogConstants.NotFoundMenu);
+        }
+
+        if (isSystemManagementMenu(originalMenu)) {
+            if (sysMenuDto.getStatus() != null
+                    && Objects.equals(sysMenuDto.getStatus(), StatusEnum.DISABLE.getStatus())) {
+                throw new BlogException(BlogConstants.SystemMenuCannotDisable);
+            }
+            if (sysMenuDto.getPath() != null && !Objects.equals(sysMenuDto.getPath(), originalMenu.getPath())) {
+                throw new BlogException(BlogConstants.SystemMenuRouteCannotModify);
+            }
+            if (sysMenuDto.getComponent() != null && !Objects.equals(sysMenuDto.getComponent(), originalMenu.getComponent())) {
+                throw new BlogException(BlogConstants.SystemMenuRouteCannotModify);
+            }
+            if (sysMenuDto.getParentId() != null && !Objects.equals(sysMenuDto.getParentId(), originalMenu.getParentId())) {
+                throw new BlogException(BlogConstants.SystemMenuRouteCannotModify);
+            }
+        } else if (sysMenuDto.getPath() != null
+                && !Objects.equals(sysMenuDto.getPath(), originalMenu.getPath())
+                && isSystemManagementPath(sysMenuDto.getPath())) {
+            throw new BlogException(BlogConstants.CustomMenuCannotUseSystemPath);
+        } else if (sysMenuDto.getParentId() != null
+                && !Objects.equals(sysMenuDto.getParentId(), originalMenu.getParentId())
+                && sysMenuDto.getParentId() != 0) {
+            SysMenu newParentMenu = this.getById(sysMenuDto.getParentId());
+            if (newParentMenu == null) {
+                throw new BlogException(BlogConstants.NotFoundMenu);
+            }
+            if (isSystemManagementMenu(newParentMenu)) {
+                throw new BlogException(BlogConstants.SystemMenuStructureCannotModify);
+            }
+        }
+
         SysMenu sysMenu = BeanUtil.copyProperties(sysMenuDto, SysMenu.class);
         this.updateById(sysMenu);
     }
@@ -132,6 +188,14 @@ public class SysMenuServiceImpl extends ServiceImpl<SysMenuMapper, SysMenu> impl
     // 删除菜单
     @Override
     public void delete(Integer id) {
+        SysMenu originalMenu = this.getById(id);
+        if (originalMenu == null) {
+            throw new BlogException(BlogConstants.NotFoundMenu);
+        }
+        if (isSystemManagementMenu(originalMenu)) {
+            throw new BlogException(BlogConstants.SystemMenuCannotDelete);
+        }
+
         boolean exist = this.removeById(id);
         if (!exist) {
             throw new BlogException(BlogConstants.NotFoundMenu);
@@ -238,6 +302,31 @@ public class SysMenuServiceImpl extends ServiceImpl<SysMenuMapper, SysMenu> impl
 
     private boolean isRootMenu(SysMenu menu) {
         return menu.getParentId() == null || menu.getParentId() == 0;
+    }
+
+    private boolean isCurrentUserAdmin() {
+        SysUser user = SecurityUtils.getUser();
+        if (user == null || user.getSysRoles() == null) {
+            return false;
+        }
+        return user.getSysRoles().stream()
+                .map(SysRole::getRole)
+                .filter(roleCode -> roleCode != null && !roleCode.isBlank())
+                .anyMatch("admin"::equals);
+    }
+
+    private boolean isSystemManagementMenu(SysMenu menu) {
+        if (menu == null) {
+            return false;
+        }
+        return isSystemManagementPath(menu.getPath());
+    }
+
+    private boolean isSystemManagementPath(String path) {
+        if (path == null) {
+            return false;
+        }
+        return "/system".equals(path) || path.startsWith("/system/");
     }
 
 }

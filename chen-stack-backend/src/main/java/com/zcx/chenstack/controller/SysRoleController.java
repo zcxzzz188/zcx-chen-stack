@@ -38,7 +38,7 @@ public class SysRoleController {
      * @return
      */
     @OperationLog(module = "角色管理", type = OperationTypeEnum.SELECT, description = "管理员获取角色列表")
-    @PreAuthorize("hasAuthority('system:role:list')")
+    @PreAuthorize("@adminSecurity.isAdmin() and hasAuthority('system:role:list')")
     @GetMapping("list")
     public Result list() {
         List<SysRoleVo> sysRoleVos = sysRoleService.listRole();
@@ -51,7 +51,7 @@ public class SysRoleController {
      * @return 角色分页列表
      */
     @OperationLog(module = "角色管理", type = OperationTypeEnum.SELECT, description = "管理员分页获取角色列表")
-    @PreAuthorize("hasAuthority('system:role:list')")
+    @PreAuthorize("@adminSecurity.isAdmin() and hasAuthority('system:role:list')")
     @GetMapping("page")
     public Result<PageVo<List<SysRoleVo>>> page(
             @RequestParam(defaultValue = "1") Integer pageNum,
@@ -66,7 +66,7 @@ public class SysRoleController {
      * @return
      */
     @OperationLog(module = "角色管理", type = OperationTypeEnum.INSERT, description = "管理员新增角色")
-    @PreAuthorize("hasAuthority('system:role:add')")
+    @PreAuthorize("@adminSecurity.isAdmin() and hasAuthority('system:role:add')")
     @PostMapping("add")
     public Result add(@RequestBody @Valid SysRoleDto sysRoleDto) {
         sysRoleService.add(sysRoleDto);
@@ -80,7 +80,7 @@ public class SysRoleController {
      * @return
      */
     @OperationLog(module = "角色管理", type = OperationTypeEnum.UPDATE, description = "管理员修改角色")
-    @PreAuthorize("hasAuthority('system:role:update')")
+    @PreAuthorize("@adminSecurity.isAdmin() and hasAuthority('system:role:update')")
     @PutMapping("update")
     public Result update(@RequestBody @Valid SysRoleDto sysRoleDto) {
         sysRoleService.update(sysRoleDto);
@@ -94,7 +94,7 @@ public class SysRoleController {
      * @return
      */
     @OperationLog(module = "角色管理", type = OperationTypeEnum.DELETE, description = "管理员删除角色")
-    @PreAuthorize("hasAuthority('system:role:delete')")
+    @PreAuthorize("@adminSecurity.isAdmin() and hasAuthority('system:role:delete')")
     @DeleteMapping("{roleId}")
     public Result delete(@PathVariable @NotEmpty Integer roleId) {
         sysRoleService.delete(roleId);
@@ -108,7 +108,7 @@ public class SysRoleController {
      * @return
      */
     @OperationLog(module = "角色管理", type = OperationTypeEnum.SEARCH, description = "管理员搜索角色")
-    @PreAuthorize("hasAuthority('system:role:search')")
+    @PreAuthorize("@adminSecurity.isAdmin() and hasAuthority('system:role:search')")
     @GetMapping("search")
     public Result search(@RequestParam("name") @NotNull(message = "角色名称不能为空") String name) {
         List<SysRoleVo> roleList = sysRoleService.search(name);
@@ -121,7 +121,7 @@ public class SysRoleController {
      * @return 角色分页列表
      */
     @OperationLog(module = "角色管理", type = OperationTypeEnum.SEARCH, description = "管理员分页搜索角色")
-    @PreAuthorize("hasAuthority('system:role:search')")
+    @PreAuthorize("@adminSecurity.isAdmin() and hasAuthority('system:role:search')")
     @GetMapping("page/search")
     public Result<PageVo<List<SysRoleVo>>> searchPage(
             @RequestParam("name") @NotNull(message = "角色名称不能为空") String name,

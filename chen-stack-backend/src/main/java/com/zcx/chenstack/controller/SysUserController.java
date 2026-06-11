@@ -236,7 +236,7 @@ public class SysUserController {
      * @return
      */
     @OperationLog(module = "用户管理", type = OperationTypeEnum.SELECT, description = "管理员获取用户列表")
-    @PreAuthorize("hasAuthority('system:user:list')")
+    @PreAuthorize("@adminSecurity.isAdmin() and hasAuthority('system:user:list')")
     @GetMapping("/admin/list")
     public Result listUser() {
         List<SysUserVo> sysUserVos = sysUserService.listUser();
@@ -249,7 +249,7 @@ public class SysUserController {
      * @return 用户分页列表
      */
     @OperationLog(module = "用户管理", type = OperationTypeEnum.SELECT, description = "管理员分页获取用户列表")
-    @PreAuthorize("hasAuthority('system:user:list')")
+    @PreAuthorize("@adminSecurity.isAdmin() and hasAuthority('system:user:list')")
     @GetMapping("/admin/page")
     public Result<PageVo<List<SysUserVo>>> pageUser(
             @RequestParam(defaultValue = "1") @NotNull(message = "页码不能为空") Integer pageNum,
@@ -303,7 +303,7 @@ public class SysUserController {
      * @return
      */
     @OperationLog(module = "用户管理", type = OperationTypeEnum.UPDATE, description = "管理员修改用户信息")
-    @PreAuthorize("hasAuthority('system:user:update')")
+    @PreAuthorize("@adminSecurity.isAdmin() and hasAuthority('system:user:update')")
     @PostMapping("/admin/update")
     public Result updateUser(@RequestBody @Valid SysUserDto sysUserDto) {
         sysUserService.updateUser(sysUserDto);
@@ -316,7 +316,7 @@ public class SysUserController {
      * @return
      */
     @OperationLog(module = "用户管理", type = OperationTypeEnum.DELETE, description = "管理员删除用户")
-    @PreAuthorize("hasAuthority('system:user:delete')")
+    @PreAuthorize("@adminSecurity.isAdmin() and hasAuthority('system:user:delete')")
     @DeleteMapping("/admin/{userId}")
     public Result deleteUser(@PathVariable @NotNull(message = "用户ID不能为空") Integer userId) {
         sysUserService.deleteUser(userId);
@@ -329,7 +329,7 @@ public class SysUserController {
      * @return
      */
     @OperationLog(module = "用户管理", type = OperationTypeEnum.SEARCH, description = "管理员搜索用户")
-    @PreAuthorize("hasAuthority('system:user:search')")
+    @PreAuthorize("@adminSecurity.isAdmin() and hasAuthority('system:user:search')")
     @PostMapping("/admin/search")
     public Result searchUser(@RequestBody @Valid SysUserSearchDTO sysUserSearchDTO) {
         List<SysUserVo> sysUserVos = sysUserService.searchUser(sysUserSearchDTO);
@@ -342,7 +342,7 @@ public class SysUserController {
      * @return 用户分页列表
      */
     @OperationLog(module = "用户管理", type = OperationTypeEnum.SEARCH, description = "管理员分页搜索用户")
-    @PreAuthorize("hasAuthority('system:user:search')")
+    @PreAuthorize("@adminSecurity.isAdmin() and hasAuthority('system:user:search')")
     @PostMapping("/admin/page/search")
     public Result<PageVo<List<SysUserVo>>> searchUserPage(@RequestBody @Valid SysUserSearchDTO sysUserSearchDTO) {
         PageVo<List<SysUserVo>> sysUserVos = sysUserService.searchUserPage(sysUserSearchDTO);
@@ -353,7 +353,7 @@ public class SysUserController {
      * 管理端获取用户详细信息
      */
     @OperationLog(module = "用户管理", type = OperationTypeEnum.GET, description = "管理员获取用户详细信息")
-    @PreAuthorize("hasAuthority('system:user:info')")
+    @PreAuthorize("@adminSecurity.isAdmin() and hasAuthority('system:user:info')")
     @GetMapping("/admin/{userId}")
     public Result getUserInfo(@PathVariable @NotNull(message = "用户ID不能为空") Integer userId) {
         SysUserDetailVo sysUserDetailVo = sysUserService.getUserInfo(userId);
@@ -366,7 +366,7 @@ public class SysUserController {
      * @return 用户总数
      */
     @OperationLog(module = "用户管理", type = OperationTypeEnum.GET, description = "管理员获取用户总数统计")
-    @PreAuthorize("hasAuthority('system:user:list')")
+    @PreAuthorize("@adminSecurity.isAdmin() and hasAuthority('system:user:list')")
     @GetMapping("/admin/count")
     public Result getUserTotalCount() {
         Long totalCount = sysUserService.getUserTotalCount();

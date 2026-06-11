@@ -2,15 +2,18 @@ package com.zcx.chenstack.service.impl;
 
 import cn.hutool.core.bean.BeanUtil;
 import cn.hutool.core.util.ObjectUtil;
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.zcx.chenstack.domain.constants.BlogConstants;
 import com.zcx.chenstack.domain.dto.SysRoleMenuAssignDto;
 import com.zcx.chenstack.domain.dto.SysRoleMenuDto;
+import com.zcx.chenstack.domain.entity.SysMenu;
 import com.zcx.chenstack.domain.entity.SysRole;
 import com.zcx.chenstack.domain.entity.SysRoleMenu;
 import com.zcx.chenstack.domain.vo.SysRoleVo;
 import com.zcx.chenstack.exception.BlogException;
+import com.zcx.chenstack.mapper.SysMenuMapper;
 import com.zcx.chenstack.mapper.SysRoleMapper;
 import com.zcx.chenstack.mapper.SysRoleMenuMapper;
 import com.zcx.chenstack.service.SysRoleMenuService;
@@ -19,6 +22,7 @@ import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -36,11 +40,28 @@ public class SysRoleMenuServiceImpl extends ServiceImpl<SysRoleMenuMapper, SysRo
     @Resource
     private SysRoleMapper sysRoleMapper;
 
+    @Resource
+    private SysMenuMapper sysMenuMapper;
+
     @Override
     public void add(SysRoleMenuDto sysRoleMenuDto) {
         // 获取角色ID列表和菜单ID
-        List<Integer> roleIds = sysRoleMenuDto.getRoleIds();
+        List<Integer> roleIds = normalizeIds(sysRoleMenuDto.getRoleIds());
         Integer menuId = sysRoleMenuDto.getMenuId();
+        SysMenu menu = sysMenuMapper.selectById(menuId);
+        if (menu == null) {
+            throw new BlogException(BlogConstants.NotFoundMenu);
+        }
+        List<SysRole> roles = getRolesByIds(roleIds);
+
+        if (isSystemManagementMenu(menu)) {
+            Integer adminRoleId = getAdminRoleId();
+            if (roleIds.size() != 1 || !roleIds.contains(adminRoleId)) {
+                throw new BlogException(BlogConstants.SystemMenusOnlyForAdmin);
+            }
+        } else if (roles.stream().anyMatch(role -> !isBackendManagementRole(role.getRole()))) {
+            throw new BlogException(BlogConstants.BackendMenusOnlyForAdminRoles);
+        }
 
         if (ObjectUtil.isEmpty(roleIds)) {
             // 用户没有选择, 删除所有关联记录
@@ -126,7 +147,27 @@ public class SysRoleMenuServiceImpl extends ServiceImpl<SysRoleMenuMapper, SysRo
     @Override
     public void assignMenus(SysRoleMenuAssignDto dto) {
         Integer roleId = dto.getRoleId();
-        List<Integer> menuIds = dto.getMenuIds();
+        List<Integer> menuIds = normalizeIds(dto.getMenuIds());
+        SysRole role = getRoleById(roleId);
+        String roleCode = role.getRole();
+        List<Integer> systemMenuIds = getSystemManagementMenuIds();
+        Set<Integer> systemMenuIdSet = Set.copyOf(systemMenuIds);
+
+        if (isAdminRole(roleCode)) {
+            if (ObjectUtil.isEmpty(menuIds) || !menuIds.containsAll(systemMenuIds)) {
+                throw new BlogException(BlogConstants.AdminMustKeepSystemMenus);
+            }
+        } else if (isContentAdminRole(roleCode)) {
+            if (menuIds.stream().anyMatch(systemMenuIdSet::contains)) {
+                throw new BlogException(BlogConstants.SystemMenusOnlyForAdmin);
+            }
+        } else if (isUserRole(roleCode)) {
+            if (ObjectUtil.isNotEmpty(menuIds)) {
+                throw new BlogException(BlogConstants.UserRoleCannotAssignBackendMenu);
+            }
+        } else if (ObjectUtil.isNotEmpty(menuIds)) {
+            throw new BlogException(BlogConstants.BackendMenusOnlyForAdminRoles);
+        }
 
         if (ObjectUtil.isEmpty(menuIds)) {
             // 用户没有选择, 删除该角色所有关联记录
@@ -177,6 +218,81 @@ public class SysRoleMenuServiceImpl extends ServiceImpl<SysRoleMenuMapper, SysRo
                 throw new BlogException(BlogConstants.ExistRoleMenu);
             }
         }
+    }
+
+    private Integer getAdminRoleId() {
+        SysRole adminRole = sysRoleMapper.selectOne(new LambdaQueryWrapper<SysRole>()
+                .eq(SysRole::getRole, "admin"));
+        if (adminRole == null) {
+            throw new BlogException(BlogConstants.NotFoundRole);
+        }
+        return adminRole.getId();
+    }
+
+    private SysRole getRoleById(Integer roleId) {
+        if (roleId == null) {
+            throw new BlogException(BlogConstants.NotFoundRole);
+        }
+        SysRole sysRole = sysRoleMapper.selectById(roleId);
+        if (sysRole == null) {
+            throw new BlogException(BlogConstants.NotFoundRole);
+        }
+        return sysRole;
+    }
+
+    private List<SysRole> getRolesByIds(List<Integer> roleIds) {
+        if (ObjectUtil.isEmpty(roleIds)) {
+            return List.of();
+        }
+        List<SysRole> roles = sysRoleMapper.selectBatchIds(roleIds);
+        if (roles.size() != roleIds.size()) {
+            throw new BlogException(BlogConstants.NotFoundRole);
+        }
+        return roles;
+    }
+
+    private boolean isAdminRole(String roleCode) {
+        return Objects.equals(roleCode, "admin");
+    }
+
+    private boolean isContentAdminRole(String roleCode) {
+        return Objects.equals(roleCode, "content_admin");
+    }
+
+    private boolean isUserRole(String roleCode) {
+        return Objects.equals(roleCode, "user");
+    }
+
+    private boolean isBackendManagementRole(String roleCode) {
+        return isAdminRole(roleCode) || isContentAdminRole(roleCode);
+    }
+
+    private List<Integer> getSystemManagementMenuIds() {
+        return sysMenuMapper.selectList(new LambdaQueryWrapper<SysMenu>()
+                        .select(SysMenu::getId, SysMenu::getPath))
+                .stream()
+                .filter(this::isSystemManagementMenu)
+                .map(SysMenu::getId)
+                .filter(Objects::nonNull)
+                .toList();
+    }
+
+    private boolean isSystemManagementMenu(SysMenu menu) {
+        if (menu == null || menu.getPath() == null) {
+            return false;
+        }
+        String path = menu.getPath();
+        return "/system".equals(path) || path.startsWith("/system/");
+    }
+
+    private List<Integer> normalizeIds(List<Integer> ids) {
+        if (ids == null) {
+            return List.of();
+        }
+        return ids.stream()
+                .filter(Objects::nonNull)
+                .distinct()
+                .toList();
     }
 
 }

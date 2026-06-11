@@ -24,19 +24,22 @@
           <el-table-column prop="sort" sortable label="排序" />
           <el-table-column prop="status" label="状态" width="120">
             <template #default="{ row }">
-              <el-switch
-                v-model="row.status"
-                size="large"
-                active-color="var(--admin-primary)"
-                inactive-color="#cccccc"
-                active-text="正常"
-                inactive-text="禁用"
-                :active-value="0"
-                :inactive-value="1"
-                inline-prompt
-                :loading="switchLoading"
-                :before-change="() => handleStatusChange(row.id, row.status === 0 ? 1 : 0)"
-              />
+              <span :title="getStatusDisabledReason(row) || ''">
+                <el-switch
+                  v-model="row.status"
+                  size="large"
+                  active-color="var(--admin-primary)"
+                  inactive-color="#cccccc"
+                  active-text="正常"
+                  inactive-text="禁用"
+                  :active-value="0"
+                  :inactive-value="1"
+                  inline-prompt
+                  :loading="switchLoading"
+                  :disabled="isSystemManagementMenu(row)"
+                  :before-change="() => handleStatusChange(row, row.status === 0 ? 1 : 0)"
+                />
+              </span>
             </template>
           </el-table-column>
           <el-table-column prop="createTime" label="创建时间" sortable width="120" />
@@ -44,9 +47,13 @@
           <el-table-column label="操作" width="440" fixed="right" header-align="center">
             <template #default="{ row }">
               <div class="table-actions">
-                <el-button size="small" type="success" @click="handleAddMenu(row)" :icon="Plus" v-if="row.children || row.parentId == 0" class="add-button"> 新增 </el-button>
+                <span v-if="row.children || row.parentId == 0" :title="getAddDisabledReason(row) || ''">
+                  <el-button size="small" type="success" @click="handleAddMenu(row)" :icon="Plus" class="add-button" :disabled="isSystemManagementMenu(row)"> 新增 </el-button>
+                </span>
                 <el-button size="small" type="primary" @click="handleEditMenu(row)" :icon="Edit" class="edit-button"> 编辑 </el-button>
-                <el-button size="small" type="danger" @click="handleDeleteMenu(row.id)" :icon="Delete" class="delete-button"> 删除 </el-button>
+                <span :title="getDeleteDisabledReason(row) || ''">
+                  <el-button size="small" type="danger" @click="handleDeleteMenu(row)" :icon="Delete" class="delete-button" :disabled="isSystemManagementMenu(row)"> 删除 </el-button>
+                </span>
                 <el-button size="small" type="warning" @click="handleAuthorizeRole(row)" :icon="Avatar" class="role-button"> 分配角色 </el-button>
               </div>
             </template>
@@ -98,24 +105,31 @@
             </div>
           </div>
           <div class="menu-status-section">
-            <el-switch
-              v-model="menu.status"
-              size="large"
-              active-color="var(--admin-primary)"
-              inactive-color="#cccccc"
-              active-text="正常"
-              inactive-text="禁用"
-              :active-value="0"
-              :inactive-value="1"
-              inline-prompt
-              :loading="switchLoading"
-              :before-change="() => handleStatusChange(menu.id, menu.status === 0 ? 1 : 0)"
-            />
+            <span :title="getStatusDisabledReason(menu) || ''">
+              <el-switch
+                v-model="menu.status"
+                size="large"
+                active-color="var(--admin-primary)"
+                inactive-color="#cccccc"
+                active-text="正常"
+                inactive-text="禁用"
+                :active-value="0"
+                :inactive-value="1"
+                inline-prompt
+                :loading="switchLoading"
+                :disabled="isSystemManagementMenu(menu)"
+                :before-change="() => handleStatusChange(menu, menu.status === 0 ? 1 : 0)"
+              />
+            </span>
           </div>
           <div class="menu-actions">
-            <el-button v-if="menu.hasChildren || menu.parentId == 0" text bg type="success" size="small" :icon="Plus" @click="handleAddMenu(menu)">新增</el-button>
+            <span v-if="menu.hasChildren || menu.parentId == 0" :title="getAddDisabledReason(menu) || ''">
+              <el-button text bg type="success" size="small" :icon="Plus" @click="handleAddMenu(menu)" :disabled="isSystemManagementMenu(menu)">新增</el-button>
+            </span>
             <el-button text bg type="primary" size="small" :icon="Edit" @click="handleEditMenu(menu)">编辑</el-button>
-            <el-button text bg type="danger" size="small" :icon="Delete" @click="handleDeleteMenu(menu.id)">删除</el-button>
+            <span :title="getDeleteDisabledReason(menu) || ''">
+              <el-button text bg type="danger" size="small" :icon="Delete" @click="handleDeleteMenu(menu)" :disabled="isSystemManagementMenu(menu)">删除</el-button>
+            </span>
             <el-button text bg type="warning" size="small" :icon="Avatar" @click="handleAuthorizeRole(menu)">角色</el-button>
           </div>
         </div>
@@ -130,10 +144,10 @@
         <el-input v-model="menuForm.name" placeholder="请输入菜单名称" />
       </el-form-item>
       <el-form-item prop="path" label="路由路径">
-        <el-input v-model="menuForm.path" placeholder="请输入路由路径" />
+        <el-input v-model="menuForm.path" placeholder="请输入路由路径" :disabled="editingSystemMenu" />
       </el-form-item>
       <el-form-item prop="component" label="组件路径">
-        <el-input v-model="menuForm.component" placeholder="请输入组件路径" />
+        <el-input v-model="menuForm.component" placeholder="请输入组件路径" :disabled="editingSystemMenu" />
       </el-form-item>
       <el-form-item prop="icon" label="图标">
         <el-select v-model="menuForm.icon" placeholder="请选择图标" filterable clearable>
@@ -152,13 +166,15 @@
         </el-select>
       </el-form-item>
       <el-form-item prop="parentId" label="父菜单">
-        <CommonSelect v-model="menuForm.parentId" :options="[{ id: 0, name: '无父菜单' }, ...allMenus]" option-label="name" option-value="id" placeholder="请选择父菜单" width="100%" />
+        <CommonSelect v-model="menuForm.parentId" :options="[{ id: 0, name: '无父菜单' }, ...availableParentMenus]" option-label="name" option-value="id" placeholder="请选择父菜单" width="100%" :disabled="editingSystemMenu" />
       </el-form-item>
       <el-form-item prop="sort"> 排序号 &nbsp<el-input-number v-model="menuForm.sort" :min="0" :max="999" placeholder="请输入排序号" /> </el-form-item>
+      <p v-if="editingSystemMenu" class="menu-form-hint">系统管理菜单的路由、组件和层级受保护</p>
+      <p v-else class="menu-form-hint">`/system` 路径保留给系统管理菜单使用</p>
     </el-form>
     <template #footer>
       <span class="dialog-footer">
-        <el-button @click="dialogVisible = false">取消</el-button>
+        <el-button @click="handleDialogClose">取消</el-button>
         <el-button type="primary" @click="handleSubmit">确认</el-button>
       </span>
     </template>
@@ -171,8 +187,10 @@
       <template v-if="!authorizeLoading">
         <el-form ref="authorizeFormRef" class="authorize-form">
           <el-form-item label="选择角色">
+            <p v-if="isAuthorizingSystemMenu" class="authorize-hint">系统管理菜单只能分配给超级管理员</p>
+            <p v-if="isAuthorizingSystemMenu && !systemMenuAdminRole" class="authorize-hint is-error">未找到超级管理员角色</p>
             <el-checkbox-group v-model="selectedRoles" class="role-checkbox-group">
-              <el-checkbox v-for="role in allRoles" :key="role.id" :label="role.id">{{ role.name }}</el-checkbox>
+              <el-checkbox v-for="role in allRoles" :key="role.id" :label="role.id" :disabled="isAuthorizeRoleDisabled(role)">{{ role.name }}</el-checkbox>
             </el-checkbox-group>
           </el-form-item>
         </el-form>
@@ -181,7 +199,7 @@
     <template #footer>
       <span class="dialog-footer">
         <el-button @click="handleAuthorizeDialogClose">取消</el-button>
-        <el-button type="primary" @click="handleAuthorizeSubmit">确认分配</el-button>
+        <el-button type="primary" @click="handleAuthorizeSubmit" :disabled="authorizeSubmitDisabled">确认分配</el-button>
       </span>
     </template>
   </el-dialog>
@@ -204,6 +222,18 @@ import CommonSelect from '@/components/search/CommonSelect.vue'
 
 // 搜索
 const searchQuery = ref('')
+const editingSystemMenu = ref(false)
+
+const isSystemManagementMenu = (menu) => {
+  const path = menu?.path
+  return path === '/system' || (typeof path === 'string' && path.startsWith('/system/'))
+}
+
+const getStatusDisabledReason = (menu) => (isSystemManagementMenu(menu) ? '系统管理菜单不能停用' : '')
+
+const getAddDisabledReason = (menu) => (isSystemManagementMenu(menu) ? '系统管理菜单结构受保护' : '')
+
+const getDeleteDisabledReason = (menu) => (isSystemManagementMenu(menu) ? '系统管理菜单不能删除' : '')
 
 // 移动端检测
 const isMobileView = ref(false)
@@ -307,6 +337,8 @@ const handleReset = () => {
 
 const allMenus = ref([])
 
+const availableParentMenus = computed(() => allMenus.value.filter((menu) => !isSystemManagementMenu(menu)))
+
 const getAllMenus = async () => {
   try {
     const res = await getAllMenuList()
@@ -317,7 +349,13 @@ const getAllMenus = async () => {
 }
 
 const handleAddMenu = async (row) => {
+  if (row && isSystemManagementMenu(row)) {
+    ElMessage.warning('系统管理菜单结构只能通过代码或初始化脚本调整')
+    return
+  }
+
   await getAllMenus()
+  editingSystemMenu.value = false
 
   if (row && row.id) {
     dialogTitle.value = '新增菜单'
@@ -354,11 +392,17 @@ const handleAddMenu = async (row) => {
 const handleEditMenu = (row) => {
   getAllMenus()
   dialogTitle.value = '编辑菜单'
+  editingSystemMenu.value = isSystemManagementMenu(row)
   menuForm.value = { ...row }
   dialogVisible.value = true
 }
 
-const handleDeleteMenu = (id) => {
+const handleDeleteMenu = (menu) => {
+  if (isSystemManagementMenu(menu)) {
+    ElMessage.warning('系统管理菜单不能删除')
+    return
+  }
+
   ElMessageBox.confirm('确定要删除该菜单吗？', '警告', {
     confirmButtonText: '确定',
     cancelButtonText: '取消',
@@ -367,7 +411,7 @@ const handleDeleteMenu = (id) => {
     .then(async () => {
       loading.value = true
       try {
-        await deleteMenu(id)
+        await deleteMenu(menu.id)
         ElMessage.success('删除成功')
         fetchMenus()
       } catch (error) {
@@ -382,31 +426,47 @@ const handleDeleteMenu = (id) => {
 }
 
 const switchLoading = ref(false)
-const handleStatusChange = async (id, status) => {
-  return new Promise((resolve, reject) => {
-    switchLoading.value = true
-    updateMenu({ id, status })
-      .then(() => {
-        ElMessage.success('状态更新成功')
-        const menu = menuList.value.find((item) => item.id === id)
-        if (menu) {
-          menu.status = status
-        }
-        resolve()
-      })
-      .catch((error) => {
-        ElMessage.error('状态更新失败')
-        reject(error)
-      })
-      .finally(() => {
-        switchLoading.value = false
-      })
-  })
+const handleStatusChange = async (menu, status) => {
+  if (isSystemManagementMenu(menu)) {
+    ElMessage.warning('系统管理菜单不能停用')
+    return false
+  }
+
+  const actionText = status === 0 ? '启用' : '停用'
+
+  try {
+    await ElMessageBox.confirm(`确定要${actionText}菜单 ${menu.name} 吗？`, '提示', {
+      confirmButtonText: '确定',
+      cancelButtonText: '取消',
+      type: 'warning',
+    })
+  } catch (error) {
+    ElMessage.info('状态更新已取消')
+    return false
+  }
+
+  switchLoading.value = true
+  try {
+    await updateMenu({ id: menu.id, status })
+    ElMessage.success(`${actionText}成功`)
+    return true
+  } catch (error) {
+    ElMessage.error(`${actionText}失败`)
+    return false
+  } finally {
+    switchLoading.value = false
+  }
 }
 
 const handleSubmit = () => {
   menuFormRef.value.validate(async (valid) => {
     if (!valid) return
+
+    if (!menuForm.value.id && isSystemManagementMenu(menuForm.value)) {
+      ElMessage.warning('普通菜单不能使用系统管理路径')
+      return
+    }
+
     try {
       if (menuForm.value.id) {
         await updateMenu(menuForm.value)
@@ -426,6 +486,7 @@ const handleSubmit = () => {
 
 const handleDialogClose = () => {
   menuFormRef.value.resetFields()
+  editingSystemMenu.value = false
   dialogVisible.value = false
 }
 
@@ -435,18 +496,60 @@ const currentMenu = ref(null)
 const selectedRoles = ref([])
 const allRoles = ref([])
 const authorizeLoading = ref(false)
+const BACKEND_MENU_ROLE_CODES = ['admin', 'content_admin']
+const isAuthorizingSystemMenu = computed(() => isSystemManagementMenu(currentMenu.value))
+const systemMenuAdminRole = computed(() => allRoles.value.find((role) => role?.role === 'admin') || null)
+const authorizeSubmitDisabled = computed(() => isAuthorizingSystemMenu.value && !systemMenuAdminRole.value)
+
+const filterBackendMenuRoles = (roles = []) => roles.filter((role) => BACKEND_MENU_ROLE_CODES.includes(role?.role))
+
+const getSystemMenuRoleIds = (roles = allRoles.value) => {
+  const adminRole = roles.find((role) => role?.role === 'admin')
+  return adminRole ? [adminRole.id] : []
+}
+
+const getInitialSelectedRoles = (menu, menuRoles, roles = allRoles.value) => {
+  const visibleRoleIds = new Set(roles.map((role) => role.id))
+  if (isSystemManagementMenu(menu)) {
+    return getSystemMenuRoleIds(roles)
+  }
+  return menuRoles.filter((item) => visibleRoleIds.has(item.id)).map((item) => item.id)
+}
+
+const isAuthorizeRoleDisabled = (role) => {
+  if (!isAuthorizingSystemMenu.value) {
+    return false
+  }
+  return true
+}
+
+watch(
+  [authorizeDialogVisible, isAuthorizingSystemMenu, systemMenuAdminRole],
+  ([visible, isSystemMenu]) => {
+    if (!visible || !isSystemMenu) {
+      return
+    }
+    selectedRoles.value = getSystemMenuRoleIds()
+  },
+  { immediate: false }
+)
 
 const handleAuthorizeRole = async (row) => {
   currentMenu.value = row
   selectedRoles.value = []
+  allRoles.value = []
 
   authorizeDialogVisible.value = true
   authorizeLoading.value = true
 
   try {
     const [roleRes, menuRolesRes] = await Promise.all([getRoleList(), getRolesByMenu(row.id)])
-    allRoles.value = roleRes.data
-    selectedRoles.value = menuRolesRes.data.map((item) => item.id)
+    allRoles.value = filterBackendMenuRoles(roleRes.data || [])
+    selectedRoles.value = getInitialSelectedRoles(row, menuRolesRes.data || [], allRoles.value)
+
+    if (isSystemManagementMenu(row) && !systemMenuAdminRole.value) {
+      ElMessage.warning('未找到超级管理员角色')
+    }
   } catch (error) {
     ElMessage.error('获取角色列表失败')
   } finally {
@@ -455,10 +558,20 @@ const handleAuthorizeRole = async (row) => {
 }
 
 const handleAuthorizeSubmit = async () => {
+  const allowedRoleIds = new Set(allRoles.value.map((role) => role.id))
+  const roleIds = isAuthorizingSystemMenu.value
+    ? getSystemMenuRoleIds()
+    : selectedRoles.value.filter((roleId) => allowedRoleIds.has(roleId))
+
+  if (isAuthorizingSystemMenu.value && roleIds.length === 0) {
+    ElMessage.warning('未找到超级管理员角色')
+    return
+  }
+
   try {
     await addRoleMenu({
       menuId: currentMenu.value.id,
-      roleIds: selectedRoles.value,
+      roleIds,
     })
     ElMessage.success(`已为菜单 ${currentMenu.value.name} 授权角色`)
   } catch (error) {
@@ -466,12 +579,15 @@ const handleAuthorizeSubmit = async () => {
   } finally {
     authorizeDialogVisible.value = false
     selectedRoles.value = []
+    allRoles.value = []
   }
 }
 
 const handleAuthorizeDialogClose = () => {
   authorizeDialogVisible.value = false
   selectedRoles.value = []
+  allRoles.value = []
+  currentMenu.value = null
 }
 
 // 扁平化的菜单列表（用于移动端显示）
@@ -779,6 +895,16 @@ onUnmounted(() => {
     font-weight: 600;
     margin-bottom: 16px;
     color: var(--text-primary);
+  }
+
+  .authorize-hint {
+    margin: 0 0 12px;
+    font-size: 13px;
+    color: var(--el-color-warning);
+
+    &.is-error {
+      color: var(--el-color-danger);
+    }
   }
 
   .role-checkbox-group {

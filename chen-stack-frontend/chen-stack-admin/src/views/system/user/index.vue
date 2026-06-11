@@ -26,19 +26,22 @@
           <el-table-column prop="email" label="用户邮箱" width="170" />
           <el-table-column prop="status" label="状态">
             <template #default="{ row }">
-              <el-switch
-                v-model="row.status"
-                size="large"
-                active-color="var(--admin-primary)"
-                inactive-color="#cccccc"
-                active-text="正常"
-                inactive-text="禁用"
-                :active-value="0"
-                :inactive-value="1"
-                inline-prompt
-                :loading="switchLoading"
-                :before-change="() => handleStatusChange(row.id, row.status === 0 ? 1 : 0)"
-              />
+              <span :title="getUserStatusDisabledReason(row) || ''">
+                <el-switch
+                  v-model="row.status"
+                  size="large"
+                  active-color="var(--admin-primary)"
+                  inactive-color="#cccccc"
+                  active-text="正常"
+                  inactive-text="禁用"
+                  :active-value="0"
+                  :inactive-value="1"
+                  inline-prompt
+                  :loading="switchLoading"
+                  :disabled="isProtectedUser(row)"
+                  :before-change="() => handleStatusChange(row, row.status === 0 ? 1 : 0)"
+                />
+              </span>
             </template>
           </el-table-column>
           <el-table-column prop="loginType" label="登录方式" width="110">
@@ -52,20 +55,17 @@
           <el-table-column prop="loginTime" label="最近登录时间" sortable width="135" />
           <el-table-column prop="createTime" label="创建时间" sortable width="120" />
           <el-table-column prop="updateTime" label="更新时间" sortable width="120" />
-          <el-table-column label="操作" width="280" header-align="center">
+          <el-table-column label="操作" width="240" header-align="center">
             <template #default="{ row }">
               <div class="table-actions">
-                <TableActions
-                  :show-detail="true"
-                  :show-edit="true"
-                  :show-delete="true"
-                  :detail-text="'详情'"
-                  @detail="handleDetailUser(row.id)"
-                  @edit="handleEditUser(row)"
-                  @delete="handleDeleteUser(row.id)"
-                >
-                  <el-button size="small" type="warning" class="action-btn role-btn" @click="handleAuthorizeRole(row)" :icon="Avatar">添加角色</el-button>
-                </TableActions>
+                <el-button size="small" type="info" @click="handleDetailUser(row.id)" :icon="InfoFilled" class="action-btn detail-btn">详情</el-button>
+                <el-button size="small" type="primary" @click="handleEditUser(row)" :icon="Edit" class="action-btn edit-btn">编辑</el-button>
+                <span class="action-wrapper" :title="getUserDeleteDisabledReason(row) || ''">
+                  <el-button size="small" type="danger" :icon="Delete" class="action-btn delete-btn" :disabled="isProtectedUser(row)" @click="handleDeleteUser(row)">删除</el-button>
+                </span>
+                <span v-if="canAssignRole(row)" class="action-wrapper role-action">
+                  <el-button size="small" type="warning" class="action-btn role-btn" @click="handleAuthorizeRole(row)" :icon="Avatar">分配角色</el-button>
+                </span>
               </div>
             </template>
           </el-table-column>
@@ -91,16 +91,19 @@
                 <el-tag :type="user.status === 0 ? 'success' : 'danger'">
                   {{ user.status === 0 ? '正常' : '禁用' }}
                 </el-tag>
-                <el-switch
-                  v-model="user.status"
-                  size="small"
-                  active-color="var(--admin-primary)"
-                  inactive-color="#cccccc"
-                  :active-value="0"
-                  :inactive-value="1"
-                  :loading="switchLoading"
-                  :before-change="() => handleStatusChange(user.id, user.status === 0 ? 1 : 0)"
-                />
+                <span :title="getUserStatusDisabledReason(user) || ''">
+                  <el-switch
+                    v-model="user.status"
+                    size="small"
+                    active-color="var(--admin-primary)"
+                    inactive-color="#cccccc"
+                    :active-value="0"
+                    :inactive-value="1"
+                    :loading="switchLoading"
+                    :disabled="isProtectedUser(user)"
+                    :before-change="() => handleStatusChange(user, user.status === 0 ? 1 : 0)"
+                  />
+                </span>
               </div>
             </div>
 
@@ -138,8 +141,12 @@
             <div class="user-actions">
               <el-button type="info" size="small" @click="handleDetailUser(user.id)" :icon="InfoFilled" class="detail-button">详情</el-button>
               <el-button type="primary" size="small" @click="handleEditUser(user)" :icon="Edit" class="edit-button">编辑</el-button>
-              <el-button type="danger" size="small" @click="handleDeleteUser(user.id)" :icon="Delete" class="delete-button">删除</el-button>
-              <el-button size="small" type="warning" @click="handleAuthorizeRole(user)" :icon="Avatar" class="role-button">添加角色</el-button>
+              <span class="action-wrapper" :title="getUserDeleteDisabledReason(user) || ''">
+                <el-button type="danger" size="small" @click="handleDeleteUser(user)" :icon="Delete" class="delete-button" :disabled="isProtectedUser(user)">删除</el-button>
+              </span>
+              <span v-if="canAssignRole(user)" class="action-wrapper role-action">
+                <el-button size="small" type="warning" @click="handleAuthorizeRole(user)" :icon="Avatar" class="role-button">分配角色</el-button>
+              </span>
             </div>
           </div>
         </el-card>
@@ -168,16 +175,16 @@
     </template>
   </el-dialog>
 
-  <!-- 添加角色弹窗对话框 -->
-  <el-dialog v-model="authorizeDialogVisible" title="用户添加角色" :before-close="handleAuthorizeDialogClose" class="authorize-dialog">
+  <!-- 分配角色弹窗对话框 -->
+  <el-dialog v-model="authorizeDialogVisible" title="用户分配角色" :before-close="handleAuthorizeDialogClose" class="authorize-dialog">
     <div v-loading="authorizeLoading" class="authorize-dialog-content">
       <p class="role-name">当前用户: {{ currentUser?.username }}</p>
       <template v-if="!authorizeLoading">
         <el-form ref="authorizeFormRef" class="authorize-form">
           <el-form-item label="选择角色">
-            <el-checkbox-group v-model="selectedRole" class="role-checkbox-group">
-              <el-checkbox v-for="role in allRole" :key="role.id" :label="role.id">{{ role.role }}</el-checkbox>
-            </el-checkbox-group>
+            <el-radio-group v-model="selectedRoleId" class="role-radio-group">
+              <el-radio v-for="role in allRole" :key="role.id" :label="role.id" :disabled="isRoleOptionDisabled(role)">{{ role.role }}</el-radio>
+            </el-radio-group>
           </el-form-item>
         </el-form>
       </template>
@@ -332,10 +339,12 @@
 
 <script setup>
 import { ref, onMounted } from 'vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { Search, InfoFilled, Edit, Delete, Avatar } from '@element-plus/icons-vue'
 import { getRoleList } from '@/api/role'
 import { getUserList, getUserPage, updateUser, deleteUser, queryUserPage, getUserDetail } from '@/api/user'
 import { getRolesByUser, addRole } from '@/api/user-role'
+import { useUserStore } from '@/stores/userStore'
 import { formatMenu } from '@/utils/Menu'
 
 // 组件
@@ -343,8 +352,95 @@ import ManagementCard from '@/components/management/ManagementCard.vue'
 import KeywordSearch from '@/components/search/KeywordSearch.vue'
 import ExamineStatusSelect from '@/components/search/ExamineStatusSelect.vue'
 import SearchButtons from '@/components/search/SearchButtons.vue'
-import TableActions from '@/components/data/TableActions.vue'
 import TimeRangePicker from '@/components/search/TimeRangePicker.vue'
+
+const userStore = useUserStore()
+const BUILT_IN_ROLE_CODES = ['admin', 'content_admin', 'user']
+
+const getCurrentUserId = () => userStore.user?.id ?? null
+
+const isCurrentUser = (user) => {
+  const currentUserId = getCurrentUserId()
+  return currentUserId !== null && user?.id === currentUserId
+}
+
+const isProtectedUser = (user) => isCurrentUser(user)
+
+const getUserDeleteDisabledReason = (user) => {
+  if (isCurrentUser(user)) {
+    return '超级管理员不能删除自己的账号'
+  }
+  return ''
+}
+
+const getUserStatusDisabledReason = (user) => {
+  if (isCurrentUser(user)) {
+    return '超级管理员不能停用自己的账号'
+  }
+  return ''
+}
+
+const userRoleCodeMap = ref({})
+
+const normalizeRoleCode = (roleCode) => (typeof roleCode === 'string' ? roleCode.trim() : '')
+
+const extractRoleCodeFromRoleItem = (roleItem) => {
+  if (!roleItem) {
+    return ''
+  }
+  if (typeof roleItem === 'string') {
+    return normalizeRoleCode(roleItem)
+  }
+  return normalizeRoleCode(roleItem.roleCode || roleItem.role)
+}
+
+const extractRoleCodeFromArray = (roles) => {
+  if (!Array.isArray(roles)) {
+    return ''
+  }
+  return roles.map(extractRoleCodeFromRoleItem).find(Boolean) || ''
+}
+
+const getDirectUserRoleCode = (user) => {
+  if (!user) {
+    return ''
+  }
+
+  const directRoleCode = normalizeRoleCode(user.roleCode || user.role)
+  if (directRoleCode) {
+    return directRoleCode
+  }
+
+  const sysRolesRoleCode = extractRoleCodeFromArray(user.sysRoles)
+  if (sysRolesRoleCode) {
+    return sysRolesRoleCode
+  }
+
+  const rolesRoleCode = extractRoleCodeFromArray(user.roles)
+  if (rolesRoleCode) {
+    return rolesRoleCode
+  }
+
+  return ''
+}
+
+const getUserRoleCode = (user) => {
+  if (!user) {
+    return ''
+  }
+
+  const directRoleCode = getDirectUserRoleCode(user)
+  if (directRoleCode) {
+    return directRoleCode
+  }
+
+  return normalizeRoleCode(userRoleCodeMap.value[user.id])
+}
+
+const canAssignRole = (user) => {
+  const roleCode = getUserRoleCode(user)
+  return roleCode === 'content_admin' || roleCode === 'user'
+}
 
 // 状态选项
 const statusOptions = [
@@ -403,27 +499,36 @@ onMounted(() => {
 
 const switchLoading = ref(false)
 // 处理状态变更
-const handleStatusChange = async (id, status) => {
-  return new Promise((resolve, reject) => {
-    switchLoading.value = true
-    updateUser({ id, status })
-      .then(() => {
-        ElMessage.success('状态更新成功')
-        // 手动更新本地数据状态
-        const user = userList.value.find((item) => item.id === id)
-        if (user) {
-          user.status = status
-        }
-        resolve()
-      })
-      .catch((error) => {
-        ElMessage.error('状态更新失败')
-        reject(error)
-      })
-      .finally(() => {
-        switchLoading.value = false
-      })
-  })
+const handleStatusChange = async (user, status) => {
+  if (isProtectedUser(user)) {
+    ElMessage.warning(getUserStatusDisabledReason(user))
+    return false
+  }
+
+  const actionText = status === 0 ? '启用' : '停用'
+
+  try {
+    await ElMessageBox.confirm(`确定要${actionText}用户 ${user.username} 吗？`, '提示', {
+      confirmButtonText: '确定',
+      cancelButtonText: '取消',
+      type: 'warning',
+    })
+  } catch (error) {
+    ElMessage.info('状态更新已取消')
+    return false
+  }
+
+  switchLoading.value = true
+  try {
+    await updateUser({ id: user.id, status })
+    ElMessage.success(`${actionText}成功`)
+    return true
+  } catch (error) {
+    ElMessage.error(`${actionText}失败`)
+    return false
+  } finally {
+    switchLoading.value = false
+  }
 }
 
 // 搜索用户名称
@@ -455,6 +560,48 @@ const applyPageData = (pageData) => {
   total.value = Number(pageData?.total || 0)
 }
 
+const syncCurrentPageRoleCodes = async (users) => {
+  const currentUsers = Array.isArray(users) ? users : []
+  const nextRoleCodeMap = {}
+  const usersNeedFetch = []
+
+  currentUsers.forEach((user) => {
+    const roleCode = getDirectUserRoleCode(user)
+    if (roleCode) {
+      nextRoleCodeMap[user.id] = roleCode
+      return
+    }
+
+    if (user?.id != null) {
+      usersNeedFetch.push(user)
+    }
+  })
+
+  if (usersNeedFetch.length > 0) {
+    const roleResults = await Promise.all(
+      usersNeedFetch.map((user) =>
+        getRolesByUser(user.id)
+          .then((res) => ({
+            userId: user.id,
+            roleCode: extractRoleCodeFromArray(res.data || []),
+          }))
+          .catch(() => ({
+            userId: user.id,
+            roleCode: '',
+          }))
+      )
+    )
+
+    roleResults.forEach(({ userId, roleCode }) => {
+      if (roleCode) {
+        nextRoleCodeMap[userId] = roleCode
+      }
+    })
+  }
+
+  userRoleCodeMap.value = nextRoleCodeMap
+}
+
 const fetchUsers = async () => {
   loading.value = true
   try {
@@ -470,7 +617,9 @@ const fetchUsers = async () => {
       pageData = res.data
     }
     applyPageData(pageData)
+    await syncCurrentPageRoleCodes(userList.value)
   } catch (error) {
+    userRoleCodeMap.value = {}
     ElMessage.error(hasSearchConditions() ? '搜索用户失败' : '获取用户列表失败')
   } finally {
     loading.value = false
@@ -507,7 +656,13 @@ const handleEditUser = (row) => {
 }
 
 // 处理删除用户
-const handleDeleteUser = (id) => {
+const handleDeleteUser = (user) => {
+  const disabledReason = getUserDeleteDisabledReason(user)
+  if (disabledReason) {
+    ElMessage.warning(disabledReason)
+    return
+  }
+
   ElMessageBox.confirm('确定要删除该用户吗？', '警告', {
     confirmButtonText: '确定',
     cancelButtonText: '取消',
@@ -516,7 +671,7 @@ const handleDeleteUser = (id) => {
     .then(async () => {
       loading.value = true
       try {
-        await deleteUser(id)
+        await deleteUser(user.id)
         ElMessage.success('删除成功')
         getUsers()
       } catch (error) {
@@ -600,18 +755,27 @@ const handleDetailUser = async (id) => {
 const authorizeDialogVisible = ref(false)
 // 当前用户
 const currentUser = ref(null)
+const currentUserIsAdmin = ref(false)
 
 // 选择的角色
-const selectedRole = ref([])
+const selectedRoleId = ref(null)
 // 所有角色
 const allRole = ref([])
 // 授权弹窗加载状态
 const authorizeLoading = ref(false)
 
+const isBuiltInRole = (role) => BUILT_IN_ROLE_CODES.includes(role?.role)
+
 // 处理授权角色
 const handleAuthorizeRole = async (row) => {
+  if (!canAssignRole(row)) {
+    ElMessage.warning('超级管理员不能通过此入口调整角色')
+    return
+  }
+
   currentUser.value = row
-  selectedRole.value = []
+  currentUserIsAdmin.value = false
+  selectedRoleId.value = null
 
   // 先打开弹窗并显示 loading
   authorizeDialogVisible.value = true
@@ -621,8 +785,21 @@ const handleAuthorizeRole = async (row) => {
     // 并行加载角色列表和用户已有角色
     const [roleRes, userRolesRes] = await Promise.all([getRoleList(), getRolesByUser(row.id)])
 
-    allRole.value = roleRes.data
-    selectedRole.value = userRolesRes.data.map((item) => item.id)
+    allRole.value = (roleRes.data || []).filter((role) => isBuiltInRole(role))
+    const currentRoles = userRolesRes.data || []
+    currentUserIsAdmin.value = currentRoles.some((item) => item.role === 'admin')
+    const currentBuiltInRole = currentRoles.find((item) => isBuiltInRole(item))
+    const hasUnsupportedCurrentRole = currentRoles.some((item) => !isBuiltInRole(item))
+
+    if (hasUnsupportedCurrentRole || (currentRoles.length > 0 && !currentBuiltInRole)) {
+      selectedRoleId.value = null
+      ElMessage.warning('该用户当前角色已不再支持，请重新选择系统角色')
+    } else {
+      selectedRoleId.value =
+        (currentUserIsAdmin.value
+          ? currentRoles.find((item) => item.role === 'admin')?.id
+          : currentBuiltInRole?.id) ?? null
+    }
   } catch (error) {
     ElMessage.error('获取角色列表失败')
     console.error('获取角色列表失败:', error)
@@ -631,13 +808,32 @@ const handleAuthorizeRole = async (row) => {
   }
 }
 
+const isRoleOptionDisabled = (role) => {
+  const isAdminOption = role.role === 'admin'
+  if (currentUserIsAdmin.value) {
+    return !isAdminOption
+  }
+  return isAdminOption
+}
+
 // 处理授权提交
 const handleAuthorizeSubmit = async () => {
+  if (!selectedRoleId.value) {
+    ElMessage.warning('请选择一个角色')
+    return
+  }
+
   try {
     await addRole({
       userId: currentUser.value.id,
-      roleIds: selectedRole.value,
+      roleIds: [selectedRoleId.value],
     })
+    const nextRoleCode = normalizeRoleCode(allRole.value.find((role) => role.id === selectedRoleId.value)?.role)
+    userRoleCodeMap.value = {
+      ...userRoleCodeMap.value,
+      [currentUser.value.id]: nextRoleCode,
+    }
+    currentUser.value.roleCode = nextRoleCode
     ElMessage.success(`已为用户 ${currentUser.value.username} 分配角色`)
   } catch (error) {
     ElMessage.error(`为用户 ${currentUser.value.username} 分配角色失败`)
@@ -645,7 +841,8 @@ const handleAuthorizeSubmit = async () => {
   } finally {
     authorizeDialogVisible.value = false
     authorizeLoading.value = false
-    selectedRole.value = []
+    currentUserIsAdmin.value = false
+    selectedRoleId.value = null
   }
 }
 
@@ -653,7 +850,9 @@ const handleAuthorizeSubmit = async () => {
 const handleAuthorizeDialogClose = () => {
   authorizeDialogVisible.value = false
   authorizeLoading.value = false
-  selectedRole.value = []
+  currentUserIsAdmin.value = false
+  selectedRoleId.value = null
+  allRole.value = []
 }
 </script>
 
@@ -724,21 +923,30 @@ const handleAuthorizeDialogClose = () => {
 }
 
 .table-actions {
-  width: 100%;
-  min-height: 30px;
-  display: flex;
-  align-items: center;
+  display: grid;
+  grid-template-columns: repeat(3, 75px);
   justify-content: center;
-  flex-wrap: wrap;
+  gap: 8px;
+  min-height: 30px;
 }
 
-.table-actions :deep(.table-actions) {
-  width: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-wrap: wrap;
-  gap: 8px;
+.table-actions .action-wrapper {
+  width: 75px;
+  min-width: 75px;
+  display: block;
+}
+
+.table-actions .action-btn {
+  width: 75px !important;
+  min-width: 75px !important;
+  margin-left: 0 !important;
+  border-radius: 6px;
+  font-weight: 600;
+  transition: all 0.3s ease;
+}
+
+.table-actions .role-action {
+  grid-column: 2;
 }
 
 // 角色按钮
@@ -747,7 +955,7 @@ const handleAuthorizeDialogClose = () => {
   color: var(--action-user-color);
   border-color: var(--action-user-border);
   border-radius: 6px;
-  margin-left: 0 !important;
+  font-size: 11px !important;
 
   &:hover {
     background-color: var(--action-user-hover-bg);
@@ -860,17 +1068,31 @@ const handleAuthorizeDialogClose = () => {
       }
 
       .user-actions {
-        display: flex;
-        gap: 6px;
+        display: grid;
+        grid-template-columns: repeat(3, 75px);
         justify-content: center;
+        gap: 8px;
+        min-height: 30px;
         padding-top: 12px;
         border-top: 1px solid var(--el-border-color-lighter);
-        flex-wrap: wrap;
+
+        .action-wrapper {
+          width: 75px;
+          min-width: 75px;
+          display: block;
+        }
 
         .el-button {
-          margin-left: 0;
-          flex: 1;
-          min-width: 60px;
+          width: 75px !important;
+          min-width: 75px !important;
+          margin-left: 0 !important;
+          border-radius: 6px;
+          font-weight: 600;
+          transition: all 0.3s ease;
+        }
+
+        .role-action {
+          grid-column: 2;
         }
 
         .detail-button {
@@ -910,6 +1132,7 @@ const handleAuthorizeDialogClose = () => {
           background-color: var(--action-user-bg);
           color: var(--action-user-color);
           border-color: var(--action-user-border);
+          font-size: 11px !important;
 
           &:hover {
             background-color: var(--action-user-hover-bg);
@@ -961,12 +1184,12 @@ const handleAuthorizeDialogClose = () => {
       margin-bottom: 20px;
     }
 
-    .role-checkbox-group {
+    .role-radio-group {
       display: flex;
       flex-wrap: wrap;
       gap: 12px;
 
-      :deep(.el-checkbox) {
+      :deep(.el-radio) {
         margin-right: 16px;
         margin-bottom: 8px;
       }

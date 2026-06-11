@@ -4,12 +4,12 @@
     <template #filters>
       <KeywordSearch v-model="searchQuery" placeholder="搜索角色名称" :debounce="500" @search="handleSearch" />
       <SearchButtons @search="handleSearch" @reset="handleReset" />
-      <el-button type="primary" size="small" @click="handleAddRole" :icon="Plus" class="add-button"> 新增角色 </el-button>
     </template>
 
     <!-- 桌面端表格视图 -->
     <template #table-view>
       <div v-loading="loading" class="role-table-wrapper">
+        <div class="role-page-tip">系统固定使用超级管理员、内容管理员和普通用户三种角色。</div>
         <el-table :data="paginatedRoleList" class="table" style="height: 100%">
           <el-table-column prop="id" label="角色id" width="70" />
           <el-table-column prop="role" label="角色标识" />
@@ -17,19 +17,22 @@
           <el-table-column prop="description" label="角色描述" />
           <el-table-column prop="status" label="状态" width="120">
             <template #default="{ row }">
-              <el-switch
-                v-model="row.status"
-                size="large"
-                active-color="var(--admin-primary)"
-                inactive-color="#cccccc"
-                active-text="正常"
-                inactive-text="禁用"
-                :active-value="0"
-                :inactive-value="1"
-                inline-prompt
-                :loading="switchLoading"
-                :before-change="() => handleStatusChange(row.id, row.status === 0 ? 1 : 0)"
-              />
+              <span :title="getRoleStatusDisabledReason(row) || ''">
+                <el-switch
+                  v-model="row.status"
+                  size="large"
+                  active-color="var(--admin-primary)"
+                  inactive-color="#cccccc"
+                  active-text="正常"
+                  inactive-text="禁用"
+                  :active-value="0"
+                  :inactive-value="1"
+                  inline-prompt
+                  :loading="switchLoading"
+                  :disabled="isAdminRole(row)"
+                  :before-change="() => handleStatusChange(row, row.status === 0 ? 1 : 0)"
+                />
+              </span>
             </template>
           </el-table-column>
           <el-table-column prop="createTime" label="创建时间" sortable width="120" />
@@ -38,9 +41,10 @@
             <template #default="{ row }">
               <div class="table-actions">
                 <el-button type="primary" size="small" @click="handleEditRole(row)" :icon="Edit" class="edit-button"> 编辑 </el-button>
-                <el-button type="danger" size="small" @click="handleDeleteRole(row.id)" :icon="Delete" class="delete-button"> 删除 </el-button>
-                <el-button size="small" type="warning" @click="handleAuthorizeUser(row)" :icon="User" class="user-button"> 分配用户 </el-button>
-                <el-button size="small" type="success" @click="handleAuthorizeMenu(row)" :icon="Key" class="menu-button"> 分配权限 </el-button>
+                <span :title="getRoleDeleteDisabledReason(row) || ''">
+                  <el-button type="danger" size="small" @click="handleDeleteRole(row)" :icon="Delete" class="delete-button" :disabled="isBuiltInRole(row)"> 删除 </el-button>
+                </span>
+                <el-button v-if="shouldShowAuthorizeMenu(row)" size="small" type="success" @click="handleAuthorizeMenu(row)" :icon="Key" class="menu-button"> 分配菜单 </el-button>
               </div>
             </template>
           </el-table-column>
@@ -51,6 +55,7 @@
     <!-- 移动端卡片视图 -->
     <template #card-view>
       <div v-loading="loading" class="role-cards">
+        <div class="role-page-tip">系统固定使用超级管理员、内容管理员和普通用户三种角色。</div>
         <el-card v-for="role in paginatedRoleList" :key="role.id" class="role-card">
           <div class="role-card-content">
             <div class="role-header">
@@ -60,16 +65,19 @@
                   {{ role.status === 0 ? '正常' : '禁用' }}
                 </el-tag>
               </div>
-              <el-switch
-                v-model="role.status"
-                size="small"
-                active-color="var(--admin-primary)"
-                inactive-color="#cccccc"
-                :active-value="0"
-                :inactive-value="1"
-                :loading="switchLoading"
-                :before-change="() => handleStatusChange(role.id, role.status === 0 ? 1 : 0)"
-              />
+              <span :title="getRoleStatusDisabledReason(role) || ''">
+                <el-switch
+                  v-model="role.status"
+                  size="small"
+                  active-color="var(--admin-primary)"
+                  inactive-color="#cccccc"
+                  :active-value="0"
+                  :inactive-value="1"
+                  :loading="switchLoading"
+                  :disabled="isAdminRole(role)"
+                  :before-change="() => handleStatusChange(role, role.status === 0 ? 1 : 0)"
+                />
+              </span>
             </div>
             <div class="role-info">
               <div class="info-row">
@@ -95,9 +103,10 @@
             </div>
             <div class="role-actions">
               <el-button type="primary" size="small" @click="handleEditRole(role)" :icon="Edit" class="edit-button">编辑</el-button>
-              <el-button type="danger" size="small" @click="handleDeleteRole(role.id)" :icon="Delete" class="delete-button">删除</el-button>
-              <el-button size="small" type="warning" @click="handleAuthorizeUser(role)" :icon="User" class="user-button">分配用户</el-button>
-              <el-button size="small" type="success" @click="handleAuthorizeMenu(role)" :icon="Key" class="menu-button">分配权限</el-button>
+              <span :title="getRoleDeleteDisabledReason(role) || ''">
+                <el-button type="danger" size="small" @click="handleDeleteRole(role)" :icon="Delete" class="delete-button" :disabled="isBuiltInRole(role)">删除</el-button>
+              </span>
+              <el-button v-if="shouldShowAuthorizeMenu(role)" size="small" type="success" @click="handleAuthorizeMenu(role)" :icon="Key" class="menu-button">分配菜单</el-button>
             </div>
           </div>
         </el-card>
@@ -109,7 +118,7 @@
   <el-dialog v-model="dialogVisible" :title="dialogTitle" :before-close="handleDialogClose">
     <el-form ref="roleFormRef" :model="roleForm" :rules="rules" class="editForm">
       <el-form-item prop="role" label="角色标识">
-        <el-input v-model="roleForm.role" placeholder="请输入角色标识" />
+        <el-input v-model="roleForm.role" placeholder="请输入角色标识" :disabled="editingBuiltInRole" />
       </el-form-item>
       <el-form-item prop="name" label="角色名称">
         <el-input v-model="roleForm.name" placeholder="请输入角色名称" />
@@ -126,33 +135,8 @@
     </template>
   </el-dialog>
 
-  <!-- 分配用户弹窗对话框 -->
-  <el-dialog v-model="authorizeDialogVisible" title="角色分配用户" :before-close="handleAuthorizeDialogClose" class="authorize-dialog">
-    <div v-loading="authorizeLoading" class="authorize-dialog-content">
-      <p class="role-name">当前角色: {{ currentRole?.name }}</p>
-      <template v-if="!authorizeLoading">
-        <el-transfer
-          v-model="selectedUser"
-          :data="transferUserData"
-          :filterable="true"
-          :filter-method="filterMethod"
-          filter-placeholder="搜索用户"
-          :titles="['待分配用户', '已分配用户']"
-          :button-texts="['取消分配', '分配用户']"
-          class="user-transfer"
-        />
-      </template>
-    </div>
-    <template #footer>
-      <span class="dialog-footer">
-        <el-button @click="handleAuthorizeDialogClose">取消</el-button>
-        <el-button type="primary" @click="handleAuthorizeSubmit">确认分配</el-button>
-      </span>
-    </template>
-  </el-dialog>
-
-  <!-- 分配权限弹窗对话框 -->
-  <el-dialog v-model="authorizeMenuDialogVisible" :title="'分配 ' + currentMenuRole?.name + ' 的菜单权限'" :before-close="handleAuthorizeMenuDialogClose" width="600px">
+  <!-- 分配菜单弹窗对话框 -->
+  <el-dialog v-model="authorizeMenuDialogVisible" :title="'为 ' + currentMenuRole?.name + ' 分配菜单'" :before-close="handleAuthorizeMenuDialogClose" width="600px">
     <div class="authorize-menu-dialog-content">
       <div class="menu-toolbar">
         <el-button size="small" @click="handleExpandAll(false)">全部收起</el-button>
@@ -192,12 +176,10 @@
 </template>
 
 <script setup>
-import { ref, onMounted, computed } from 'vue'
+import { nextTick, ref, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, Edit, Delete, User, Key } from '@element-plus/icons-vue'
-import { getRoleList, getRolePage, addRole, updateRole, deleteRole, queryRolePage } from '@/api/role'
-import { addUser, getUsersByRole } from '@/api/user-role'
-import { getUserList } from '@/api/user'
+import { Edit, Delete, Key } from '@element-plus/icons-vue'
+import { getRolePage, updateRole, deleteRole, queryRolePage } from '@/api/role'
 import { getAllMenuList } from '@/api/menu'
 import { getMenusByRole, assignMenus } from '@/api/role-menu'
 
@@ -208,6 +190,22 @@ import SearchButtons from '@/components/search/SearchButtons.vue'
 
 // 搜索
 const searchQuery = ref('')
+const BUILT_IN_ROLE_CODES = ['admin', 'content_admin', 'user']
+
+const isBuiltInRole = (role) => BUILT_IN_ROLE_CODES.includes(role?.role)
+
+const isAdminRole = (role) => role?.role === 'admin'
+const isContentAdminRole = (role) => role?.role === 'content_admin'
+const shouldShowAuthorizeMenu = (role) => isAdminRole(role) || isContentAdminRole(role)
+
+const isSystemManagementMenu = (menu) => {
+  const path = menu?.path
+  return path === '/system' || (typeof path === 'string' && path.startsWith('/system/'))
+}
+
+const getRoleDeleteDisabledReason = (role) => (isBuiltInRole(role) ? '系统内置角色不能删除' : '')
+
+const getRoleStatusDisabledReason = (role) => (isAdminRole(role) ? '超级管理员角色不能停用' : '')
 
 // 角色列表数据
 const roleList = ref([])
@@ -217,7 +215,8 @@ const total = ref(0)
 
 // 对话框
 const dialogVisible = ref(false)
-const dialogTitle = ref('新增角色')
+const dialogTitle = ref('编辑角色')
+const editingBuiltInRole = ref(false)
 
 const roleFormRef = ref(null)
 const roleForm = ref({
@@ -282,25 +281,19 @@ const handleReset = () => {
   handleSearch()
 }
 
-const handleAddRole = () => {
-  dialogTitle.value = '新增角色'
-  roleForm.value = {
-    id: null,
-    role: '',
-    name: '',
-    description: '',
-    status: 0,
-  }
-  dialogVisible.value = true
-}
-
 const handleEditRole = (row) => {
   dialogTitle.value = '编辑角色'
+  editingBuiltInRole.value = isBuiltInRole(row)
   roleForm.value = { ...row }
   dialogVisible.value = true
 }
 
-const handleDeleteRole = (id) => {
+const handleDeleteRole = (role) => {
+  if (isBuiltInRole(role)) {
+    ElMessage.warning(getRoleDeleteDisabledReason(role))
+    return
+  }
+
   ElMessageBox.confirm('确定要删除该角色吗？', '警告', {
     confirmButtonText: '确定',
     cancelButtonText: '取消',
@@ -309,7 +302,7 @@ const handleDeleteRole = (id) => {
     .then(async () => {
       loading.value = true
       try {
-        await deleteRole(id)
+        await deleteRole(role.id)
         ElMessage.success('删除成功')
         fetchRoles()
       } catch (error) {
@@ -324,43 +317,52 @@ const handleDeleteRole = (id) => {
 }
 
 const switchLoading = ref(false)
-const handleStatusChange = async (id, status) => {
-  return new Promise((resolve, reject) => {
-    switchLoading.value = true
-    updateRole({ id, status })
-      .then(() => {
-        ElMessage.success('状态更新成功')
-        const role = roleList.value.find((item) => item.id === id)
-        if (role) {
-          role.status = status
-        }
-        resolve()
-      })
-      .catch((error) => {
-        ElMessage.error('状态更新失败')
-        reject(error)
-      })
-      .finally(() => {
-        switchLoading.value = false
-      })
-  })
+const handleStatusChange = async (role, status) => {
+  if (isAdminRole(role)) {
+    ElMessage.warning(getRoleStatusDisabledReason(role))
+    return false
+  }
+
+  const actionText = status === 0 ? '启用' : '停用'
+
+  try {
+    await ElMessageBox.confirm(`确定要${actionText}角色 ${role.name} 吗？`, '提示', {
+      confirmButtonText: '确定',
+      cancelButtonText: '取消',
+      type: 'warning',
+    })
+  } catch (error) {
+    ElMessage.info('状态更新已取消')
+    return false
+  }
+
+  switchLoading.value = true
+  try {
+    await updateRole({ id: role.id, status })
+    ElMessage.success(`${actionText}成功`)
+    return true
+  } catch (error) {
+    ElMessage.error(`${actionText}失败`)
+    return false
+  } finally {
+    switchLoading.value = false
+  }
 }
 
 const handleSubmit = () => {
   roleFormRef.value.validate(async (valid) => {
     if (!valid) return
+    if (!roleForm.value.id) {
+      ElMessage.warning('系统角色已固定，不能新增角色')
+      return
+    }
     try {
-      if (roleForm.value.id) {
-        await updateRole(roleForm.value)
-        ElMessage.success('编辑角色成功')
-      } else {
-        await addRole(roleForm.value)
-        ElMessage.success('新增角色成功')
-      }
+      await updateRole(roleForm.value)
+      ElMessage.success('编辑角色成功')
       dialogVisible.value = false
       fetchRoles()
     } catch (error) {
-      ElMessage.error(roleForm.value.id ? '编辑角色失败' : '新增角色失败')
+      ElMessage.error('编辑角色失败')
       handleDialogClose()
     }
   })
@@ -368,69 +370,11 @@ const handleSubmit = () => {
 
 const handleDialogClose = () => {
   roleFormRef.value.resetFields()
+  editingBuiltInRole.value = false
   dialogVisible.value = false
 }
 
-// 授权角色弹窗
-const authorizeDialogVisible = ref(false)
-const authorizeLoading = ref(false)
-const currentRole = ref(null)
-const selectedUser = ref([])
-const allUser = ref([])
-
-const transferUserData = computed(() => {
-  return allUser.value.map((user) => ({
-    key: user.id,
-    label: user.username,
-  }))
-})
-
-const filterMethod = (query, item) => {
-  return item.label.toLowerCase().includes(query.toLowerCase())
-}
-
-const handleAuthorizeUser = async (row) => {
-  currentRole.value = row
-  selectedUser.value = []
-
-  authorizeDialogVisible.value = true
-  authorizeLoading.value = true
-
-  try {
-    const [userRes, roleUsersRes] = await Promise.all([getUserList(), getUsersByRole(row.id)])
-    allUser.value = userRes.data
-    selectedUser.value = roleUsersRes.data.map((item) => item.id)
-  } catch (error) {
-    ElMessage.error('获取用户列表失败')
-    authorizeDialogVisible.value = false
-  } finally {
-    authorizeLoading.value = false
-  }
-}
-
-const handleAuthorizeSubmit = async () => {
-  try {
-    await addUser({
-      roleId: currentRole.value.id,
-      userIds: selectedUser.value,
-    })
-    ElMessage.success(`已为角色 ${currentRole.value.name} 分配用户`)
-  } catch (error) {
-    ElMessage.error(`为角色 ${currentRole.value.name} 分配用户失败`)
-  } finally {
-    authorizeDialogVisible.value = false
-    authorizeLoading.value = false
-    selectedUser.value = []
-  }
-}
-
-const handleAuthorizeDialogClose = () => {
-  authorizeDialogVisible.value = false
-  authorizeLoading.value = false
-  selectedUser.value = []
-}
-
-// 分配权限弹窗
+// 分配菜单弹窗
 const authorizeMenuDialogVisible = ref(false)
 const menuTreeRef = ref(null)
 const currentMenuRole = ref(null)
@@ -438,27 +382,61 @@ const menuTreeData = ref([])
 const menuTreeProps = {
   children: 'children',
   label: 'name',
+  disabled: 'disabled',
 }
 const selectedMenuIds = ref([])
 const defaultExpandedKeys = ref([])
+const allSystemMenuIds = ref([])
+const lockedSystemMenuIds = ref([])
 
 const handleAuthorizeMenu = async (row) => {
+  if (row?.role === 'user') {
+    ElMessage.warning('普通用户角色不能分配后台菜单')
+    return
+  }
+  if (!shouldShowAuthorizeMenu(row)) {
+    ElMessage.warning('后台菜单只能分配给后台管理角色')
+    return
+  }
+
   currentMenuRole.value = row
   selectedMenuIds.value = []
   defaultExpandedKeys.value = []
+  allSystemMenuIds.value = []
+  lockedSystemMenuIds.value = []
 
   const res = await getAllMenuList()
-  menuTreeData.value = buildMenuTree(res.data)
-  defaultExpandedKeys.value = res.data.map((menu) => menu.id)
+  const fullMenuTree = buildMenuTree(res.data)
+  allSystemMenuIds.value = collectSystemMenuIds(fullMenuTree)
 
   try {
     const menuRes = await getMenusByRole(row.id)
-    selectedMenuIds.value = menuRes.data || []
+    const currentMenuIds = menuRes.data || []
+    if (isAdminRole(row)) {
+      lockedSystemMenuIds.value = [...allSystemMenuIds.value]
+      menuTreeData.value = lockSystemMenuTree(fullMenuTree)
+      selectedMenuIds.value = Array.from(new Set([...currentMenuIds, ...lockedSystemMenuIds.value]))
+    } else {
+      menuTreeData.value = filterSystemMenuTree(fullMenuTree)
+      const systemMenuIdSet = new Set(allSystemMenuIds.value)
+      selectedMenuIds.value = currentMenuIds.filter((menuId) => !systemMenuIdSet.has(menuId))
+    }
   } catch (error) {
     console.error('获取角色菜单权限失败:', error)
+    if (isAdminRole(row)) {
+      lockedSystemMenuIds.value = [...allSystemMenuIds.value]
+      menuTreeData.value = lockSystemMenuTree(fullMenuTree)
+      selectedMenuIds.value = [...lockedSystemMenuIds.value]
+    } else {
+      menuTreeData.value = filterSystemMenuTree(fullMenuTree)
+    }
   }
 
   authorizeMenuDialogVisible.value = true
+  defaultExpandedKeys.value = collectMenuIds(menuTreeData.value)
+
+  await nextTick()
+  menuTreeRef.value?.setCheckedKeys(selectedMenuIds.value)
 }
 
 const buildMenuTree = (menus) => {
@@ -484,6 +462,59 @@ const buildMenuTree = (menus) => {
   return result
 }
 
+const collectSystemMenuIds = (menus) => {
+  const ids = []
+
+  const traverse = (nodes) => {
+    nodes.forEach((node) => {
+      if (isSystemManagementMenu(node) && node.id != null) {
+        ids.push(node.id)
+      }
+      if (Array.isArray(node.children) && node.children.length > 0) {
+        traverse(node.children)
+      }
+    })
+  }
+
+  traverse(menus)
+  return ids
+}
+
+const collectMenuIds = (menus) => {
+  const ids = []
+
+  const traverse = (nodes) => {
+    nodes.forEach((node) => {
+      if (node.id != null) {
+        ids.push(node.id)
+      }
+      if (Array.isArray(node.children) && node.children.length > 0) {
+        traverse(node.children)
+      }
+    })
+  }
+
+  traverse(menus)
+  return ids
+}
+
+const lockSystemMenuTree = (menus) => {
+  return menus.map((menu) => ({
+    ...menu,
+    disabled: isSystemManagementMenu(menu),
+    children: lockSystemMenuTree(menu.children || []),
+  }))
+}
+
+const filterSystemMenuTree = (menus) => {
+  return menus
+    .filter((menu) => !isSystemManagementMenu(menu))
+    .map((menu) => ({
+      ...menu,
+      children: filterSystemMenuTree(menu.children || []),
+    }))
+}
+
 const handleExpandAll = (expand) => {
   const tree = menuTreeRef.value
   if (tree) {
@@ -500,15 +531,22 @@ const handleAuthorizeMenuSubmit = async () => {
   try {
     const checkedKeys = menuTreeRef.value?.getCheckedKeys() || []
     const halfCheckedKeys = menuTreeRef.value?.getHalfCheckedKeys() || []
-    const allSelectedKeys = [...checkedKeys, ...halfCheckedKeys]
+    let allSelectedKeys = Array.from(new Set([...checkedKeys, ...halfCheckedKeys]))
+
+    if (isAdminRole(currentMenuRole.value)) {
+      allSelectedKeys = Array.from(new Set([...allSelectedKeys, ...lockedSystemMenuIds.value]))
+    } else {
+      const systemMenuIdSet = new Set(allSystemMenuIds.value)
+      allSelectedKeys = allSelectedKeys.filter((menuId) => !systemMenuIdSet.has(menuId))
+    }
 
     await assignMenus({
       roleId: currentMenuRole.value.id,
       menuIds: allSelectedKeys,
     })
-    ElMessage.success(`已为角色 ${currentMenuRole.value.name} 分配菜单权限`)
+    ElMessage.success(`已为角色 ${currentMenuRole.value.name} 分配菜单`)
   } catch (error) {
-    ElMessage.error(`为角色 ${currentMenuRole.value.name} 分配菜单权限失败`)
+    ElMessage.error(`为角色 ${currentMenuRole.value.name} 分配菜单失败`)
   } finally {
     authorizeMenuDialogVisible.value = false
   }
@@ -518,6 +556,9 @@ const handleAuthorizeMenuDialogClose = () => {
   authorizeMenuDialogVisible.value = false
   selectedMenuIds.value = []
   menuTreeData.value = []
+  defaultExpandedKeys.value = []
+  allSystemMenuIds.value = []
+  lockedSystemMenuIds.value = []
 }
 
 onMounted(() => {
@@ -583,18 +624,6 @@ onMounted(() => {
       &:hover {
         background-color: var(--action-delete-hover-bg);
         border-color: var(--action-delete-hover-border);
-      }
-    }
-
-    .user-button {
-      background-color: var(--action-user-bg);
-      color: var(--action-user-color);
-      border-color: var(--action-user-border);
-      border-radius: 6px;
-
-      &:hover {
-        background-color: var(--action-user-hover-bg);
-        border-color: var(--action-user-hover-border);
       }
     }
 
@@ -725,17 +754,6 @@ onMounted(() => {
           }
         }
 
-        .user-button {
-          background-color: var(--action-user-bg);
-          color: var(--action-user-color);
-          border-color: var(--action-user-border);
-
-          &:hover {
-            background-color: var(--action-user-hover-bg);
-            border-color: var(--action-user-hover-border);
-          }
-        }
-
         .menu-button {
           background-color: var(--action-edit-bg);
           color: var(--action-edit-color);
@@ -770,35 +788,6 @@ onMounted(() => {
     &:focus-within {
       box-shadow: 0 0 0 3px var(--admin-primary-light);
       border-color: var(--admin-primary);
-    }
-  }
-}
-
-.authorize-dialog-content {
-  padding: 10px;
-
-  .role-name {
-    font-size: 16px;
-    font-weight: 600;
-    margin-bottom: 16px;
-    color: var(--text-primary);
-  }
-
-  .user-transfer {
-    width: 100%;
-    display: flex;
-    justify-content: center;
-
-    :deep(.el-transfer__panel) {
-      width: 280px;
-      flex: none;
-    }
-
-    :deep(.el-transfer__buttons) {
-      display: flex;
-      flex-direction: column;
-      justify-content: center;
-      padding: 0 16px;
     }
   }
 }
@@ -847,16 +836,13 @@ onMounted(() => {
   }
 }
 
-.add-button {
+.role-page-tip {
+  margin-bottom: 12px;
+  padding: 10px 14px;
   border-radius: 8px;
-  background: linear-gradient(135deg, var(--admin-primary) 0%, var(--admin-primary-dark) 100%);
-  border: none;
-
-  &:hover {
-    background: linear-gradient(135deg, var(--admin-primary-dark) 0%, var(--admin-primary-active) 100%);
-    transform: translateY(-2px);
-    box-shadow: 0 4px 12px var(--admin-primary-light);
-  }
+  background: var(--bg-input);
+  color: var(--text-muted);
+  font-size: 14px;
 }
 
 // 响应式

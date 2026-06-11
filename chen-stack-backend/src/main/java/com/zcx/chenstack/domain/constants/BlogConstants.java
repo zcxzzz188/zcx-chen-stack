@@ -9,6 +9,10 @@ public class BlogConstants {
     public static final String NotFoundUser = "该用户不存在";
     public static final String ExistUser = "该用户已存在";
     public static final String UserDisabled = "账号被禁用";
+    public static final String CurrentUserCannotDisable = "当前登录账号不能停用自己";
+    public static final String CurrentUserCannotDelete = "当前登录账号不能删除自己";
+    public static final String SuperAdminCannotDisable = "超级管理员账号不能停用";
+    public static final String SuperAdminCannotDelete = "超级管理员账号不能删除";
     public static final String ExistUserName = "用户名已存在";
     public static final String ExistEmail = "邮箱已存在";
     public static final String NotFoundEmail = "邮箱不存在";
@@ -24,6 +28,7 @@ public class BlogConstants {
     public static final String IllegalRequest = "非法请求";
 
     public static final String NotFoundRole = "角色不存在";
+    public static final String ExistRole = "角色编码已存在";
     public static final String NotFoundMenu = "菜单不存在";
     public static final String NotFoundPermission = "权限不存在";
     public static final String NotAdminAccount = "不是管理后台账户";
@@ -31,6 +36,30 @@ public class BlogConstants {
     public static final String ExistRolePermission = "角色权限已存在";
     public static final String ExistUserRole = "用户角色已存在";
     public static final String SuperAdminMustBeUnique = "超级管理员必须且只能保留一个账号";
+    public static final String BuiltInRoleCannotCreateDuplicate = "系统内置角色不能重复创建";
+    public static final String BuiltInRoleCodeCannotModify = "系统内置角色编码不能修改";
+    public static final String BuiltInRoleCannotDisable = "系统内置角色不能停用";
+    public static final String SuperAdminRoleCannotDisable = "超级管理员角色不能停用";
+    public static final String BuiltInRoleCannotDelete = "系统内置角色不能删除";
+    public static final String CustomRoleCannotUseBuiltInRoleCode = "普通角色不能使用系统内置角色编码";
+    public static final String UserMustHaveSingleRole = "每个用户必须且只能分配一个角色";
+    public static final String SuperAdminRoleCannotChangeNormally = "超级管理员角色不能通过普通角色分配修改";
+    public static final String SuperAdminMustUseTransfer = "超级管理员请通过专用转让功能变更";
+    public static final String AssignRoleFromUserManagement = "请在用户管理中为用户分配角色";
+    public static final String AdminAccountUseAdminLogin = "管理员账号请从管理端登录";
+    public static final String SystemMenuCannotDisable = "系统管理菜单不能停用";
+    public static final String SystemMenuRouteCannotModify = "系统管理菜单的路由和层级不能修改";
+    public static final String SystemMenuCannotDelete = "系统管理菜单不能删除";
+    public static final String CustomMenuCannotUseSystemPath = "普通菜单不能使用系统管理路径";
+    public static final String AdminMustKeepSystemMenus = "超级管理员必须保留完整的系统管理菜单";
+    public static final String SystemMenuStructureCannotModify = "系统管理菜单结构只能通过代码或初始化脚本调整";
+    public static final String SystemMenusOnlyForAdmin = "系统管理菜单只能分配给超级管理员";
+    public static final String BackendMenusOnlyForAdminRoles = "后台菜单只能分配给后台管理角色";
+    public static final String UserRoleCannotAssignBackendMenu = "普通用户角色不能分配后台菜单";
+    public static final String PermissionDefinitionReadOnly = "权限定义与后端代码绑定，只能通过代码和初始化脚本维护";
+    public static final String GenericPermissionAssignmentDisabled = "通用权限分配已关闭，请使用受控的角色权限配置";
+    public static final String FixedRoleSystemCannotAdd = "系统角色已固定，不能新增角色";
+    public static final String UserCanOnlyUseBuiltInRole = "用户只能分配系统固定角色";
 
     public static final String NotFoundPhoto = "照片不存在";
     public static final String ExamineStatusError = "审核状态错误";

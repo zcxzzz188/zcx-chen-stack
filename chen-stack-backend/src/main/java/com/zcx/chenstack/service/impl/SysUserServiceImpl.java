@@ -128,6 +128,8 @@ public class SysUserServiceImpl extends ServiceImpl<SysUserMapper, SysUser> impl
     @Resource
     private SysUserRoleMapper sysUserRoleMapper;
     @Resource
+    private SysRoleMapper sysRoleMapper;
+    @Resource
     private UserSettingsMapper userSettingsMapper;
 
     @Resource
@@ -166,6 +168,9 @@ public class SysUserServiceImpl extends ServiceImpl<SysUserMapper, SysUser> impl
             Authentication authenticate = authenticationManager.authenticate(authentication);
             // 获取用户信息，返回的就是UserDetails
             LoginUser loginUser = (LoginUser) authenticate.getPrincipal();
+            if (!isUserAccount(loginUser.getSysUser())) {
+                throw new BlogException(BlogConstants.AdminAccountUseAdminLogin);
+            }
             recordLoginSuccess(loginUser.getSysUser(), RegisterOrLoginTypeEnum.EMAIL.getCode());
             // 创建token,此处的token时由UUID编码而成JWT字符串
             String token = jwtUtils.createToken(loginUser.getSysUser().getId(), loginDto.getRememberMe());
@@ -518,9 +523,7 @@ public class SysUserServiceImpl extends ServiceImpl<SysUserMapper, SysUser> impl
             if (loginUser.getSysUser() == null) {
                 throw new BlogException(BlogConstants.NotFoundUser);
             }
-            List<SysRole> sysRoles = loginUser.getSysUser().getSysRoles();
-
-            if (sysRoles == null || sysRoles.stream().noneMatch(r -> r.getRole().equals("admin") || r.getRole().equals("content_admin"))) {
+            if (!isAdminAccount(loginUser.getSysUser())) {
                 throw new BlogException(BlogConstants.NotAdminAccount); // 不是管理后台账户
             }
             recordLoginSuccess(loginUser.getSysUser(), RegisterOrLoginTypeEnum.EMAIL.getCode());
@@ -664,6 +667,21 @@ public class SysUserServiceImpl extends ServiceImpl<SysUserMapper, SysUser> impl
     // 管理端更新用户信息
     @Override
     public void updateUser(SysUserDto sysUserDto) {
+        SysUser originalUser = sysUserMapper.selectById(sysUserDto.getId());
+        if (originalUser == null) {
+            throw new BlogException(BlogConstants.NotFoundUser);
+        }
+
+        if (isDisablingUser(sysUserDto, originalUser)) {
+            Integer currentUserId = SecurityUtils.getUserId();
+            if (Objects.equals(currentUserId, originalUser.getId())) {
+                throw new BlogException(BlogConstants.CurrentUserCannotDisable);
+            }
+            if (isAdminUser(originalUser.getId())) {
+                throw new BlogException(BlogConstants.SuperAdminCannotDisable);
+            }
+        }
+
         SysUser sysUser = BeanUtil.copyProperties(sysUserDto, SysUser.class);
         sysUserMapper.updateById(sysUser);
     }
@@ -680,6 +698,14 @@ public class SysUserServiceImpl extends ServiceImpl<SysUserMapper, SysUser> impl
                 throw new BlogException(BlogConstants.NotFoundUser);
             }
             log.info("管理端删除用户-用户存在校验通过，userId: {}", id);
+
+            Integer currentUserId = SecurityUtils.getUserId();
+            if (Objects.equals(currentUserId, id)) {
+                throw new BlogException(BlogConstants.CurrentUserCannotDelete);
+            }
+            if (isAdminUser(id)) {
+                throw new BlogException(BlogConstants.SuperAdminCannotDelete);
+            }
 
             log.info("管理端删除用户-收集非文章图片开始，userId: {}", id);
             Set<String> nonArticlePhotoUrls = collectUserNonArticlePhotoUrls(sysUser, id);
@@ -796,6 +822,56 @@ public class SysUserServiceImpl extends ServiceImpl<SysUserMapper, SysUser> impl
 
     private boolean isNonEmptyPhotoUrl(String url) {
         return url != null && !url.trim().isEmpty();
+    }
+
+    private boolean isAdminUser(Integer userId) {
+        if (userId == null) {
+            return false;
+        }
+
+        List<Integer> roleIds = sysUserRoleMapper.selectList(new LambdaQueryWrapper<SysUserRole>()
+                        .eq(SysUserRole::getUserId, userId))
+                .stream()
+                .map(SysUserRole::getRoleId)
+                .filter(Objects::nonNull)
+                .distinct()
+                .toList();
+
+        if (roleIds.isEmpty()) {
+            return false;
+        }
+
+        return sysRoleMapper.selectCount(new LambdaQueryWrapper<SysRole>()
+                .in(SysRole::getId, roleIds)
+                .eq(SysRole::getRole, "admin")) > 0;
+    }
+
+    private boolean isUserAccount(SysUser user) {
+        if (user == null || user.getSysRoles() == null) {
+            return false;
+        }
+        Set<String> roleCodes = user.getSysRoles().stream()
+                .map(SysRole::getRole)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+        return roleCodes.size() == 1 && roleCodes.contains("user");
+    }
+
+    private boolean isAdminAccount(SysUser user) {
+        if (user == null || user.getSysRoles() == null) {
+            return false;
+        }
+        Set<String> roleCodes = user.getSysRoles().stream()
+                .map(SysRole::getRole)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+        return roleCodes.size() == 1 && (roleCodes.contains("admin") || roleCodes.contains("content_admin"));
+    }
+
+    private boolean isDisablingUser(SysUserDto sysUserDto, SysUser originalUser) {
+        return sysUserDto.getStatus() != null
+                && Objects.equals(sysUserDto.getStatus(), StatusEnum.DISABLE.getStatus())
+                && !Objects.equals(originalUser.getStatus(), sysUserDto.getStatus());
     }
 
     private Set<Integer> collectRelatedConversationUserIds(Integer userId) {

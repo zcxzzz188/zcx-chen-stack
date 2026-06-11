@@ -38,7 +38,7 @@ public class SysRoleMenuController {
      * @return
      */
     @OperationLog(module = "角色菜单管理", type = OperationTypeEnum.ASSIGN, description = "管理员给角色分配菜单")
-    @PreAuthorize("hasAuthority('system:role:menu:add')")
+    @PreAuthorize("@adminSecurity.isAdmin() and hasAuthority('system:role:menu:add')")
     @PostMapping("add")
     public Result add(@RequestBody @Valid SysRoleMenuDto sysRoleMenuDto) {
         sysRoleService.add(sysRoleMenuDto);
@@ -52,7 +52,7 @@ public class SysRoleMenuController {
      * @return
      */
     @OperationLog(module = "角色菜单管理", type = OperationTypeEnum.SELECT, description = "管理员获取拥有指定菜单的角色列表")
-    @PreAuthorize("hasAuthority('system:role:menu:get')")
+    @PreAuthorize("@adminSecurity.isAdmin() and hasAuthority('system:role:menu:get')")
     @GetMapping("{menuId}")
     public Result getRoles(@PathVariable @NotNull(message = "菜单ID不能为空") Integer menuId) {
         List<SysRoleVo> sysRoleVos = sysRoleService.getRoles(menuId);
@@ -66,7 +66,7 @@ public class SysRoleMenuController {
      * @return 菜单ID列表
      */
     @OperationLog(module = "角色菜单管理", type = OperationTypeEnum.SELECT, description = "管理员获取指定角色的菜单权限")
-    @PreAuthorize("hasAuthority('system:role:menu:get')")
+    @PreAuthorize("@adminSecurity.isAdmin() and hasAuthority('system:role:menu:get')")
     @GetMapping("/role/{roleId}")
     public Result getMenus(@PathVariable @NotNull(message = "角色ID不能为空") Integer roleId) {
         List<Integer> menuIds = sysRoleService.getMenus(roleId);
@@ -80,7 +80,7 @@ public class SysRoleMenuController {
      * @return
      */
     @OperationLog(module = "角色菜单管理", type = OperationTypeEnum.ASSIGN, description = "管理员给角色分配菜单权限")
-    @PreAuthorize("hasAuthority('system:role:menu:assign')")
+    @PreAuthorize("@adminSecurity.isAdmin() and hasAuthority('system:role:menu:assign')")
     @PostMapping("assign")
     public Result assignMenus(@RequestBody @Valid SysRoleMenuAssignDto dto) {
         sysRoleService.assignMenus(dto);

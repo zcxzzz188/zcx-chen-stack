@@ -37,7 +37,7 @@ public class SysPermissionController {
      * @return
      */
     @OperationLog(module = "权限管理", type = OperationTypeEnum.SELECT, description = "管理员获取权限列表")
-    @PreAuthorize("hasAuthority('system:permission:list')")
+    @PreAuthorize("@adminSecurity.isAdmin() and hasAuthority('system:permission:list')")
     @GetMapping("list")
     public Result list() {
         List<SysPermissionVo> sysPermissionVos = sysPermissionService.listPermission();
@@ -50,7 +50,7 @@ public class SysPermissionController {
      * @return 权限分页列表
      */
     @OperationLog(module = "权限管理", type = OperationTypeEnum.SELECT, description = "管理员分页获取权限列表")
-    @PreAuthorize("hasAuthority('system:permission:list')")
+    @PreAuthorize("@adminSecurity.isAdmin() and hasAuthority('system:permission:list')")
     @GetMapping("page")
     public Result<PageVo<List<SysPermissionVo>>> page(
             @RequestParam(defaultValue = "1") Integer pageNum,
@@ -65,7 +65,7 @@ public class SysPermissionController {
      * @return
      */
     @OperationLog(module = "权限管理", type = OperationTypeEnum.INSERT, description = "管理员新增权限")
-    @PreAuthorize("hasAuthority('system:permission:add')")
+    @PreAuthorize("@adminSecurity.isAdmin() and hasAuthority('system:permission:add')")
     @PostMapping("add")
     public Result add(@RequestBody @Valid SysPermissionDto sysPermissionDto) {
         sysPermissionService.add(sysPermissionDto);
@@ -79,7 +79,7 @@ public class SysPermissionController {
      * @return
      */
     @OperationLog(module = "权限管理", type = OperationTypeEnum.UPDATE, description = "管理员修改权限")
-    @PreAuthorize("hasAuthority('system:permission:update')")
+    @PreAuthorize("@adminSecurity.isAdmin() and hasAuthority('system:permission:update')")
     @PutMapping("update")
     public Result update(@RequestBody @Valid SysPermissionDto sysPermissionDto) {
         sysPermissionService.update(sysPermissionDto);
@@ -93,7 +93,7 @@ public class SysPermissionController {
      * @return
      */
     @OperationLog(module = "权限管理", type = OperationTypeEnum.DELETE, description = "管理员删除权限")
-    @PreAuthorize("hasAuthority('system:permission:delete')")
+    @PreAuthorize("@adminSecurity.isAdmin() and hasAuthority('system:permission:delete')")
     @DeleteMapping("{permissionId}")
     public Result delete(@PathVariable @NotEmpty Integer permissionId) {
         sysPermissionService.delete(permissionId);
@@ -107,7 +107,7 @@ public class SysPermissionController {
      * @return
      */
     @OperationLog(module = "权限管理", type = OperationTypeEnum.SEARCH, description = "管理员搜索权限")
-    @PreAuthorize("hasAuthority('system:permission:search')")
+    @PreAuthorize("@adminSecurity.isAdmin() and hasAuthority('system:permission:search')")
     @PostMapping("search")
     public Result search(@RequestBody @Valid SysPermissionDto sysPermissionDto) {
         List<SysPermissionVo> sysPermissionVos = sysPermissionService.search(sysPermissionDto);
@@ -120,7 +120,7 @@ public class SysPermissionController {
      * @return 权限分页列表
      */
     @OperationLog(module = "权限管理", type = OperationTypeEnum.SEARCH, description = "管理员分页搜索权限")
-    @PreAuthorize("hasAuthority('system:permission:search')")
+    @PreAuthorize("@adminSecurity.isAdmin() and hasAuthority('system:permission:search')")
     @PostMapping("page/search")
     public Result<PageVo<List<SysPermissionVo>>> searchPage(@RequestBody @Valid SysPermissionDto sysPermissionDto) {
         return Result.success(sysPermissionService.searchPage(sysPermissionDto));

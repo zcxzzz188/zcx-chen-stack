@@ -39,7 +39,7 @@ public class SysUserRoleController {
      * @return
      */
     @OperationLog(module = "用户角色管理", type = OperationTypeEnum.ASSIGN, description = "管理员给角色分配用户")
-    @PreAuthorize("hasAuthority('system:user:role:addUser')")
+    @PreAuthorize("@adminSecurity.isAdmin() and hasAuthority('system:user:role:addUser')")
     @PostMapping("addUser")
     public Result addUser(@RequestBody @Valid SysUserRoleDto sysUserRoleDto) {
         sysUserRoleService.addUser(sysUserRoleDto);
@@ -53,7 +53,7 @@ public class SysUserRoleController {
      * @return
      */
     @OperationLog(module = "用户角色管理", type = OperationTypeEnum.SELECT, description = "管理员获取拥有指定角色的用户列表")
-    @PreAuthorize("hasAuthority('system:user:role:getUsers')")
+    @PreAuthorize("@adminSecurity.isAdmin() and hasAuthority('system:user:role:getUsers')")
     @GetMapping("getUsers/{roleId}")
     public Result getUsers(@PathVariable @NotNull(message = "角色ID不能为空") Integer roleId) {
         List<SysUserVo> sysUserVos = sysUserRoleService.getUsers(roleId);
@@ -67,7 +67,7 @@ public class SysUserRoleController {
      * @return
      */
     @OperationLog(module = "用户角色管理", type = OperationTypeEnum.ASSIGN, description = "管理员给用户分配角色")
-    @PreAuthorize("hasAuthority('system:user:role:addRole')")
+    @PreAuthorize("@adminSecurity.isAdmin() and hasAuthority('system:user:role:addRole')")
     @PostMapping("addRole")
     public Result addRole(@RequestBody @Valid SysUserRoleDto sysUserRoleDto) {
         sysUserRoleService.addRole(sysUserRoleDto);
@@ -81,7 +81,7 @@ public class SysUserRoleController {
      * @return
      */
     @OperationLog(module = "用户角色管理", type = OperationTypeEnum.SELECT, description = "管理员获取用户拥有的角色列表")
-    @PreAuthorize("hasAuthority('system:user:role:getRoles')")
+    @PreAuthorize("@adminSecurity.isAdmin() and hasAuthority('system:user:role:getRoles')")
     @GetMapping("getRoles/{userId}")
     public Result getRoles(@PathVariable @NotNull(message = "用户ID不能为空") Integer userId) {
         List<SysRoleVo> sysRoleVos = sysUserRoleService.getRoles(userId);

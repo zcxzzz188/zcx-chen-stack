@@ -37,7 +37,7 @@ public class SysRolePermissionController {
      * @return
      */
     @OperationLog(module = "角色权限管理", type = OperationTypeEnum.ASSIGN, description = "管理员给角色分配权限")
-    @PreAuthorize("hasAuthority('system:role:permission:add')")
+    @PreAuthorize("@adminSecurity.isAdmin() and hasAuthority('system:role:permission:add')")
     @PostMapping("add")
     public Result add(@RequestBody @Valid SysRolePermissionDto sysRolePermissionDto) {
         sysRolePermissionService.add(sysRolePermissionDto);
@@ -51,7 +51,7 @@ public class SysRolePermissionController {
      * @return
      */
     @OperationLog(module = "角色权限管理", type = OperationTypeEnum.SELECT, description = "管理员获取拥有指定权限的角色列表")
-    @PreAuthorize("hasAuthority('system:role:permission:get')")
+    @PreAuthorize("@adminSecurity.isAdmin() and hasAuthority('system:role:permission:get')")
     @GetMapping("{permissionId}")
     public Result getRoles(@PathVariable @NotNull(message = "权限ID不能为空") Integer permissionId) {
         List<SysRoleVo> sysRoleVos = sysRolePermissionService.getRoles(permissionId);
@@ -66,7 +66,7 @@ public class SysRolePermissionController {
      * @return
      */
     @OperationLog(module = "角色权限管理", type = OperationTypeEnum.ASSIGN, description = "管理员批量给角色分配权限")
-    @PreAuthorize("hasAuthority('system:role:permission:addBatch')")
+    @PreAuthorize("@adminSecurity.isAdmin() and hasAuthority('system:role:permission:addBatch')")
     @PostMapping("addBatch")
     public Result addBatch(@RequestBody @Valid SysRolePermissionDto sysRolePermissionDto) {
         sysRolePermissionService.addBatch(sysRolePermissionDto);
