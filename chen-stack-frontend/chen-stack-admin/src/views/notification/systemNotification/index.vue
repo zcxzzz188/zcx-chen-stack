@@ -17,7 +17,15 @@
 
     <!-- 批量操作按钮 -->
     <template #batch-actions>
-      <BatchActions :selectedCount="selectedMessages.length" :showBatchAudit="true" :showBatchDelete="true" @batchAudit="handleBatchRead" @batchDelete="handleBatchDelete" />
+      <el-button type="primary" plain round :icon="Check" :disabled="selectedMessages.length === 0" :loading="batchReadLoading" @click="handleBatchRead">
+        全部已读 ({{ selectedMessages.length }})
+      </el-button>
+      <el-button type="warning" plain round :icon="RefreshLeft" :disabled="selectedMessages.length === 0" :loading="batchUnreadLoading" @click="handleBatchUnread">
+        全部未读 ({{ selectedMessages.length }})
+      </el-button>
+      <el-button type="danger" plain round :icon="Delete" :disabled="selectedMessages.length === 0" :loading="batchDeleteLoading" @click="handleBatchDelete">
+        全部删除 ({{ selectedMessages.length }})
+      </el-button>
     </template>
 
     <!-- 桌面端表格视图 -->
@@ -28,11 +36,11 @@
         showSelection
         showId
         :hasEditAction="false"
+        :hasViewAction="true"
         :hasDeleteAction="true"
-        :hasAuditAction="true"
         actionsWidth="180"
         @selectionChange="handleSelectionChange"
-        @audit="handleRead"
+        @view="handleView"
         @delete="handleDelete"
       >
         <!-- 发送者ID列 -->
@@ -72,10 +80,10 @@
         showSelection
         showId
         showMeta
-        :hasAuditAction="true"
+        :hasViewAction="true"
         :hasDeleteAction="true"
         @select="handleMobileSelect"
-        @audit="handleRead"
+        @view="handleView"
         @delete="handleDelete"
       >
         <!-- 自定义卡片内容 -->
@@ -92,22 +100,35 @@
           </div>
           <div class="mobile-content">{{ getMessageContent(item) }}</div>
           <el-tag :type="item.isRead === 0 ? 'warning' : 'info'" size="small">{{ item.isRead === 0 ? '未读' : '已读' }}</el-tag>
-          <el-button v-if="item.isRead === 0" type="primary" link size="small" @click.stop="handleRead(item)"> 标记已读 </el-button>
         </template>
       </MobileCardList>
     </template>
   </ManagementCard>
+
+  <el-dialog v-model="detailVisible" title="通知详情" width="640px">
+    <el-descriptions :column="1" border>
+      <el-descriptions-item label="通知 ID">{{ currentMessage ? currentMessage.id : '-' }}</el-descriptions-item>
+      <el-descriptions-item label="发送者 ID">{{ currentMessage ? currentMessage.senderId : '-' }}</el-descriptions-item>
+      <el-descriptions-item label="接收者 ID">{{ currentMessage ? currentMessage.receiverId : '-' }}</el-descriptions-item>
+      <el-descriptions-item label="消息内容">
+        <div class="detail-message-content">{{ currentMessage ? getMessageContent(currentMessage) : '-' }}</div>
+      </el-descriptions-item>
+      <el-descriptions-item label="状态">{{ currentMessage ? (currentMessage.isRead === 0 ? '未读' : '已读') : '-' }}</el-descriptions-item>
+      <el-descriptions-item label="创建时间">{{ currentMessage ? currentMessage.createTime : '-' }}</el-descriptions-item>
+    </el-descriptions>
+  </el-dialog>
 </template>
 
 <script setup>
-import { ref, reactive, computed, onMounted } from 'vue'
-import { getMessagePage, readAdminMessages, deleteAdminMessages } from '@/api/message'
+import { ref, computed, onMounted } from 'vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { Check, Delete, RefreshLeft } from '@element-plus/icons-vue'
+import { getMessagePage, readAdminMessages, unreadAdminMessages, deleteAdminMessages } from '@/api/message'
 
 // 组件
 import ManagementCard from '@/components/management/ManagementCard.vue'
 import DataTable from '@/components/data/DataTable.vue'
 import MobileCardList from '@/components/data/MobileCardList.vue'
-import BatchActions from '@/components/actions/BatchActions.vue'
 import ExamineStatusSelect from '@/components/search/ExamineStatusSelect.vue'
 import SearchButtons from '@/components/search/SearchButtons.vue'
 
@@ -135,7 +156,10 @@ const selectedMessages = ref([])
 
 // 批量操作加载状态
 const batchReadLoading = ref(false)
+const batchUnreadLoading = ref(false)
 const batchDeleteLoading = ref(false)
+const detailVisible = ref(false)
+const currentMessage = ref(null)
 
 // 解析消息内容（兼容 JSON 和纯文本）
 const getMessageContent = (row) => {
@@ -212,12 +236,19 @@ const handleMobileSelect = (message) => {
   }
 }
 
-// 标记单条消息已读
-const handleRead = async (row) => {
+// 查看通知详情
+const handleView = async (row) => {
+  currentMessage.value = { ...row }
+  detailVisible.value = true
+
   if (row.isRead === 1) return
+
   try {
     await readAdminMessages([row.id])
-    ElMessage.success('标记已读成功')
+    currentMessage.value = {
+      ...currentMessage.value,
+      isRead: 1,
+    }
     await fetchMessages()
   } catch {
     ElMessage.error('标记已读失败')
@@ -237,16 +268,46 @@ const handleBatchRead = async () => {
       try {
         const messageIds = selectedMessages.value.filter((m) => m.isRead === 0).map((m) => m.id)
         if (messageIds.length === 0) {
-          ElMessage.info('所选消息均已读')
+          ElMessage.info('所选通知均已读')
           return
         }
         await readAdminMessages(messageIds)
-        ElMessage.success('批量标记已读成功')
+        ElMessage.success('全部已读成功')
         await fetchMessages()
       } catch {
-        ElMessage.error('批量标记已读失败')
+        ElMessage.error('标记已读失败')
       } finally {
         batchReadLoading.value = false
+      }
+    })
+    .catch(() => {
+      ElMessage.info('操作已取消')
+    })
+}
+
+// 批量标记未读
+const handleBatchUnread = async () => {
+  if (selectedMessages.value.length === 0) return
+  ElMessageBox.confirm(`确定要将选中的 ${selectedMessages.value.length} 条消息标记为未读吗？`, '提示', {
+    confirmButtonText: '确定',
+    cancelButtonText: '取消',
+    type: 'warning',
+  })
+    .then(async () => {
+      batchUnreadLoading.value = true
+      try {
+        const messageIds = selectedMessages.value.filter((m) => m.isRead === 1).map((m) => m.id)
+        if (messageIds.length === 0) {
+          ElMessage.info('所选通知均为未读')
+          return
+        }
+        await unreadAdminMessages(messageIds)
+        ElMessage.success('全部未读成功')
+        await fetchMessages()
+      } catch {
+        ElMessage.error('标记未读失败')
+      } finally {
+        batchUnreadLoading.value = false
       }
     })
     .catch(() => {
@@ -276,7 +337,8 @@ const handleDelete = (row) => {
 }
 
 // 批量删除
-const handleBatchDelete = () => {
+const handleBatchDelete = async () => {
+  if (selectedMessages.value.length === 0) return
   ElMessageBox.confirm(`确定要删除选中的 ${selectedMessages.value.length} 条消息吗？`, '警告', {
     confirmButtonText: '确定',
     cancelButtonText: '取消',
@@ -285,12 +347,12 @@ const handleBatchDelete = () => {
     .then(async () => {
       batchDeleteLoading.value = true
       try {
-        const messageIds = selectedMessages.value.map((m) => m.id)
+        const messageIds = selectedMessages.value.map((message) => message.id)
         await deleteAdminMessages(messageIds)
-        ElMessage.success('批量删除成功')
+        ElMessage.success('全部删除成功')
         await fetchMessages()
       } catch {
-        ElMessage.error('批量删除失败')
+        ElMessage.error('删除失败')
       } finally {
         batchDeleteLoading.value = false
       }
@@ -366,6 +428,12 @@ onMounted(() => {
   -webkit-line-clamp: 2;
   line-clamp: 2;
   -webkit-box-orient: vertical;
+}
+
+.detail-message-content {
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text-regular);
 }
 
 // 响应式

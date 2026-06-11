@@ -38,6 +38,9 @@ public interface MessageService extends IService<Message> {
     // 管理员读取消息
     void readAdminMessages(List<Integer> messageIds);
 
+    // 管理员标记消息为未读
+    void unreadAdminMessages(List<Integer> messageIds);
+
     // 管理员删除消息
     void deleteAdminMessages(List<Integer> messageIds);
 

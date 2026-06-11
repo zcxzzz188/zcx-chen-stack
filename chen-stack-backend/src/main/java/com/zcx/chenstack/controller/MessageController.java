@@ -92,6 +92,20 @@ public class MessageController {
     }
 
     /**
+     * 管理员将消息标记为未读/批量标记为未读
+     *
+     * @param messageIds
+     * @return
+     */
+    @OperationLog(module = "消息管理", operation = "未读", type = OperationTypeEnum.OTHER, description = "管理员将消息标记为未读")
+    @PreAuthorize("hasAuthority('message:unread')")
+    @PutMapping("/admin/unread")
+    public Result unreadAdminMessage(@RequestBody @NotNull(message = "消息ID列表不能为空") List<Integer> messageIds) {
+        messageService.unreadAdminMessages(messageIds);
+        return Result.success();
+    }
+
+    /**
      * 管理员删除消息/批量删除消息
      *
      * @param messageIds

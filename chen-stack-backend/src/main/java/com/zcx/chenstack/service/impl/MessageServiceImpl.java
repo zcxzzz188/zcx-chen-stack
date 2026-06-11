@@ -13,24 +13,27 @@ import com.zcx.chenstack.domain.dto.MessageDto;
 import com.zcx.chenstack.domain.dto.NotificationContentDto;
 import com.zcx.chenstack.domain.dto.WebSocketMessage;
 import com.zcx.chenstack.domain.entity.Message;
+import com.zcx.chenstack.domain.entity.SysRole;
 import com.zcx.chenstack.domain.entity.SysUser;
+import com.zcx.chenstack.domain.entity.SysUserRole;
 import com.zcx.chenstack.domain.enums.MessageTypeEnum;
 import com.zcx.chenstack.domain.enums.WebSocketMessageTypeEnum;
 import com.zcx.chenstack.domain.vo.MessageVo;
 import com.zcx.chenstack.domain.vo.PageVo;
 import com.zcx.chenstack.exception.BlogException;
 import com.zcx.chenstack.mapper.MessageMapper;
+import com.zcx.chenstack.mapper.SysRoleMapper;
 import com.zcx.chenstack.mapper.SysUserMapper;
+import com.zcx.chenstack.mapper.SysUserRoleMapper;
 import com.zcx.chenstack.service.MessageService;
 import com.zcx.chenstack.utils.SecurityUtils;
 import com.zcx.chenstack.websocket.WebSocketSessionManager;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 
 /**
  * <p>
@@ -49,6 +52,12 @@ public class MessageServiceImpl extends ServiceImpl<MessageMapper, Message> impl
 
     @Resource
     private SysUserMapper sysUserMapper;
+
+    @Resource
+    private SysRoleMapper sysRoleMapper;
+
+    @Resource
+    private SysUserRoleMapper sysUserRoleMapper;
 
     @Resource
     private WebSocketSessionManager webSocketSessionManager;
@@ -101,31 +110,68 @@ public class MessageServiceImpl extends ServiceImpl<MessageMapper, Message> impl
 
     // 发送给管理员
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public void sendToAdmin(MessageDto messageDto) {
-        Message message = BeanUtil.copyProperties(messageDto, Message.class);
-        message.setSenderId(1);
-        message.setReceiverId(1);
-        int save = messageMapper.insert(message);
-        if (save <= 0) {
-            throw new BlogException(BlogConstants.SaveMessageError);
+        List<SysRole> adminRoles = sysRoleMapper.selectList(new LambdaQueryWrapper<SysRole>()
+                .in(SysRole::getRole, List.of("admin", "content_admin")));
+        if (ObjectUtil.isEmpty(adminRoles)) {
+            return;
         }
 
+        List<Integer> roleIds = adminRoles.stream()
+                .map(SysRole::getId)
+                .filter(Objects::nonNull)
+                .toList();
+        if (ObjectUtil.isEmpty(roleIds)) {
+            return;
+        }
+
+        List<SysUserRole> adminUserRoles = sysUserRoleMapper.selectList(new LambdaQueryWrapper<SysUserRole>()
+                .in(SysUserRole::getRoleId, roleIds));
+        if (ObjectUtil.isEmpty(adminUserRoles)) {
+            return;
+        }
+
+        List<Message> adminMessages = adminUserRoles.stream()
+                .map(SysUserRole::getUserId)
+                .filter(Objects::nonNull)
+                .distinct()
+                .map(userId -> {
+                    Message message = BeanUtil.copyProperties(messageDto, Message.class);
+                    message.setSenderId(1);
+                    message.setReceiverId(userId);
+                    return message;
+                })
+                .toList();
+
+        if (ObjectUtil.isEmpty(adminMessages)) {
+            return;
+        }
+
+        boolean success = this.saveBatch(adminMessages);
+        if (!success) {
+            throw new BlogException(BlogConstants.SaveMessageError);
+        }
     }
 
     // 统计管理员未读消息数量（仅 type=0 系统通知）
     @Override
     public Integer getAdminMessagesCount() {
+        Integer currentUserId = SecurityUtils.getUserId();
         Long count = messageMapper.selectCount(new LambdaQueryWrapper<Message>()
+                .eq(Message::getReceiverId, currentUserId)
                 .eq(Message::getIsRead, 0)
-                .eq(Message::getType, 0));
+                .eq(Message::getType, MessageTypeEnum.SYSTEM.getCode()));
         return count.intValue();
     }
 
     // 获取管理员消息列表（仅 type=0 系统通知，用于 Bell 下拉，全量返回）
     @Override
     public List<MessageVo> getAdminMessages() {
+        Integer currentUserId = SecurityUtils.getUserId();
         LambdaQueryWrapper<Message> wrapper = new LambdaQueryWrapper<Message>()
-                .eq(Message::getType, 0)
+                .eq(Message::getReceiverId, currentUserId)
+                .eq(Message::getType, MessageTypeEnum.SYSTEM.getCode())
                 .orderByDesc(Message::getCreateTime)
                 .last("LIMIT 20");
         List<Message> messages = this.list(wrapper);
@@ -138,8 +184,10 @@ public class MessageServiceImpl extends ServiceImpl<MessageMapper, Message> impl
     // 获取管理员消息列表（仅 type=0 系统通知，分页返回）
     @Override
     public PageVo<List<MessageVo>> getAdminMessagesPage(Integer pageNum, Integer pageSize, Integer isRead, String startTime, String endTime) {
+        Integer currentUserId = SecurityUtils.getUserId();
         LambdaQueryWrapper<Message> wrapper = new LambdaQueryWrapper<Message>()
-                .eq(Message::getType, 0)
+                .eq(Message::getReceiverId, currentUserId)
+                .eq(Message::getType, MessageTypeEnum.SYSTEM.getCode())
                 .eq(isRead != null, Message::getIsRead, isRead)
                 .ge(startTime != null, Message::getCreateTime, startTime)
                 .le(endTime != null, Message::getCreateTime, endTime)
@@ -160,10 +208,32 @@ public class MessageServiceImpl extends ServiceImpl<MessageMapper, Message> impl
             return;
         }
 
+        Integer currentUserId = SecurityUtils.getUserId();
+
         // 批量更新消息状态为已读
         LambdaUpdateWrapper<Message> updateWrapper = new LambdaUpdateWrapper<>();
         updateWrapper.in(Message::getId, messageIds)
+                .eq(Message::getReceiverId, currentUserId)
+                .eq(Message::getType, MessageTypeEnum.SYSTEM.getCode())
                 .set(Message::getIsRead, 1);
+
+        messageMapper.update(null, updateWrapper);
+    }
+
+    // 管理员标记消息为未读
+    @Override
+    public void unreadAdminMessages(List<Integer> messageIds) {
+        if (ObjectUtil.isEmpty(messageIds)) {
+            return;
+        }
+
+        Integer currentUserId = SecurityUtils.getUserId();
+
+        LambdaUpdateWrapper<Message> updateWrapper = new LambdaUpdateWrapper<>();
+        updateWrapper.in(Message::getId, messageIds)
+                .eq(Message::getReceiverId, currentUserId)
+                .eq(Message::getType, MessageTypeEnum.SYSTEM.getCode())
+                .set(Message::getIsRead, 0);
 
         messageMapper.update(null, updateWrapper);
     }
@@ -174,7 +244,14 @@ public class MessageServiceImpl extends ServiceImpl<MessageMapper, Message> impl
         if (ObjectUtil.isEmpty(messageIds)) {
             return;
         }
-        int delete = messageMapper.deleteBatchIds(messageIds);
+
+        Integer currentUserId = SecurityUtils.getUserId();
+
+        LambdaQueryWrapper<Message> queryWrapper = new LambdaQueryWrapper<Message>()
+                .in(Message::getId, messageIds)
+                .eq(Message::getReceiverId, currentUserId)
+                .eq(Message::getType, MessageTypeEnum.SYSTEM.getCode());
+        int delete = messageMapper.delete(queryWrapper);
         if (delete <= 0) {
             throw new BlogException(BlogConstants.DeleteMessageError);
         }

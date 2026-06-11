@@ -30,6 +30,7 @@ public class BlogConstants {
     public static final String ExistRoleMenu = "角色菜单已存在";
     public static final String ExistRolePermission = "角色权限已存在";
     public static final String ExistUserRole = "用户角色已存在";
+    public static final String SuperAdminMustBeUnique = "超级管理员必须且只能保留一个账号";
 
     public static final String NotFoundPhoto = "照片不存在";
     public static final String ExamineStatusError = "审核状态错误";

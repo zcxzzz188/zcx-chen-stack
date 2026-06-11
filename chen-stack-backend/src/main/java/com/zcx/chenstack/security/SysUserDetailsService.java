@@ -94,8 +94,8 @@ public class SysUserDetailsService implements UserDetailsService {
             throw new BlogException(BlogConstants.NotFoundRole);
         }
 
-        // 如果用户是管理员或者查看者，则组装用户信息并返回
-        if (sysRoles.stream().anyMatch(r -> r.getRole().equals("admin") || r.getRole().equals("viewer"))) {
+        // 如果用户是管理员或者内容管理员，则组装用户信息并返回
+        if (sysRoles.stream().anyMatch(r -> r.getRole().equals("admin") || r.getRole().equals("content_admin"))) {
             LoginUser loginUser = new LoginUser(setUserDetail(sysUser));
             return loginUser;
         }
@@ -124,7 +124,7 @@ public class SysUserDetailsService implements UserDetailsService {
 
         List<Integer> roleIds = sysRoles.stream().map(SysRole::getId).collect(Collectors.toList());
         boolean hasBackendRole = sysRoles.stream()
-                .anyMatch(role -> "admin".equals(role.getRole()) || "viewer".equals(role.getRole()));
+                .anyMatch(role -> "admin".equals(role.getRole()) || "content_admin".equals(role.getRole()));
 
         // 查询角色对应的菜单
         LambdaQueryWrapper<SysRoleMenu> queryWrapper2 = new LambdaQueryWrapper<>();

@@ -50,7 +50,7 @@
         <el-table-column prop="operatorRole" label="角色" width="80">
           <template #default="{ row }">
             <div class="role-type" :class="getRoleTypeClass(row.operatorRole)">
-              {{ row.operatorRole === 'admin' ? '管理员' : '查看者' }}
+              {{ row.operatorRole === 'admin' ? '超级管理员' : '内容管理员' }}
             </div>
           </template>
         </el-table-column>
@@ -140,7 +140,7 @@
               <span class="value">{{ item.operatorName || '未知' }}</span>
             </span>
             <div class="role-type" :class="getRoleTypeClass(item.operatorRole)">
-              {{ item.operatorRole === 'admin' ? '管理员' : '查看者' }}
+              {{ item.operatorRole === 'admin' ? '超级管理员' : '内容管理员' }}
             </div>
             <div class="log-status" :class="getStatusClass(item.status)">
               {{ getStatusText(item.status) }}
@@ -166,7 +166,7 @@
         <el-descriptions-item label="操作人员">{{ detailData.operatorName || '-' }} (ID: {{ detailData.operatorId }})</el-descriptions-item>
         <el-descriptions-item label="操作角色">
           <el-tag :type="detailData.operatorRole === 'admin' ? 'danger' : 'info'" size="small">
-            {{ detailData.operatorRole === 'admin' ? '管理员' : '查看者' }}
+            {{ detailData.operatorRole === 'admin' ? '超级管理员' : '内容管理员' }}
           </el-tag>
         </el-descriptions-item>
         <el-descriptions-item label="功能模块">{{ detailData.module || '-' }}</el-descriptions-item>
@@ -240,8 +240,8 @@ const searchForm = reactive({
 
 // 操作角色选项
 const operatorRoleOptions = [
-  { label: '管理员', value: 'admin' },
-  { label: '查看者', value: 'viewer' },
+  { label: '超级管理员', value: 'admin' },
+  { label: '内容管理员', value: 'content_admin' },
 ]
 
 // 操作状态选项
@@ -285,7 +285,7 @@ const detailData = ref(null)
 // 获取角色类型样式类
 const getRoleTypeClass = (role) => {
   if (role === 'admin') return 'role-admin'
-  if (role === 'viewer') return 'role-viewer'
+  if (role === 'content_admin') return 'role-content-admin'
   return ''
 }
 
@@ -570,7 +570,7 @@ onMounted(() => {
     color: var(--el-color-danger);
   }
 
-  &.role-viewer {
+  &.role-content-admin {
     background-color: var(--el-color-primary-light-9);
     color: var(--el-color-primary);
   }

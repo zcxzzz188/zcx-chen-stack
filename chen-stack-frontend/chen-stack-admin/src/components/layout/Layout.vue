@@ -105,30 +105,33 @@
               <el-icon class="message-icon"><Bell /></el-icon>
             </el-badge>
             <!-- 自定义消息下拉框 -->
-            <div v-if="isMessageDropdownVisible" class="custom-message-dropdown" ref="messageDropdownRef">
+            <div v-if="isMessageDropdownVisible" class="custom-message-dropdown" ref="messageDropdownRef" @click.stop>
               <div class="message-header">
                 <span class="message-title">消息通知</span>
                 <el-button v-if="hasUnreadMessages" size="small" plain type="success" @click="markAllAsRead">全部标为已读</el-button>
-                <el-button size="small" plain type="danger" @click="deleteAllMessages">全部删除</el-button>
               </div>
               <div class="message-list" ref="messageListRef">
                 <div v-if="messages.length === 0" class="no-message">
                   <el-icon><Message /></el-icon>
                   <span>暂无消息</span>
                 </div>
-                <div v-for="message in messages" :key="message.id" :data-id="message.id" class="message-item" :class="{ unread: !message.isRead }">
+                <div
+                  v-for="message in messages"
+                  :key="message.id"
+                  :data-id="message.id"
+                  class="message-item"
+                  :class="{ unread: !message.isRead }"
+                  @click="handleMessageClick(message)"
+                >
                   <div class="message-content">
                     <h4 class="message-title">{{ message.title }}</h4>
                     <p class="message-desc">{{ message.content }}</p>
                     <p class="message-time">{{ formatTime(message.createTime) }}</p>
                   </div>
                   <div class="message-actions">
-                    <el-button v-if="!message.isRead" class="read-button" @click.stop="markAsRead(message.id)">
-                      <el-icon><Check /></el-icon> 已读
-                    </el-button>
-                    <el-button class="delete-button" @click.stop="deleteMessage(message.id)">
-                      <el-icon><Delete /></el-icon> 删除
-                    </el-button>
+                    <el-tag :type="message.isRead ? 'success' : 'warning'" size="small">
+                      {{ message.isRead ? '已读' : '未读' }}
+                    </el-tag>
                   </div>
                 </div>
               </div>
@@ -153,6 +156,24 @@
       </el-main>
     </el-container>
   </el-container>
+
+  <el-dialog v-model="detailVisible" title="通知详情" width="640px">
+    <el-descriptions :column="1" border>
+      <el-descriptions-item label="通知 ID">{{ currentMessage ? currentMessage.id : '-' }}</el-descriptions-item>
+      <el-descriptions-item label="发送者 ID">{{ currentMessage ? currentMessage.senderId : '-' }}</el-descriptions-item>
+      <el-descriptions-item label="接收者 ID">{{ currentMessage ? currentMessage.receiverId : '-' }}</el-descriptions-item>
+      <el-descriptions-item label="消息标题">{{ currentMessage ? currentMessage.title : '-' }}</el-descriptions-item>
+      <el-descriptions-item label="消息内容">
+        <div class="detail-message-content">{{ currentMessage ? currentMessage.content : '-' }}</div>
+      </el-descriptions-item>
+      <el-descriptions-item label="状态">
+        <el-tag :type="currentMessage && currentMessage.isRead ? 'success' : 'warning'" size="small">
+          {{ currentMessage ? (currentMessage.isRead ? '已读' : '未读') : '-' }}
+        </el-tag>
+      </el-descriptions-item>
+      <el-descriptions-item label="创建时间">{{ currentMessage ? formatTime(currentMessage.createTime) : '-' }}</el-descriptions-item>
+    </el-descriptions>
+  </el-dialog>
 </template>
 
 <script setup>
@@ -179,8 +200,8 @@ import { useRouter } from 'vue-router'
 import { useUserStore } from '@/stores/userStore'
 import { ElMessage } from 'element-plus'
 import Dark from '@/components/common/Dark.vue'
-import { getMessagesCount, getMessageList, readAdminMessages, deleteAdminMessages } from '@/api/message'
-import { Bell, Message, Delete, User, Check } from '@element-plus/icons-vue'
+import { getMessagesCount, getMessageList, readAdminMessages } from '@/api/message'
+import { Bell, Message, User } from '@element-plus/icons-vue'
 import { formatTime } from '@/utils/FormatTime'
 import { onUnmounted } from 'vue'
 
@@ -196,6 +217,37 @@ const hasUnreadMessages = computed(() => messages.value.some((msg) => !msg.isRea
 const messageListRef = ref(null)
 const isMessageDropdownVisible = ref(false)
 const messageDropdownRef = ref(null)
+const detailVisible = ref(false)
+const currentMessage = ref(null)
+
+const parseMessageData = (msg) => {
+  let contentObj = {}
+  try {
+    contentObj = JSON.parse(msg.content)
+  } catch (error) {
+    contentObj = {}
+  }
+
+  return {
+    ...msg,
+    isRead: msg.isRead === 1 || msg.isRead === true,
+    title: contentObj.title || msg.title || '系统通知',
+    content: contentObj.text || msg.content,
+  }
+}
+
+const markMessageAsReadLocally = (messageId) => {
+  const targetMessage = messages.value.find((msg) => msg.id === messageId)
+  if (targetMessage) {
+    targetMessage.isRead = true
+  }
+  if (currentMessage.value?.id === messageId) {
+    currentMessage.value = {
+      ...currentMessage.value,
+      isRead: true,
+    }
+  }
+}
 
 // 获取未读消息数量
 const fetchUnreadCount = async () => {
@@ -212,20 +264,7 @@ const fetchUnreadCount = async () => {
 const fetchMessages = async () => {
   try {
     const res = await getMessageList()
-    messages.value = res.data.map((msg) => {
-      // 解析content字段（JSON字符串）
-      let contentObj = {}
-      try {
-        contentObj = JSON.parse(msg.content)
-      } catch (e) {
-        console.error('解析消息内容失败:', e)
-      }
-      return {
-        ...msg,
-        isRead: msg.isRead === 1,
-        content: contentObj.text || msg.content,
-      }
-    })
+    messages.value = res.data.map((msg) => parseMessageData(msg))
   } catch (error) {
     ElMessage.error('获取消息列表失败')
     console.error('获取消息列表失败:', error)
@@ -260,23 +299,6 @@ onUnmounted(() => {
   document.removeEventListener('click', closeMessageDropdown)
 })
 
-// 标记单条消息为已读
-const markAsRead = async (messageId) => {
-  try {
-    // 确保messageId是整型
-    const numericMessageId = parseInt(messageId, 10)
-    await readAdminMessages([numericMessageId])
-    // 刷新消息列表
-    await fetchMessages()
-    // 更新未读数量
-    await fetchUnreadCount()
-    ElMessage.success('消息已标记为已读')
-  } catch (error) {
-    ElMessage.error('标记消息为已读失败')
-    console.error('标记消息为已读失败:', error)
-  }
-}
-
 // 标记所有消息为已读
 const markAllAsRead = async () => {
   const unreadMessageIds = messages.value.filter((msg) => !msg.isRead).map(({ id }) => id)
@@ -297,39 +319,22 @@ const markAllAsRead = async () => {
   }
 }
 
-// 删除消息
-const deleteMessage = async (messageId) => {
-  try {
-    const numericMessageId = Number(messageId)
-    await deleteAdminMessages([numericMessageId])
-    // 刷新消息列表
-    await fetchMessages()
-    // 更新未读数量
-    await fetchUnreadCount()
-    ElMessage.success('消息删除成功')
-  } catch (error) {
-    ElMessage.error('消息删除失败')
-    console.error('消息删除失败:', error)
-  }
-}
+// 点击通知查看详情
+const handleMessageClick = async (message) => {
+  currentMessage.value = { ...message }
+  detailVisible.value = true
 
-// 删除所有消息
-const deleteAllMessages = async () => {
-  if (messages.value.length === 0) {
-    ElMessage.success('暂无消息可删除')
+  if (message.isRead) {
     return
   }
+
   try {
-    const allMessageIds = messages.value.map(({ id }) => id)
-    await deleteAdminMessages(allMessageIds)
-    // 刷新消息列表
-    await fetchMessages()
-    // 更新未读数量
+    await readAdminMessages([message.id])
+    markMessageAsReadLocally(message.id)
     await fetchUnreadCount()
-    ElMessage.success('已删除所有消息')
   } catch (error) {
-    ElMessage.error('删除所有消息失败')
-    console.error('删除所有消息失败:', error)
+    ElMessage.error('标记已读失败')
+    console.error('标记已读失败:', error)
   }
 }
 
@@ -719,36 +724,8 @@ const handleLogout = () => {
                 // 消息操作按钮
                 .message-actions {
                   display: flex;
-                  flex-direction: column;
                   align-items: center;
-                  gap: 6px;
-                  .el-button {
-                    min-width: auto;
-                    padding: 0 8px;
-                    height: 24px;
-                    line-height: 24px;
-                    font-size: 12px;
-                    border-radius: 4px;
-                    .el-icon {
-                      font-size: 14px;
-                      margin-right: 2px;
-                    }
-                  }
-                  .read-button {
-                    color: var(--admin-primary-dark);
-                    border-color: var(--admin-primary-dark);
-                    &:hover {
-                      background-color: var(--admin-primary-light);
-                    }
-                  }
-                  .delete-button {
-                    color: var(--admin-danger);
-                    border-color: var(--admin-danger);
-                    margin-left: 0;
-                    &:hover {
-                      background-color: var(--action-delete-hover-bg);
-                    }
-                  }
+                  margin-left: 8px;
                 }
               }
             }
@@ -902,5 +879,11 @@ const handleLogout = () => {
       opacity: 1;
     }
   }
+}
+
+.detail-message-content {
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text-regular);
 }
 </style>

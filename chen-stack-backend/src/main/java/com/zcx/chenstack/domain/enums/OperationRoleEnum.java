@@ -20,9 +20,9 @@ public enum OperationRoleEnum {
     ADMIN("admin", "超级管理员"),
 
     /**
-     * 查看者
+     * 内容管理员
      */
-    VIEWER("viewer", "查看者");
+    CONTENT_ADMIN("content_admin", "内容管理员");
 
     private final String role;
     private final String description;

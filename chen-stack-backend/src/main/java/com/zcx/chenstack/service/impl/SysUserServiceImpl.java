@@ -520,7 +520,7 @@ public class SysUserServiceImpl extends ServiceImpl<SysUserMapper, SysUser> impl
             }
             List<SysRole> sysRoles = loginUser.getSysUser().getSysRoles();
 
-            if (sysRoles == null || sysRoles.stream().noneMatch(r -> r.getRole().equals("admin") || r.getRole().equals("viewer"))) {
+            if (sysRoles == null || sysRoles.stream().noneMatch(r -> r.getRole().equals("admin") || r.getRole().equals("content_admin"))) {
                 throw new BlogException(BlogConstants.NotAdminAccount); // 不是管理后台账户
             }
             recordLoginSuccess(loginUser.getSysUser(), RegisterOrLoginTypeEnum.EMAIL.getCode());
@@ -584,7 +584,7 @@ public class SysUserServiceImpl extends ServiceImpl<SysUserMapper, SysUser> impl
 
         List<SysRole> sysRoles = user.getSysRoles();
 
-        if (sysRoles.stream().noneMatch(r -> r.getRole().equals("admin") || r.getRole().equals("viewer"))) {
+        if (sysRoles.stream().noneMatch(r -> r.getRole().equals("admin") || r.getRole().equals("content_admin"))) {
             throw new BlogException(BlogConstants.NotAdminAccount); // 不是管理员账户
         }
 

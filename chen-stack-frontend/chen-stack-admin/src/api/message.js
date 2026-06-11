@@ -34,6 +34,15 @@ export function readAdminMessages(data) {
   })
 }
 
+// 管理员将消息标记为未读/批量标记为未读
+export function unreadAdminMessages(data) {
+  return request({
+    url: '/message/admin/unread',
+    method: 'put',
+    data,
+  })
+}
+
 // 管理员删除消息/批量删除消息
 export function deleteAdminMessages(data) {
   return request({

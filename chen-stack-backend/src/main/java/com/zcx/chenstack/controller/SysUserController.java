@@ -263,8 +263,8 @@ public class SysUserController {
      *
      * @return
      */
-    @OperationLog(module = "用户管理", type = OperationTypeEnum.SELECT, description = "管理员获取用户列表（含文章数量）")
-    @PreAuthorize("hasAuthority('system:user:list')")
+    @OperationLog(module = "文章管理", type = OperationTypeEnum.SELECT, description = "管理员获取用户列表（含文章数量）")
+    @PreAuthorize("hasAuthority('article:user:list')")
     @GetMapping("/admin/listWithArticleCount")
     public Result listUserWithArticleCount() {
         List<SysUserWithArticleCountVo> sysUserVos = sysUserService.listUserWithArticleCount();
@@ -276,8 +276,8 @@ public class SysUserController {
      *
      * @return
      */
-    @OperationLog(module = "用户管理", type = OperationTypeEnum.SELECT, description = "管理员获取用户列表（含评论数量）")
-    @PreAuthorize("hasAuthority('system:user:list')")
+    @OperationLog(module = "评论管理", type = OperationTypeEnum.SELECT, description = "管理员获取用户列表（含评论数量）")
+    @PreAuthorize("hasAuthority('comment:user:list')")
     @GetMapping("/admin/listWithCommentCount")
     public Result listUserWithCommentCount() {
         List<SysUserWithCommentCountVo> sysUserVos = sysUserService.listUserWithCommentCount();
@@ -289,8 +289,8 @@ public class SysUserController {
      *
      * @return
      */
-    @OperationLog(module = "用户管理", type = OperationTypeEnum.SELECT, description = "管理员获取用户列表（含专栏数量）")
-    @PreAuthorize("hasAuthority('system:user:list')")
+    @OperationLog(module = "专栏管理", type = OperationTypeEnum.SELECT, description = "管理员获取用户列表（含专栏数量）")
+    @PreAuthorize("hasAuthority('column:user:list')")
     @GetMapping("/admin/listWithColumnCount")
     public Result listUserWithColumnCount() {
         List<SysUserWithColumnCountVo> sysUserVos = sysUserService.listUserWithColumnCount();

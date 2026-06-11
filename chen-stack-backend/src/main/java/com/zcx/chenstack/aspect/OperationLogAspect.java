@@ -27,7 +27,7 @@ import java.util.Set;
 
 /**
  * 操作日志切面
- * 拦截带有 @OperationLog 注解的方法，记录 admin 和 viewer 角色的操作日志
+ * 拦截带有 @OperationLog 注解的方法，记录 admin 和 content_admin 角色的操作日志
  *
  * @author zcx
  * @since 2025-07-08
@@ -95,19 +95,19 @@ public class OperationLogAspect {
             return joinPoint.proceed();
         }
 
-        // 只记录 admin 和 viewer 角色的操作
-        boolean isAdminOrViewer;
+        // 只记录 admin 和 content_admin 角色的操作
+        boolean isAdminOrContentAdmin;
         try {
-            isAdminOrViewer = userRoles.stream()
+            isAdminOrContentAdmin = userRoles.stream()
                     .filter(com.zcx.chenstack.domain.entity.SysRole.class::isInstance)
                     .map(com.zcx.chenstack.domain.entity.SysRole.class::cast)
-                    .anyMatch(r -> "admin".equals(r.getRole()) || "viewer".equals(r.getRole()));
+                    .anyMatch(r -> "admin".equals(r.getRole()) || "content_admin".equals(r.getRole()));
         } catch (Exception e) {
             log.warn("判断当前用户角色失败，跳过操作日志记录，userId: {}", currentUser.getId(), e);
             return joinPoint.proceed();
         }
 
-        if (!isAdminOrViewer) {
+        if (!isAdminOrContentAdmin) {
             // 普通用户，不记录操作日志
             return joinPoint.proceed();
         }
@@ -118,7 +118,7 @@ public class OperationLogAspect {
             operatorRole = userRoles.stream()
                     .filter(com.zcx.chenstack.domain.entity.SysRole.class::isInstance)
                     .map(com.zcx.chenstack.domain.entity.SysRole.class::cast)
-                    .filter(r -> "admin".equals(r.getRole()) || "viewer".equals(r.getRole()))
+                    .filter(r -> "admin".equals(r.getRole()) || "content_admin".equals(r.getRole()))
                     .findFirst()
                     .map(r -> r.getRole())
                     .orElse("admin");
