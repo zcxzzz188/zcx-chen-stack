@@ -42,6 +42,8 @@ import java.util.Map;
 @Slf4j
 public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
+    private static final String REFRESH_TOKEN_HEADER = "X-Refresh-Token";
+
     @Resource
     private JwtUtils jwtUtils;
 
@@ -146,6 +148,9 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                 UsernamePasswordAuthenticationToken authenticationToken = new UsernamePasswordAuthenticationToken(
                         loginUser, null, loginUser.getAuthorities());
                 SecurityContextHolder.getContext().setAuthentication(authenticationToken);
+
+                String newToken = jwtUtils.createToken(id, false);
+                response.setHeader(REFRESH_TOKEN_HEADER, newToken);
             }
 
             return true;

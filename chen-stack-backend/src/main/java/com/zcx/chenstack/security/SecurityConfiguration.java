@@ -70,6 +70,7 @@ public class SecurityConfiguration {
         corsConfiguration.setAllowedMethods(Collections.singletonList("*"));
         corsConfiguration.setAllowedHeaders(Collections.singletonList("*"));
         corsConfiguration.setAllowedOrigins(chenStackConfig.getAllowOrigins());
+        corsConfiguration.setExposedHeaders(Collections.singletonList("X-Refresh-Token"));
 
         // 创建 CorsConfigurationSource对象
         UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();

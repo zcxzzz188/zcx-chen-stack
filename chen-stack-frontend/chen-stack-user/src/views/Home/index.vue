@@ -339,14 +339,6 @@ let htmlStyleSnapshot = null
 let lockedScrollY = 0
 let bodyScrollLocked = false
 
-// 社区统计数据
-const stats = ref({
-  articleCount: 0,
-  userCount: 0,
-  viewCount: 0,
-  authorCount: 0,
-})
-
 // 用于 StatsCard 组件的统计数据格式
 const statsList = ref([
   { value: 0, label: '文章总数' },
@@ -619,12 +611,6 @@ const loadCommunityStats = async () => {
   try {
     const res = await getCommunityStats()
     const data = res.data || {}
-    stats.value = {
-      articleCount: data.articleCount || 0,
-      userCount: data.userCount || 0,
-      viewCount: data.viewCount || 0,
-      authorCount: data.authorCount || 0,
-    }
     // 更新 statsList（用于 StatsCard 组件）
     statsList.value = [
       { value: data.articleCount || 0, label: '文章总数' },
@@ -632,44 +618,9 @@ const loadCommunityStats = async () => {
       { value: data.viewCount || 0, label: '总阅读量' },
       { value: data.authorCount || 0, label: '活跃作者' },
     ]
-    // 数据加载完成后，开始数字动画
-    setTimeout(() => {
-      animateNumber('articleCount', stats.value.articleCount)
-      animateNumber('userCount', stats.value.userCount)
-      animateNumber('viewCount', stats.value.viewCount)
-      animateNumber('authorCount', stats.value.authorCount)
-    }, 500)
   } catch (error) {
     // 静默处理
   }
-}
-
-// 数字动画 - 从 0 逐渐增加到目标值，显示整数
-const animateNumber = (key, target) => {
-  if (target <= 0) {
-    animatedStats.value[key] = 0
-    return
-  }
-
-  const duration = 2000 // 动画持续时间 2 秒
-  const frameRate = 16 // 约 60fps
-  const totalFrames = duration / frameRate
-  const increment = target / totalFrames
-  let current = 0
-  let frame = 0
-
-  const timer = setInterval(() => {
-    frame++
-    current += increment
-
-    if (frame >= totalFrames) {
-      current = target
-      clearInterval(timer)
-    }
-
-    // 使用 Math.floor 确保显示整数，不显示小数点
-    animatedStats.value[key] = Math.floor(current)
-  }, frameRate)
 }
 
 onMounted(async () => {

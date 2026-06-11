@@ -4,7 +4,7 @@ import axios from 'axios'
 // 引入router
 import router from '@/router/index.js'
 // 获取token
-import { GetJwt } from '@/utils/Auth.js'
+import { GetJwt, SetJwt } from '@/utils/Auth.js'
 // 引入ElMessage
 import { ElMessage } from 'element-plus'
 // 引入userStore
@@ -25,6 +25,13 @@ const request = axios.create({
 // 登录过期处理锁，防止多个请求同时 401 时弹出多个弹窗
 let isHandlingAuthError = false
 
+const saveRefreshedToken = (headers) => {
+  const refreshedToken = headers?.['x-refresh-token']
+  if (refreshedToken && String(refreshedToken).trim()) {
+    SetJwt(refreshedToken)
+  }
+}
+
 // 配置请求的拦截器
 request.interceptors.request.use(
   (config) => {
@@ -42,6 +49,7 @@ request.interceptors.request.use(
 // 配置响应拦截器
 request.interceptors.response.use(
   (response) => {
+    saveRefreshedToken(response.headers)
     let { code, msg } = response.data
     if (code == 200) {
       if (msg) {
@@ -55,6 +63,7 @@ request.interceptors.response.use(
     return Promise.reject(response.data)
   },
   (error) => {
+    saveRefreshedToken(error.response?.headers)
     if (error.response) {
       let { status, data } = error.response
       if (status === 401) {

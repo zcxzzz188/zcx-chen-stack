@@ -1,5 +1,5 @@
 import request from '@/utils/Request'
-import { GetJwt } from '@/utils/Auth'
+import { GetJwt, SetJwt } from '@/utils/Auth'
 
 // AI 提取文章摘要
 export function extractSummary(content) {
@@ -32,7 +32,13 @@ export function customerServiceChat(message, chatId) {
         Authorization: token,
       },
     },
-  )
+  ).then((response) => {
+    const refreshedToken = response.headers.get('X-Refresh-Token')
+    if (refreshedToken) {
+      SetJwt(refreshedToken)
+    }
+    return response
+  })
 }
 
 // 生成文章标题建议
