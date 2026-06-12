@@ -14,7 +14,7 @@ services:
       TZ: Asia/Shanghai
 
       # Spring Boot 配置
-      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE}
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-dev}
 
       # 数据库配置
       MYSQL_HOST: mysql
