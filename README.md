@@ -1,419 +1,596 @@
-<div align="center">
-  <h1>🚀 辰栈</h1>
-  <p>AI 辅助技术博客管理系统 | chenzhan</p>
+# 辰栈
 
-[![Java](https://img.shields.io/badge/Java-21-ED8B00?logo=openjdk)](https://www.java.com/)
-[![Spring Boot](https://img.shields.io/badge/Spring%20Boot-3.4.0-6DB33F?logo=springboot)](https://spring.io/projects/spring-boot)
-[![Vue](https://img.shields.io/badge/Vue-3.5.13-4FC08D?logo=vue.js)](https://vuejs.org/)
-[![Element Plus](https://img.shields.io/badge/Element%20Plus-2.10.2-409EFF?logo=element)](https://element-plus.org/)
+> AI 辅助技术博客管理系统
 
-  <p>
-    <a href="#项目概述">项目概述</a> •
-    <a href="#系统架构">系统架构</a> •
-    <a href="#技术架构">技术架构</a> •
-    <a href="#项目结构">项目结构</a> •
-    <a href="#功能特性">功能特性</a> •
-    <a href="#快速开始">快速开始</a> •
-    <a href="#部署指南">部署指南</a>
-  </p>
-</div>
+## 项目概述
 
----
+辰栈（zcx-chen-stack）是一套面向技术内容社区的前后端分离博客管理系统，由用户端、管理端和 Spring Boot 后端服务组成。
 
-<div align="center">
+系统围绕技术内容的生产、审核、发布、互动和运营管理展开，覆盖文章创作、专栏管理、评论回复、点赞收藏、用户关注、消息通知、实时私信和 AI 辅助创作等业务场景。同时提供独立的管理后台，用于处理内容审核、用户管理、角色权限、动态菜单和系统日志等运营工作。
 
-**说明**: 辰栈是一个基于 Spring Boot 3 + Vue 3 的 AI 辅助技术博客管理系统。
+后端基于 Spring Boot、Spring Security 和 MyBatis-Plus 构建，使用 MySQL 存储业务数据、Redis 管理缓存和调用状态、RabbitMQ 执行异步通知、MinIO 存储业务图片，并通过 WebSocket 支持私信和在线状态通信。
 
-</div>
+系统不仅实现了完整的博客业务流程，还针对权限缓存一致性、分页查询 N+1、动态路由同步、跨存储删除一致性、逻辑删除数据膨胀、AI 接口滥用和审核状态同步等实际开发问题进行了处理。
 
----
+## 系统组成
 
-## 📋 项目概述
+| 组成 | 说明 | 项目目录 |
+| --- | --- | --- |
+| 用户端 | 面向普通用户的内容浏览、创作与互动平台 | `chen-stack-frontend/chen-stack-user` |
+| 管理端 | 面向管理员的内容审核与系统管理平台 | `chen-stack-frontend/chen-stack-admin` |
+| 后端服务 | 提供认证、业务接口、缓存、消息、存储和定时任务 | `chen-stack-backend` |
 
-**辰栈（chenzhan）** 是一个功能完整的 **AI 辅助技术博客管理系统**，采用前后端分离架构设计。系统包含用户端展示界面和管理端后台系统，提供了从内容创作到用户交互的完整解决方案。
+## 功能特性
 
-## 🏛️ 系统架构
+### 用户端
 
-```
-      ┌─────────────────────────────────────────────────────────────────────────────────┐
-      │                              客户端层 (Client Layer)                             │
-      ├───────────────────────────────────────────┬─────────────────────────────────────┤
-      │                Web 用户端                  │             Web 管理端               │
-      │                (Vue 3)                   │             (Vue 3)                 │
-      │              localhost:7000              │           localhost:8000            │
-      └───────────────────────────────────────────┴─────────────────────────────────────┘
-                                            │
-                                            ▼
-      ┌─────────────────────────────────────────────────────────────────────────────────┐
-      │                              网关层 (Gateway Layer)                              │
-      │                          Nginx / Caddy 反向代理                                  │
-      └─────────────────────────────────────────────────────────────────────────────────┘
-                                            │
-                                            ▼
-      ┌──────────────────────────────────────────────────────────────────────────────┐
-      │                              接口层 (API Layer)  :5000                        │
-      │                       Spring Boot REST API (32个控制器)                       │
-      ├─────────────┬─────────────┬─────────────┬─────────────┬─────────────┬────────┤
-      │  用户系统    │  内容系统     │  社交系统    │  消息系统    │  AI 服务      │        │
-      │  /user      │  /article   │  /follow    │  /message   │  /ai        │        │
-      │             │  /column    │  /like      │  /ws        │             │        │
-      │  /auth      │  /comment   │  /favorite  │             │             │        │
-      └─────────────┴─────────────┴─────────────┴─────────────┴─────────────┴────────┘
-      ├─────────────┬─────────────┬─────────────┬─────────────────────────────────────┤
-      │  图片管理     │  系统管理   │             │                                     │
-      │  /photo     │  /admin     │             │                                     │
-      │             │  /system    │             │                                     │
-      └─────────────┴─────────────┴─────────────┴─────────────────────────────────────┘
-                                            │
-        ┌───────────────────────────────────┼───────────────────────────────────┐
-        │                                   │                                   │
-        ▼                                   ▼                                   ▼
-   ┌─────────────────────┐           ┌─────────────────────┐           ┌─────────────────────┐
-   │      数据层          │           │      缓存层          │           │     消息队列         │
-   │     MySQL 8.4       │           │     Redis 7.x       │           │    RabbitMQ 3.x     │
-   │    33个数据表        │            │  热榜/会话/令牌      │           │  异步/邮件/审核       │
-   └─────────────────────┘           └─────────────────────┘           └─────────────────────┘
+#### 账号与个人中心
 
-            ┌───────────────────────────────────┬───────────────────────────────────┐
-            │                                   │                                   │
-            ▼                                   ▼                                   ▼
-  ┌─────────────────────┐           ┌─────────────────────┐           ┌─────────────────────┐
-  │      对象存储        │           │      AI 能力         │           │     第三方服务        │
-  │      MinIO (S3)     │           │   DeepSeek API      │           │      邮件服务         │
-  │   图片/文件存储       │           │   摘要 / 客服        │           │   注册 / 密码重置      │
-  └─────────────────────┘           └─────────────────────┘           └─────────────────────┘
-```
+- 用户注册、登录和退出
+- 邮箱验证码校验
+- JWT 登录状态管理
+- 个人资料编辑
+- 头像上传与审核状态展示
+- 邮件通知开关配置
+- 用户主页与关注关系展示
 
-### ✨ 项目亮点
+#### 文章与专栏
 
-- 🎨 **现代化 UI**: 基于 Element Plus 的精美界面设计，支持暗黑模式
-- 🔒 **安全可靠**: Spring Security + JWT 认证，阿里云内容安全检测
-- ⚡ **高性能**: Redis 缓存 + RabbitMQ 异步处理
-- 🤖 **AI 赋能**: DeepSeek API 提供摘要、标题生成、标签推荐、评论回复建议与流式智能客服
-- 💬 **实时通信**: WebSocket 私信系统，支持消息撤回、已读状态、正在输入状态
-- 🔔 **通知中心**: 实时消息通知，点赞、评论、关注、收藏全面追踪
-- 🖥️ **双端支持**: Web 用户端 + Web 管理端
-- 🔧 **易于扩展**: 模块化架构，支持功能定制
+- 文章浏览和关键词搜索
+- 文章创作、编辑与发布
+- 草稿和审核状态管理
+- 文章封面及正文图片上传
+- 专栏创建、编辑和删除
+- 文章加入或移出专栏
+- 专栏及所属文章管理
 
-## 🛠️ 技术架构
+#### 社区互动
 
-<table>
-<tr>
-<td valign="top" width="50%">
+- 文章评论与评论回复
+- 文章和评论点赞
+- 文章收藏
+- 收藏夹创建与管理
+- 用户关注
+- 浏览历史记录
 
-### 🔧 后端技术栈
+#### 消息与私信
 
-| 技术 | 版本 | 说明 |
-|------|------|------|
-| **Spring Boot** | 3.4.0 | 基础框架 |
-| **Java** | 21 | 开发语言 |
-| **Spring Security** | 6.x | 安全框架 |
-| **MyBatis Plus** | 3.5.14 | ORM框架 |
-| **MySQL** | 8.4.x | 主数据库 |
-| **Redis** | 7.x | 缓存中间件 |
-| **RabbitMQ** | 3.4.0 | 消息队列 |
-| **MinIO** | 8.3.6 | 对象存储 |
-| **Spring WebSocket** | 6.x | 实时通信 |
-| **Spring AI** | 1.0.0-M5 | AI服务 |
-| **阿里云内容安全** | 2.0.6 | 内容审核 |
+- 系统通知和互动通知
+- 消息已读及未读数量管理
+- WebSocket 实时私信
+- 私信图片发送与审核
+- 私信消息撤回
+- 用户在线状态展示
 
+#### AI 辅助功能
 
-| 工具 | 版本 |
-|------|------|
-| Lombok | 1.18.38 |
-| Hutool | 6.3.0 |
-| FastJSON | 2.0.52 |
-| EasyCaptcha | 1.6.2 |
+- 文章摘要生成
+- 标题建议
+- 标签推荐
+- 评论回复建议
+- 智能客服
+- AI 调用次数与额度限制
 
-</td>
-<td valign="top" width="50%">
+### 管理端
 
-### 🎨 前端技术栈
+#### 内容审核
 
-#### 用户端 (`chen-stack-user`)
+- 文章查询、审核、批量审核和批量删除
+- 专栏查询、审核、批量审核和批量删除
+- 评论查询、审核、批量审核和批量删除
+- 图片查询、审核、批量审核和批量删除
+- 审核状态及拒绝原因管理
 
-| 技术 | 版本 | 说明 |
-|------|------|------|
-| **Vue** | 3.5.13 | 核心框架 |
-| **Vite** | 6.2.4 | 构建工具 |
-| **Element Plus** | 2.10.2 | UI组件库 |
-| **Pinia** | 3.0.1 | 状态管理 |
-| **Vue Router** | 4.5.0 | 路由管理 |
-| **Axios** | 1.10.0 | HTTP客户端 |
-| **AiEditor** | 1.4.0 | 富文本编辑 |
-| **ECharts** | 5.6.0 | 图表库 |
+#### 用户与权限
 
-#### 管理端 (`chen-stack-admin`)
+- 用户查询和状态管理
+- 用户角色分配
+- 菜单新增、编辑、启停和删除
+- 角色新增、编辑和删除
+- 角色菜单分配
+- 权限新增、编辑和删除
+- 角色权限分配
+- 动态菜单与动态路由管理
 
-| 技术 | 版本 | 说明 |
-|------|------|------|
-| **Vue** | 3.5.13 | 核心框架 |
-| **Vite** | 6.2.4 | 构建工具 |
-| **Element Plus** | 2.10.2 | UI组件库 |
-| **Pinia** | 3.0.1 | 状态管理 |
-| **ECharts** | 5.6.0 | 数据可视化 |
-| **@antv/g2** | 5.4.8 | 高级图表 |
-| **XLSX** | 0.18.5 | Excel处理 |
+#### 运营与日志
 
-</td>
-</tr>
-</table>
+- 系统消息和通知管理
+- 登录日志查询与删除
+- 操作日志查询与删除
+- 访客日志查询与删除
+- 首页数据统计
+- 图表数据展示
+- 表格数据导出
 
-## 📁 项目结构
+### 后端支撑能力
 
-```
+- Spring Security 认证和接口权限控制
+- 菜单、角色、权限组成的 RBAC 权限模型
+- Redis 缓存、限流和临时状态管理
+- RabbitMQ 异步通知和邮件任务
+- WebSocket 私信及在线状态通信
+- MinIO 图片对象存储
+- 文章、专栏、评论和图片审核
+- Spring AI 能力接入
+- 定时任务调度
+- 逻辑删除数据定期物理清理
+- Actuator 服务健康检查
+
+## 项目亮点
+
+### 1. 权限列表缓存与缓存一致性
+
+**问题**
+
+权限列表同时依赖权限表和菜单表。列表、分页和搜索接口如果分别查询数据库，会产生重复查询；菜单被修改后，如果权限缓存没有及时失效，还可能返回已经过期的菜单信息。
+
+**解决方案**
+
+- 采用 Cache Aside 思路，将完整权限列表缓存到 Redis
+- 缓存 key 为 `chen_stack:Permission:All`，默认有效期为 10 分钟
+- 列表、分页、条件搜索和搜索分页统一复用同一份完整缓存
+- 菜单新增、修改和删除后主动删除权限缓存
+- 缓存内容类型异常或反序列化失败时，删除异常缓存并重新查询数据库
+- Redis 读取异常时降级查询数据库，避免缓存故障直接影响权限列表接口
+
+**实现效果**
+
+权限相关查询统一使用一套缓存入口，同时兼顾了查询效率、菜单变更后的缓存一致性和 Redis 异常时的业务降级。
+
+### 2. 用户角色查询 N+1 优化
+
+**问题**
+
+管理端用户列表需要展示每个用户的角色。如果先查询用户分页，再为当前页每个用户单独查询角色，用户数量增加后会形成典型的 N+1 查询问题。
+
+**解决方案**
+
+- 在用户分页结果返回前统一执行 `fillUserRoleCodes(...)`
+- 一次批量查询当前页用户对应的 `sys_user_role`
+- 再一次批量查询关联的 `sys_role`
+- 在内存中组装用户与角色的对应关系
+- 将角色编码统一回填到 `SysUserVo.roleCode`
+- 前端直接使用返回的角色编码展示角色和判断操作权限
+
+**实现效果**
+
+将当前页原本可能产生的逐用户查询，收敛为固定的批量查询，减少了数据库访问次数，也让角色分配后的列表状态能够直接更新。
+
+### 3. 动态菜单与路由实时同步
+
+**问题**
+
+管理端菜单由后端权限数据动态生成。菜单启停、编辑、删除或角色权限发生变化后，如果前端只更新侧边栏而没有同步更新动态路由，可能出现菜单已经消失但页面仍可停留、旧路由残留或新菜单必须重新登录才能显示的问题。
+
+**解决方案**
+
+- 菜单配置变化后重新请求当前用户菜单
+- 刷新菜单前先移除上一轮注册的动态路由
+- 根据最新菜单数据重新注册动态路由
+- 侧边栏与路由统一使用同一轮菜单数据生成
+- 当前页面对应菜单失效时，自动跳转到 `/home`
+- 角色调整后同步刷新当前登录用户的菜单权限
+
+**实现效果**
+
+菜单、侧边栏和动态路由能够在当前会话中同步更新，减少了旧路由残留和权限变化后必须重新登录的问题。
+
+### 4. 业务删除与对象存储一致性处理
+
+**问题**
+
+文章和用户删除不仅涉及主表，还可能涉及评论、收藏、历史记录、专栏关系、Redis 缓存和 MinIO 图片。数据库事务可以回滚，但对象存储文件删除无法随数据库事务自动回滚，直接同时删除容易产生数据和文件不一致。
+
+**解决方案**
+
+- 删除主业务数据时同步清理关联关系和相关缓存
+- 删除前收集文章封面、正文图片、头像、专栏封面和私信图片地址
+- 删除文件前检查图片是否仍被其他文章、专栏、用户或私信引用
+- 数据库事务成功提交后，再通过 `afterCommit` 执行 MinIO 文件清理
+- MinIO 清理异常只记录日志，不反向回滚已经提交的数据库事务
+- 用户删除后同步清理对应的 Redis 用户状态及会话数据
+
+**实现效果**
+
+避免了数据库事务回滚后文件已经被提前删除的问题，并降低了共享图片被误删、数据库残留无效关系和对象存储长期堆积无引用文件的风险。
+
+### 5. 逻辑删除数据定期物理清理
+
+**问题**
+
+逻辑删除可以保留数据恢复能力，但被删除的数据仍然占用表和索引空间。系统长期运行后，逻辑删除数据不断积累，会增加数据库存储和查询维护成本。
+
+**解决方案**
+
+- 为 15 张逻辑删除表增加 `deleted_time`
+- 使用数据库触发器记录逻辑删除时间
+- 数据恢复时由触发器自动清空 `deleted_time`
+- 新数据库初始化脚本直接包含最终表结构
+- 为已有数据库提供 `sql/add_deleted_time_for_logic_delete.sql` 升级脚本
+- 定时任务每天 `03:30` 按 `Asia/Shanghai` 时区执行
+- 默认保留逻辑删除数据 7 天
+- 每次按 500 条分批执行物理删除
+- 按 `deleted_time` 和 `id` 排序，优先清理最早删除的数据
+- 只操作代码中定义的固定表白名单
+- 不自动删除 `deleted_time IS NULL` 的旧历史数据
+- 支持通过环境变量关闭任务或调整保留天数、批量大小和 Cron 表达式
+
+**实现效果**
+
+逻辑删除数据具备了可追踪、可配置和可分批执行的清理机制，同时避免一次性删除大量数据形成长事务，并对旧历史数据采取保守保护策略。
+
+### 6. AI 调用限流、额度与内容去重
+
+**问题**
+
+AI 接口通常存在调用成本和频率限制。文章摘要、标题生成和智能客服等功能如果没有调用边界，可能因为短时间高频点击、重复内容提交或接口被滥用而产生不必要的调用。
+
+**解决方案**
+
+- 通过 Spring AI 统一接入 AI 服务
+- 在 AI 接口增加限流注解
+- 使用 Redis 记录用户每日 AI 使用次数
+- 对不同 AI 功能设置调用额度
+- 使用 Redis 保存内容去重状态
+- 对短时间内提交的相同内容进行重复调用拦截
+- 将摘要、标题、标签、回复建议和客服等能力划分为不同业务入口
+
+**实现效果**
+
+AI 功能具备了接口频率限制、每日额度管理和重复内容控制，减少了无效请求，并为第三方 AI 服务的调用成本提供了业务边界。
+
+### 7. 内容与图片审核状态同步
+
+**问题**
+
+文章、专栏、评论、图片和私信消息分别存储在不同业务表中。当图片审核被拒绝或图片被删除后，如果只更新图片表，私信消息或其他业务页面仍可能继续展示已经失效的图片。
+
+**解决方案**
+
+- 为文章、专栏、评论和图片建立统一审核状态
+- 私信图片上传后复用现有图片审核流程
+- 图片审核结果同步更新对应私信图片消息
+- 图片审核拒绝后撤回相关私信图片消息
+- 图片删除时同步处理消息记录中的图片展示状态
+- 管理端提供单条审核和批量审核
+- 用户端根据审核结果控制内容可见范围
+
+**实现效果**
+
+审核结果能够在图片记录、私信消息和前台展示之间同步，减少了审核拒绝后内容仍然可见或不同页面状态不一致的问题。
+
+## 后端技术栈
+
+| 技术 | 版本 | 项目用途 |
+| --- | --- | --- |
+| Java | 21 | 后端主要开发语言 |
+| Spring Boot | 3.4.0 | REST API、配置管理、任务调度和健康检查 |
+| Spring Security | Spring Boot 依赖管理 | 登录认证、权限控制和访问隔离 |
+| MyBatis-Plus | 3.5.14 | 数据访问、分页查询和逻辑删除 |
+| MySQL | 8.0 | 主业务数据库 |
+| Redis | 7 | 权限缓存、登录状态、限流和 AI 调用限制 |
+| RabbitMQ | 3 | 异步通知和邮件任务 |
+| MinIO Java SDK | 8.3.6 | 业务图片对象存储 |
+| Spring WebSocket | Spring Boot 依赖管理 | 私信及在线状态实时通信 |
+| Spring AI | 1.0.0-M5 | AI 能力接入 |
+| 阿里云内容安全 | 2.0.6 | 图片内容审核 |
+| Lombok | 1.18.38 | 简化实体类和配置类代码 |
+| Hutool | 5.8.38 | 常用工具和数据处理 |
+| Fastjson | 2.0.50 | 部分 JSON 数据处理 |
+| EasyCaptcha | 1.6.2 | 登录验证码生成 |
+
+## 前端技术栈
+
+### 用户端（chen-stack-user）
+
+| 技术 | 版本 | 项目用途 |
+| --- | --- | --- |
+| Vue | 3.5.13 | 用户端页面开发 |
+| vite-plus | 0.1.15 | 本地开发与生产构建 |
+| Element Plus | 2.10.2 | 表单、弹窗和列表组件 |
+| Pinia | 3.0.1 | 用户及页面状态管理 |
+| Vue Router | 4.5.0 | 用户端路由管理 |
+| Axios | 1.10.0 | HTTP 接口请求 |
+| AiEditor | 1.4.0 | 文章富文本编辑 |
+
+### 管理端（chen-stack-admin）
+
+| 技术 | 版本 | 项目用途 |
+| --- | --- | --- |
+| Vue | 3.5.13 | 管理端页面开发 |
+| vite-plus | 0.1.15 | 本地开发与生产构建 |
+| Element Plus | 2.10.5 | 表格、表单、弹窗和交互组件 |
+| Pinia | 3.0.1 | 登录态、菜单和页面状态管理 |
+| Vue Router | 4.5.0 | 静态路由和动态路由管理 |
+| Axios | 1.11.0 | HTTP 接口请求 |
+| @antv/g2 | 5.4.8 | 管理端统计图表 |
+| XLSX | 0.18.5 | 表格数据导出与处理 |
+
+## 项目结构
+
+```text
 zcx-chen-stack/
-├── script/                                         # 部署脚本和配置
-│   ├── dev/                                        #   本地开发/部署配置
-│   │   ├── .env.example                            #     环境变量示例
-│   │   ├── docker-compose-service.yml              #     基础依赖服务
-│   │   ├── docker-compose-apps.yml                 #     后端 + 管理端 + 用户端
-│   │   └── docker-compose.yml                      #     完整本地编排
-│   └── prod/                                       #   生产环境配置
-│       ├── jenkins/                                #     Jenkins CI/CD 配置
-│       └── ssl/                                    #     HTTPS SSL 证书配置
-│
-├── chen-stack-backend/                            # 后端服务 (Spring Boot + Java 21)
-│   └── src/main/java/com/zcx/chenstack/   # 当前后端包名已统一为 com.zcx.chenstack
-│       ├── aspect/                                 #   AOP 切面 (限流/日志/监控)
-│       ├── config/                                 #   配置类
-│       ├── controller/                             #   REST API 控制器 (32个)
-│       ├── domain/                                 #   数据模型
-│       │   ├── entity/                             #     实体类 (25个)
-│       │   ├── dto/                                #     数据传输对象
-│       │   ├── vo/                                 #     视图对象
-│       │   ├── enums/                              #     枚举类 (35个)
-│       │   └── constants/                          #     常量类
-│       ├── exception/                              #   全局异常处理
-│       ├── mapper/                                 #   MyBatis Plus Mapper
-│       ├── minio/                                  #   MinIO 对象存储
-│       ├── rabbitmq/                               #   RabbitMQ 消息队列
-│       ├── redis/                                  #   Redis 缓存组件
-│       ├── security/                               #   Spring Security + JWT
-│       ├── service/impl/                          #   业务逻辑服务
-│       ├── task/                                   #   定时任务
-│       ├── utils/                                  #   通用工具类
-│       └── websocket/                              #   WebSocket 实时通信
-│
-├── chen-stack-frontend/                           # 前端应用 (Vue 3 + Vite)
-│   ├── chen-stack-admin/                           #   管理端后台
-│   │   └── src/
-│   │       ├── api/                                #     API 接口 (21个模块)
-│   │       ├── components/                         #     组件 (布局/图表/卡片)
-│   │       ├── composables/                        #     组合式函数
-│   │       ├── router/                             #     动态路由
-│   │       ├── stores/                             #     Pinia 状态管理
-│   │       └── views/                              #     页面组件 (9个目录)
-│   │           ├── account/                        #       账户管理
-│   │           ├── article/                        #       文章管理
-│   │           ├── column/                        #       专栏管理
-│   │           ├── comment/                        #       评论管理
-│   │           ├── home/                           #       首页仪表盘
-│   │           ├── notification/                  #       通知管理
-│   │           ├── photo/                          #       图片管理与审核
-│   │           ├── system/                         #       系统管理
-│   │           └── tag/                            #       标签管理
-│   │
-│   └── chen-stack-user/                            #   用户端前台
-│       └── src/
-│           ├── api/                                #     API 接口 (20个模块)
-│           ├── components/                         #     可复用组件 (按模块组织)
-│           ├── composables/                        #     组合式函数
-│           ├── router/                             #     路由配置
-│           ├── stores/                             #     Pinia 状态管理 (4个)
-│           └── views/                              #     页面组件 (14个目录)
-│               ├── Account/                        #       账户相关页面
-│               ├── Article/                        #       文章详情页
-│               ├── Creation/                       #       创作中心页面
-│               ├── Editor/                         #       编辑器页面
-│               ├── Home/                           #       首页
-│               ├── Layout/                         #       布局组件
-│               ├── Message/                        #       消息页面
-│               ├── Notification/                  #       通知页面
-│               ├── Search/                         #       搜索页面
-│               ├── Setting/                        #       设置页面
-│               └── User/                           #       用户页面
-│
-├── sql/                                           # 数据库初始化脚本
-└── img/                                           # 项目截图
+├── chen-stack-backend/
+│   ├── src/main/java/com/zcx/chenstack/
+│   │   ├── aspect/                 # 限流、日志等切面
+│   │   ├── config/                 # 系统和业务配置
+│   │   ├── controller/             # REST API 控制器
+│   │   ├── domain/                 # entity、dto、vo、enums、constants
+│   │   ├── exception/              # 业务异常和全局异常处理
+│   │   ├── mapper/                 # MyBatis-Plus Mapper
+│   │   ├── minio/                  # MinIO 配置
+│   │   ├── rabbitmq/               # 消息队列配置与监听
+│   │   ├── redis/                  # Redis 缓存组件
+│   │   ├── security/               # 登录认证和权限控制
+│   │   ├── service/                # 业务服务
+│   │   ├── task/                   # 定时任务
+│   │   ├── utils/                  # 通用工具类
+│   │   └── websocket/              # WebSocket 通信
+│   ├── src/main/resources/
+│   │   ├── mapper/                 # MyBatis XML
+│   │   └── application.yaml        # 后端配置
+│   ├── Dockerfile
+│   └── pom.xml
+├── chen-stack-frontend/
+│   ├── chen-stack-admin/           # 管理端
+│   │   ├── src/
+│   │   ├── Dockerfile
+│   │   └── package.json
+│   └── chen-stack-user/            # 用户端
+│       ├── src/
+│       ├── Dockerfile
+│       └── package.json
+├── script/
+│   └── dev/
+│       ├── .env.example
+│       ├── docker-compose.yml          # 完整环境编排
+│       ├── docker-compose-service.yml  # MySQL、Redis、RabbitMQ、MinIO
+│       ├── docker-compose-apps.yml     # 后端、用户端、管理端
+│       ├── start.bat
+│       └── start.sh
+├── sql/
+│   ├── chen_stack.sql
+│   └── add_deleted_time_for_logic_delete.sql
+├── Jenkinsfile
+├── nginx_default.conf
+└── README.md
 ```
 
-## ⭐ 功能特性
+## 快速部署
 
-### 🔐 用户系统
+### 1. 环境要求
 
-| 功能 | 说明 |
-|------|------|
-| 账号登录 | 用户名/邮箱 + 密码 |
-| 权限管理 | 基于角色的访问控制 (RBAC) |
-| 安全防护 | JWT 认证 + Spring Security |
-| 邮件验证 | 注册验证码 + 密码重置 + 邮箱修改 |
-| 用户主页 | 个人主页 + 关注/粉丝系统 |
-| 创作中心 | 文章管理 + 专栏管理 + 评论管理 |
+从全新克隆的仓库开始部署，需要准备：
 
-### 💬 社交互动
+- Git
+- Docker
+- Docker Compose
+- JDK 21
+- Maven
+- Node.js
+- npm
 
-| 功能 | 说明 |
-|------|------|
-| 私信聊天 | WebSocket 实时聊天 + 消息撤回 + 在线状态 |
-| 通知中心 | 点赞/评论/关注/收藏 + 分类筛选 + 已读管理 |
-| 实时推送 | WebSocket 消息通知 + 未读数量提示 |
+当前后端 Dockerfile 会复制本地 `target` 目录中的 JAR，两个前端 Dockerfile 会复制本地 `dist` 目录中的构建产物。因此首次部署前，需要先在宿主机完成后端和前端构建。
 
-### 📝 内容管理
+### 2. 克隆项目
 
-| 功能 | 说明 |
-|------|------|
-| 富文本编辑 | Markdown + 所见即所得 (AiEditor) |
-| 文章系统 | 发布 + 草稿箱 + 回收站 + 审核机制 |
-| 专栏系统 | 专栏创建 + 文章分类管理 |
-| 标签系统 | 文章标签 + 标签管理 |
-| 图片管理 | MinIO 存储 + 阿里云安全检测 |
-| 内容审核 | 自动审核 + 人工审核双模式 |
-| SEO 优化 | 友好 URL + Meta 信息 |
-
-### 🤖 AI 能力
-
-| 功能 | 说明 |
-|------|------|
-| 文章摘要 | 自动提取文章摘要 |
-| 标题生成 | AI 智能生成标题 |
-| 标签推荐 | 自动推荐文章标签 |
-| 回复建议 | 评论回复建议 |
-| 智能客服 | 流式输出客服机器人 |
-
-### 🔧 管理后台
-
-| 功能 | 说明 |
-|------|------|
-| 仪表盘 | 数据统计 + ECharts 图表 |
-| 用户管理 | 用户列表 + 角色权限 |
-| 内容管理 | 文章审核 + 评论管理 + 标签管理 |
-| 文件管理 | 图片上传 + 图片审核 + MinIO 文件存储 |
-| 系统管理 | 菜单 + 权限 + 角色管理 |
-| 日志管理 | 登录日志 + 访问日志 + 操作记录 |
-
-### ⚡ 性能优化
-
-| 技术 | 说明 |
-|------|------|
-| Redis 缓存 | 热榜统计 + 会话管理 + 令牌存储 |
-| RabbitMQ | 异步处理 + 邮件发送 + 内容审核 |
-| 定时任务 | 热门统计 + 数据清理 |
-| 代码分割 | 前端懒加载 + 按需加载 |
-| AOP 限流 | API 限流保护，防止滥用 |
-| 图片优化 | 压缩 + 懒加载 |
-
-### 🚀 部署运维
-
-| 技术 | 说明 |
-|------|------|
-| Docker | 容器化部署 + Docker Compose 编排 |
-| CI/CD | Jenkins Pipeline 自动化构建部署 |
-| SSL | HTTPS 证书配置 |
-| 多环境 | 开发/测试/生产环境分离 |
-
----
-
-## 🚀 快速开始
-
-### 📋 环境要求
-
-| 组件 | 版本 | 说明 |
-|------|------|------|
-| JDK | 21+ | 后端运行环境 |
-| Node.js | 18+ | 前端构建环境 |
-| MySQL | 8.0+ | 主数据库 |
-| Redis | 6.0+ | 缓存数据库 |
-| RabbitMQ | 3.8+ | 消息队列 |
-| MinIO | RELEASE.2025-06-05+ | 对象存储 |
-| Docker | 20.0+ | 容器化部署 (推荐) |
-
-### 🪟 本地启动步骤（Windows 推荐）
-
-```powershell
-# 1. 克隆项目并进入根目录
+```bash
 git clone https://github.com/zcxzzz188/zcx-chen-stack.git
 cd zcx-chen-stack
+```
 
-# 2. 复制本地开发环境变量文件
-Copy-Item .\script\dev\.env.example .\script\dev\.env
+### 3. 创建环境变量文件
 
-# 3. 默认使用 3308 作为 MySQL 外部端口；如需改端口，可修改 .\script\dev\.env 中的 MYSQL_PORT
+Linux 或 macOS：
 
-# 4. 启动基础依赖服务
-docker compose --env-file .\script\dev\.env -f .\script\dev\docker-compose-service.yml up -d --build
+```bash
+cp script/dev/.env.example script/dev/.env
+```
 
-# 5. 等待 MySQL、Redis、RabbitMQ、MinIO 都显示 healthy
-docker compose --env-file .\script\dev\.env -f .\script\dev\docker-compose-service.yml ps
+Windows CMD：
 
-# 6. 打包后端
+```cmd
+copy script\dev\.env.example script\dev\.env
+```
+
+打开 `script/dev/.env`，根据本地环境填写或核对：
+
+- MySQL 配置
+- Redis 配置
+- RabbitMQ 配置
+- MinIO 配置
+- 邮件配置
+- AI 服务配置
+- 内容审核配置
+- 前后端访问地址
+
+真实 `.env` 包含运行凭据，不应提交到 Git 仓库。
+
+### 4. 构建后端
+
+Linux 或 macOS：
+
+```bash
 cd chen-stack-backend
-mvn -DskipTests clean package
+mvn -DskipTests package
 cd ..
+```
 
-# 7. 构建管理端
-cd chen-stack-frontend\chen-stack-admin
+Windows CMD：
+
+```cmd
+cd chen-stack-backend
+mvn.cmd -DskipTests package
+cd ..
+```
+
+构建完成后应生成：
+
+```text
+chen-stack-backend/target/zcx-chen-stack-backend-1.0-SNAPSHOT.jar
+```
+
+### 5. 构建用户端
+
+Linux 或 macOS：
+
+```bash
+cd chen-stack-frontend/chen-stack-user
 npm install
 npm run build
-cd ..\..
+cd ../..
+```
 
-# 8. 构建用户端
+Windows CMD：
+
+```cmd
 cd chen-stack-frontend\chen-stack-user
 npm install
 npm run build
 cd ..\..
-
-# 9. 启动应用容器
-docker compose --env-file .\script\dev\.env -f .\script\dev\docker-compose-apps.yml up -d --build
-
-# 10. 查看服务状态
-docker compose --env-file .\script\dev\.env -f .\script\dev\docker-compose-service.yml ps
-docker compose --env-file .\script\dev\.env -f .\script\dev\docker-compose-apps.yml ps
 ```
 
-### 🌐 访问地址
+### 6. 构建管理端
 
-| 服务 | 地址 | 说明 |
-|------|------|------|
-| 用户端 | http://localhost:7000 | 社区前台 |
-| 管理端 | http://localhost:8000 | 后台管理 |
-| 后端 API | http://localhost:5000 | REST API |
-| MinIO | http://localhost:9001 | 对象存储 |
-| RabbitMQ | http://localhost:15672 | 消息队列 |
+Linux 或 macOS：
 
----
+```bash
+cd chen-stack-frontend/chen-stack-admin
+npm install
+npm run build
+cd ../..
+```
 
-## 🐳 部署指南
+Windows CMD：
 
-### 🧩 进阶部署
+```cmd
+cd chen-stack-frontend\chen-stack-admin
+npm install
+npm run build
+cd ..\..
+```
 
-如果需要生产环境、Jenkins 或 HTTPS，请参考仓库中的 `Jenkinsfile`、`script/prod/` 和 `script/prod/ssl/`。
+### 7. 完整启动
 
-本地快速开始请以 `script/dev/` 下的 Docker Compose 流程为准。
+在仓库根目录执行：
 
----
+```bash
+docker compose --env-file script/dev/.env -f script/dev/docker-compose.yml up -d --build
+```
 
-## 📅 后续计划
+完整编排会启动：
 
-### ✅ 已完成功能
+- MySQL
+- Redis
+- RabbitMQ
+- MinIO
+- Spring Boot 后端
+- 用户端
+- 管理端
 
-- [x] 操作日志系统
-- [x] Dashboard 仪表盘重构
-- [x] 私信功能 (WebSocket)
-- [x] 通知中心
+全新 MySQL 数据卷会自动执行 `sql/chen_stack.sql` 完成数据库初始化。
 
-### 🚧 计划中的功能
+### 8. 拆分启动
 
-- [ ] 数据统计增强 (PV/UV、停留时长)
-- [ ] 推荐系统 (基于用户兴趣的文章推荐)
-- [ ] 全文搜索引擎 (Elasticsearch)
+需要单独管理基础服务和应用服务时，可以先启动基础服务：
 
----
+```bash
+docker compose --env-file script/dev/.env -f script/dev/docker-compose-service.yml up -d
+```
 
-## 🤝 贡献指南
+再启动应用服务：
 
-1. **Fork** 项目到你的 GitHub 账号
-2. **创建特性分支**: `git checkout -b feature/amazing-feature`
-3. **提交更改**: `git commit -m 'Add some amazing feature'`
-4. **推送分支**: `git push origin feature/amazing-feature`
-5. **创建 Pull Request**
+```bash
+docker compose --env-file script/dev/.env -f script/dev/docker-compose-apps.yml up -d --build
+```
+
+`docker-compose-apps.yml` 使用外部网络 `chen-stack-network`，该网络由 `docker-compose-service.yml` 创建，因此拆分启动时必须先启动基础服务。
+
+### 9. 数据库脚本说明
+
+| 脚本 | 用途 |
+| --- | --- |
+| `sql/chen_stack.sql` | 全新数据库初始化 |
+| `sql/add_deleted_time_for_logic_delete.sql` | 已有旧数据库升级逻辑删除清理结构 |
+
+全新部署只需要执行 `sql/chen_stack.sql`。使用完整 Docker Compose 并创建全新 MySQL 数据卷时，该脚本会自动执行。
+
+### 10. 服务地址
+
+实际端口以 `script/dev/.env` 为准。按照当前示例配置，常用地址如下：
+
+| 服务 | 地址 |
+| --- | --- |
+| 后端 API | `http://localhost:5000` |
+| 用户端 | `http://localhost:7000` |
+| 管理端 | `http://localhost:8000` |
+| MySQL | `localhost:3308` |
+| Redis | `localhost:6379` |
+| MinIO API | `http://localhost:9000` |
+| MinIO 控制台 | `http://localhost:9001` |
+| RabbitMQ | `localhost:5672` |
+| RabbitMQ 管理界面 | `http://localhost:15672` |
+
+### 11. 查看运行状态
+
+```bash
+docker compose --env-file script/dev/.env -f script/dev/docker-compose.yml ps
+```
+
+查看后端日志：
+
+```bash
+docker logs -f chen-stack-backend
+```
+
+查看用户端日志：
+
+```bash
+docker logs -f chen-stack-user
+```
+
+查看管理端日志：
+
+```bash
+docker logs -f chen-stack-admin
+```
+
+拆分启动时也可以分别查看：
+
+```bash
+docker compose --env-file script/dev/.env -f script/dev/docker-compose-service.yml ps
+docker compose --env-file script/dev/.env -f script/dev/docker-compose-apps.yml ps
+```
+
+### 12. 停止服务
+
+完整启动方式：
+
+```bash
+docker compose --env-file script/dev/.env -f script/dev/docker-compose.yml down
+```
+
+拆分启动方式：
+
+```bash
+docker compose --env-file script/dev/.env -f script/dev/docker-compose-apps.yml down
+docker compose --env-file script/dev/.env -f script/dev/docker-compose-service.yml down
+```
+
+默认不会删除 MySQL、Redis、RabbitMQ 和 MinIO 的持久化数据卷。需要删除数据卷时，应确认数据不再需要后再执行带有 `-v` 的命令。
+
+## 构建与验证
+
+| 验证项 | 当前结果 |
+| --- | --- |
+| 后端 Maven 打包 | 通过 |
+| 用户端生产构建 | 通过 |
+| 管理端生产构建 | 通过 |
+| Docker 镜像构建 | 通过 |
+| Docker 容器启动 | 通过 |
+| 后端健康检查 | HTTP 200 |
+| 权限 Redis 缓存验证 | 通过 |
+| 逻辑删除触发器回滚测试 | 通过 |
+| 物理清理 SQL 回滚测试 | 通过 |
+
+以上结果来自当前本地开发环境验证，不代表已经完成生产环境压力测试或完整自动化测试。
