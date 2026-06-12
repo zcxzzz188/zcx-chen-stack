@@ -213,6 +213,7 @@ import { addRoleMenu, getRolesByMenu } from '@/api/role-menu'
 import { getRoleList } from '@/api/role'
 import { icons } from '@/utils/Icon'
 import { formatMenu } from '@/utils/Menu'
+import { refreshDynamicRoutes } from '@/router'
 
 // 组件
 import ManagementCard from '@/components/management/ManagementCard.vue'
@@ -318,10 +319,24 @@ const fetchMenus = async () => {
       pageData = res.data
     }
     applyPageData(pageData)
+    return true
   } catch (error) {
     ElMessage.error(hasSearchConditions() ? '搜索菜单失败' : '获取菜单列表失败')
+    return false
   } finally {
     loading.value = false
+  }
+}
+
+const refreshSidebarAndDynamicRoutes = async () => {
+  await fetchMenus()
+
+  try {
+    await refreshDynamicRoutes()
+    return true
+  } catch (error) {
+    console.error('刷新侧边栏和动态路由失败:', error)
+    return false
   }
 }
 
@@ -412,8 +427,12 @@ const handleDeleteMenu = (menu) => {
       loading.value = true
       try {
         await deleteMenu(menu.id)
-        ElMessage.success('删除成功')
-        fetchMenus()
+        const routeRefreshSucceeded = await refreshSidebarAndDynamicRoutes()
+        if (routeRefreshSucceeded) {
+          ElMessage.success('删除成功')
+        } else {
+          ElMessage.warning('删除成功，但侧边栏和动态路由实时刷新失败，请稍后重试')
+        }
       } catch (error) {
         ElMessage.error('删除失败')
       } finally {
@@ -448,7 +467,12 @@ const handleStatusChange = async (menu, status) => {
   switchLoading.value = true
   try {
     await updateMenu({ id: menu.id, status })
-    ElMessage.success(`${actionText}成功`)
+    const routeRefreshSucceeded = await refreshSidebarAndDynamicRoutes()
+    if (routeRefreshSucceeded) {
+      ElMessage.success(`${actionText}成功`)
+    } else {
+      ElMessage.warning(`${actionText}成功，但侧边栏和动态路由实时刷新失败，请稍后重试`)
+    }
     return true
   } catch (error) {
     ElMessage.error(`${actionText}失败`)
@@ -468,15 +492,19 @@ const handleSubmit = () => {
     }
 
     try {
+      const isEditing = !!menuForm.value.id
       if (menuForm.value.id) {
         await updateMenu(menuForm.value)
-        ElMessage.success('编辑菜单成功')
       } else {
         await addMenu(menuForm.value)
-        ElMessage.success('新增菜单成功')
       }
+      const routeRefreshSucceeded = await refreshSidebarAndDynamicRoutes()
       dialogVisible.value = false
-      fetchMenus()
+      if (routeRefreshSucceeded) {
+        ElMessage.success(isEditing ? '编辑菜单成功' : '新增菜单成功')
+      } else {
+        ElMessage.warning(`${isEditing ? '编辑菜单' : '新增菜单'}成功，但侧边栏和动态路由实时刷新失败，请稍后重试`)
+      }
     } catch (error) {
       ElMessage.error(menuForm.value.id ? '编辑菜单失败' : '新增菜单失败')
       handleDialogClose()
@@ -573,13 +601,16 @@ const handleAuthorizeSubmit = async () => {
       menuId: currentMenu.value.id,
       roleIds,
     })
-    ElMessage.success(`已为菜单 ${currentMenu.value.name} 授权角色`)
+    const currentMenuName = currentMenu.value.name
+    const routeRefreshSucceeded = await refreshSidebarAndDynamicRoutes()
+    handleAuthorizeDialogClose()
+    if (routeRefreshSucceeded) {
+      ElMessage.success(`已为菜单 ${currentMenuName} 授权角色`)
+    } else {
+      ElMessage.warning(`菜单 ${currentMenuName} 授权角色成功，但侧边栏和动态路由实时刷新失败，请稍后重试`)
+    }
   } catch (error) {
     ElMessage.error(`为菜单 ${currentMenu.value.name} 授权角色失败`)
-  } finally {
-    authorizeDialogVisible.value = false
-    selectedRoles.value = []
-    allRoles.value = []
   }
 }
 

@@ -26,6 +26,126 @@ const router = createRouter({
 // 导入404组件
 const NotFound = () => import('@/components/common/404.vue')
 
+let dynamicRouteRemovers = []
+let dynamicRouteNameSet = new Set()
+let dynamicRoutePathSet = new Set()
+
+const addDynamicRouteRecord = (route, routeNames, routePaths) => {
+  if (!route) {
+    return
+  }
+
+  if (route.name) {
+    routeNames.add(String(route.name))
+  }
+
+  if (route.path) {
+    routePaths.add(route.path)
+  }
+
+  if (Array.isArray(route.children) && route.children.length > 0) {
+    route.children.forEach((child) => addDynamicRouteRecord(child, routeNames, routePaths))
+  }
+}
+
+const clearDynamicRouteRecords = () => {
+  dynamicRouteRemovers.forEach((removeRoute) => {
+    if (typeof removeRoute === 'function') {
+      removeRoute()
+    }
+  })
+  dynamicRouteRemovers = []
+  dynamicRouteNameSet = new Set()
+  dynamicRoutePathSet = new Set()
+}
+
+const ensureNotFoundRoute = () => {
+  if (!router.hasRoute('notFound')) {
+    router.addRoute({
+      path: '/:pathMatch(.*)*',
+      name: 'notFound',
+      component: NotFound,
+    })
+  }
+}
+
+const addAndTrackDynamicRoutes = (dynamicRoutes) => {
+  const layoutRoute = router.getRoutes().find((route) => route.path === '/')
+  if (!layoutRoute?.name) {
+    throw new Error('未找到 Layout 路由')
+  }
+
+  const nextRouteNames = new Set()
+  const nextRoutePaths = new Set()
+  const nextRouteRemovers = []
+
+  dynamicRoutes.forEach((route) => {
+    const removeRoute = router.addRoute(layoutRoute.name, route)
+    nextRouteRemovers.push(removeRoute)
+    addDynamicRouteRecord(route, nextRouteNames, nextRoutePaths)
+  })
+
+  dynamicRouteRemovers = nextRouteRemovers
+  dynamicRouteNameSet = nextRouteNames
+  dynamicRoutePathSet = nextRoutePaths
+}
+
+const isCurrentRouteDynamic = (route, routeNames, routePaths) => {
+  if (!route) {
+    return false
+  }
+
+  const currentRouteName = route.name ? String(route.name) : ''
+  return routeNames.has(currentRouteName) || routePaths.has(route.path)
+}
+
+const isCurrentRouteStillRegistered = (route, routePaths) => {
+  if (!route) {
+    return false
+  }
+
+  return routePaths.has(route.path)
+}
+
+const installDynamicRoutes = async (force = false) => {
+  const userStore = useUserStore()
+  const dynamicRoutes = await userStore.loadMenusAndRoutes(force)
+  addAndTrackDynamicRoutes(dynamicRoutes)
+  ensureNotFoundRoute()
+  userStore.routesAdded = true
+  return dynamicRoutes
+}
+
+const rebuildDynamicRoutes = async ({ force = false, checkCurrentRoute = false } = {}) => {
+  const userStore = useUserStore()
+  const currentRoute = router.currentRoute.value
+  const previousDynamicRoutes = [...userStore.routes]
+  const previousRouteNameSet = new Set(dynamicRouteNameSet)
+  const previousRoutePathSet = new Set(dynamicRoutePathSet)
+  const wasCurrentDynamicRoute = checkCurrentRoute && isCurrentRouteDynamic(currentRoute, previousRouteNameSet, previousRoutePathSet)
+
+  clearDynamicRouteRecords()
+  userStore.routesAdded = false
+
+  try {
+    await installDynamicRoutes(force)
+
+    if (wasCurrentDynamicRoute && !isCurrentRouteStillRegistered(currentRoute, dynamicRoutePathSet)) {
+      await router.replace('/home')
+    }
+  } catch (error) {
+    if (previousDynamicRoutes.length > 0) {
+      addAndTrackDynamicRoutes(previousDynamicRoutes)
+      userStore.routesAdded = true
+    }
+    throw error
+  }
+}
+
+export async function refreshDynamicRoutes() {
+  await rebuildDynamicRoutes({ force: true, checkCurrentRoute: true })
+}
+
 // 路由守卫
 router.beforeEach(async (to, from, next) => {
   const userStore = useUserStore()
@@ -57,29 +177,7 @@ router.beforeEach(async (to, from, next) => {
   // 用户信息已加载，但路由未添加
   if (!userStore.routesAdded) {
     try {
-      // 加载菜单和动态路由
-      const dynamicRoutes = await userStore.loadMenusAndRoutes()
-      // 添加动态路由到Layout的children中
-      const layoutRoute = router.getRoutes().find((route) => route.path === '/')
-      if (layoutRoute) {
-        dynamicRoutes.forEach((route) => {
-          // 检查路由是否已经添加，避免重复添加
-          const existingRoute = router.getRoutes().find((r) => r.name === route.name && r.path === route.path)
-          if (!existingRoute) {
-            router.addRoute(layoutRoute.name, route)
-          }
-        })
-      } else {
-        console.error('未找到Layout路由')
-      }
-      userStore.routesAdded = true // 标记路由已添加
-
-      // 添加404路由，确保在所有动态路由之后添加
-      router.addRoute({
-        path: '/:pathMatch(.*)*',
-        name: 'notFound',
-        component: NotFound,
-      })
+      await rebuildDynamicRoutes({ force: false, checkCurrentRoute: false })
 
       // 如果是刷新页面，需要重新导航到目标路由
       if (to.path !== '/login') {

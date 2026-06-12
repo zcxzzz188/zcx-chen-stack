@@ -65,9 +65,9 @@ export const useUserStore = defineStore('user', () => {
   }
 
   // 获取菜单并生成路由
-  const loadMenusAndRoutes = async () => {
-    // 如果菜单已加载，则直接返回已有的路由
-    if (menusLoaded.value) {
+  const loadMenusAndRoutes = async (force = false) => {
+    // 如果菜单已加载且未强制刷新，则直接返回已有的路由
+    if (!force && menusLoaded.value) {
       return routes.value
     }
     try {
@@ -84,6 +84,9 @@ export const useUserStore = defineStore('user', () => {
       return routes.value
     } catch (error) {
       console.error('获取菜单失败:', error)
+      if (force) {
+        throw error
+      }
       return []
     }
   }
