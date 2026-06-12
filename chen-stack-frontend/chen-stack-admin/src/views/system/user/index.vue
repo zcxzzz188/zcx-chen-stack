@@ -380,62 +380,9 @@ const getUserStatusDisabledReason = (user) => {
   return ''
 }
 
-const userRoleCodeMap = ref({})
-
 const normalizeRoleCode = (roleCode) => (typeof roleCode === 'string' ? roleCode.trim() : '')
 
-const extractRoleCodeFromRoleItem = (roleItem) => {
-  if (!roleItem) {
-    return ''
-  }
-  if (typeof roleItem === 'string') {
-    return normalizeRoleCode(roleItem)
-  }
-  return normalizeRoleCode(roleItem.roleCode || roleItem.role)
-}
-
-const extractRoleCodeFromArray = (roles) => {
-  if (!Array.isArray(roles)) {
-    return ''
-  }
-  return roles.map(extractRoleCodeFromRoleItem).find(Boolean) || ''
-}
-
-const getDirectUserRoleCode = (user) => {
-  if (!user) {
-    return ''
-  }
-
-  const directRoleCode = normalizeRoleCode(user.roleCode || user.role)
-  if (directRoleCode) {
-    return directRoleCode
-  }
-
-  const sysRolesRoleCode = extractRoleCodeFromArray(user.sysRoles)
-  if (sysRolesRoleCode) {
-    return sysRolesRoleCode
-  }
-
-  const rolesRoleCode = extractRoleCodeFromArray(user.roles)
-  if (rolesRoleCode) {
-    return rolesRoleCode
-  }
-
-  return ''
-}
-
-const getUserRoleCode = (user) => {
-  if (!user) {
-    return ''
-  }
-
-  const directRoleCode = getDirectUserRoleCode(user)
-  if (directRoleCode) {
-    return directRoleCode
-  }
-
-  return normalizeRoleCode(userRoleCodeMap.value[user.id])
-}
+const getUserRoleCode = (user) => (typeof user?.roleCode === 'string' ? user.roleCode.trim() : '')
 
 const canAssignRole = (user) => {
   const roleCode = getUserRoleCode(user)
@@ -560,48 +507,6 @@ const applyPageData = (pageData) => {
   total.value = Number(pageData?.total || 0)
 }
 
-const syncCurrentPageRoleCodes = async (users) => {
-  const currentUsers = Array.isArray(users) ? users : []
-  const nextRoleCodeMap = {}
-  const usersNeedFetch = []
-
-  currentUsers.forEach((user) => {
-    const roleCode = getDirectUserRoleCode(user)
-    if (roleCode) {
-      nextRoleCodeMap[user.id] = roleCode
-      return
-    }
-
-    if (user?.id != null) {
-      usersNeedFetch.push(user)
-    }
-  })
-
-  if (usersNeedFetch.length > 0) {
-    const roleResults = await Promise.all(
-      usersNeedFetch.map((user) =>
-        getRolesByUser(user.id)
-          .then((res) => ({
-            userId: user.id,
-            roleCode: extractRoleCodeFromArray(res.data || []),
-          }))
-          .catch(() => ({
-            userId: user.id,
-            roleCode: '',
-          }))
-      )
-    )
-
-    roleResults.forEach(({ userId, roleCode }) => {
-      if (roleCode) {
-        nextRoleCodeMap[userId] = roleCode
-      }
-    })
-  }
-
-  userRoleCodeMap.value = nextRoleCodeMap
-}
-
 const fetchUsers = async () => {
   loading.value = true
   try {
@@ -617,9 +522,7 @@ const fetchUsers = async () => {
       pageData = res.data
     }
     applyPageData(pageData)
-    await syncCurrentPageRoleCodes(userList.value)
   } catch (error) {
-    userRoleCodeMap.value = {}
     ElMessage.error(hasSearchConditions() ? '搜索用户失败' : '获取用户列表失败')
   } finally {
     loading.value = false
@@ -829,10 +732,6 @@ const handleAuthorizeSubmit = async () => {
       roleIds: [selectedRoleId.value],
     })
     const nextRoleCode = normalizeRoleCode(allRole.value.find((role) => role.id === selectedRoleId.value)?.role)
-    userRoleCodeMap.value = {
-      ...userRoleCodeMap.value,
-      [currentUser.value.id]: nextRoleCode,
-    }
     currentUser.value.roleCode = nextRoleCode
     ElMessage.success(`已为用户 ${currentUser.value.username} 分配角色`)
   } catch (error) {

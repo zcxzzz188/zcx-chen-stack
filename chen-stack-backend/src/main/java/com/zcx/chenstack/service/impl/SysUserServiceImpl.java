@@ -610,6 +610,7 @@ public class SysUserServiceImpl extends ServiceImpl<SysUserMapper, SysUser> impl
         LambdaQueryWrapper<SysUser> queryWrapper = new LambdaQueryWrapper<SysUser>().orderByAsc(SysUser::getId);
         Page<SysUser> userPage = sysUserMapper.selectPage(page, queryWrapper);
         List<SysUserVo> sysUserVos = BeanUtil.copyToList(userPage.getRecords(), SysUserVo.class);
+        fillUserRoleCodes(sysUserVos);
         maskEmailsForNonAdmin(sysUserVos);
         return new PageVo<>(sysUserVos, userPage.getTotal());
     }
@@ -1156,8 +1157,72 @@ public class SysUserServiceImpl extends ServiceImpl<SysUserMapper, SysUser> impl
 
         Page<SysUser> userPage = sysUserMapper.selectPage(page, queryWrapper);
         List<SysUserVo> sysUserVos = BeanUtil.copyToList(userPage.getRecords(), SysUserVo.class);
+        fillUserRoleCodes(sysUserVos);
         maskEmailsForNonAdmin(sysUserVos);
         return new PageVo<>(sysUserVos, userPage.getTotal());
+    }
+
+    private void fillUserRoleCodes(List<SysUserVo> userVos) {
+        if (ObjectUtil.isEmpty(userVos)) {
+            return;
+        }
+
+        List<Integer> userIds = userVos.stream()
+                .map(SysUserVo::getId)
+                .filter(Objects::nonNull)
+                .distinct()
+                .toList();
+        if (ObjectUtil.isEmpty(userIds)) {
+            return;
+        }
+
+        List<SysUserRole> userRoles = sysUserRoleMapper.selectList(new LambdaQueryWrapper<SysUserRole>()
+                .in(SysUserRole::getUserId, userIds));
+        if (ObjectUtil.isEmpty(userRoles)) {
+            return;
+        }
+
+        Map<Integer, Integer> userIdRoleIdMap = new HashMap<>();
+        userRoles.forEach(userRole -> {
+            if (userRole != null && userRole.getUserId() != null && userRole.getRoleId() != null) {
+                userIdRoleIdMap.putIfAbsent(userRole.getUserId(), userRole.getRoleId());
+            }
+        });
+        if (userIdRoleIdMap.isEmpty()) {
+            return;
+        }
+
+        List<Integer> roleIds = userIdRoleIdMap.values().stream()
+                .filter(Objects::nonNull)
+                .distinct()
+                .toList();
+        if (ObjectUtil.isEmpty(roleIds)) {
+            return;
+        }
+
+        List<SysRole> roles = sysRoleMapper.selectBatchIds(roleIds);
+        if (ObjectUtil.isEmpty(roles)) {
+            return;
+        }
+
+        Map<Integer, String> roleIdRoleCodeMap = roles.stream()
+                .filter(Objects::nonNull)
+                .filter(role -> role.getId() != null)
+                .collect(Collectors.toMap(SysRole::getId, SysRole::getRole, (existing, replacement) -> existing));
+
+        userVos.forEach(userVo -> {
+            if (userVo == null || userVo.getId() == null) {
+                return;
+            }
+            Integer roleId = userIdRoleIdMap.get(userVo.getId());
+            if (roleId == null) {
+                return;
+            }
+            String roleCode = roleIdRoleCodeMap.get(roleId);
+            if (roleCode != null) {
+                userVo.setRoleCode(roleCode);
+            }
+        });
     }
 
     // 管理端获取用户详情

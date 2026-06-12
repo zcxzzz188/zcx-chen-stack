@@ -77,6 +77,11 @@ public class SysUserVo {
     private Integer articleCount;
 
     /**
+     * 角色编码
+     */
+    private String roleCode;
+
+    /**
      * 注册方式 0-用户名/邮箱
      */
     private Integer registerType;
