@@ -32,7 +32,7 @@
             </svg>
           </div>
           <div class="header-info">
-            <span class="header-title">智能客服小林</span>
+            <span class="header-title">智能客服小辰</span>
             <span class="header-status">
               <span class="status-dot"></span>
               在线服务
@@ -94,7 +94,7 @@
             </svg>
           </div>
         </div>
-        <p class="welcome-text">你好！我是小林，很高兴为你服务~</p>
+        <p class="welcome-text">你好！我是小辰，很高兴为你服务~</p>
         <p class="welcome-tips">你可以问我关于社区使用的任何问题哦！</p>
       </div>
 
@@ -132,7 +132,7 @@
             </div>
           </div>
           <div class="message-content">
-            <div class="message-sender" v-if="msg.role === 'ai'">小林</div>
+            <div class="message-sender" v-if="msg.role === 'ai'">小辰</div>
             <div class="message-bubble">
               <span class="bubble-text">{{ msg.content }}</span>
             </div>

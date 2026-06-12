@@ -24,8 +24,9 @@ export function getAiQuota() {
 export function customerServiceChat(message, chatId) {
   // 使用GetJwt()获取token，与Request.js中的认证方式保持一致
   const token = GetJwt() || ''
+  const backendServer = import.meta.env.VITE_BACKEND_SERVER || 'http://localhost:5000'
   return fetch(
-    `${import.meta.env.VITE_BACKEND_SERVER}/ai/customer-service?message=${encodeURIComponent(message)}&chatId=${chatId}`,
+    `${backendServer}/ai/customer-service?message=${encodeURIComponent(message)}&chatId=${chatId}`,
     {
       method: 'POST',
       headers: {
