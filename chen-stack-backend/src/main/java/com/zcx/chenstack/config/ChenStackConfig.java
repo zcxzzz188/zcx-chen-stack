@@ -16,6 +16,7 @@ public class ChenStackConfig {
     private Boolean articleAutoAudit;
     private Boolean columnAutoAudit;
     private Boolean commentAutoAudit;
+    private LogicDeleteCleanupConfig logicDeleteCleanup = new LogicDeleteCleanupConfig();
 
     public List<String> getAllowOrigins() {
         return this.allowOrigins;
@@ -35,6 +36,39 @@ public class ChenStackConfig {
 
     public boolean isCommentAutoAudit() {
         return Boolean.TRUE.equals(this.commentAutoAudit);
+    }
+
+    public LogicDeleteCleanupConfig getLogicDeleteCleanup() {
+        if (this.logicDeleteCleanup == null) {
+            this.logicDeleteCleanup = new LogicDeleteCleanupConfig();
+        }
+        return this.logicDeleteCleanup;
+    }
+
+    @Setter
+    public static class LogicDeleteCleanupConfig {
+
+        private Boolean enabled;
+        private Integer retentionDays;
+        private Integer batchSize;
+        private String cron;
+
+        public boolean isEnabled() {
+            return Boolean.TRUE.equals(this.enabled);
+        }
+
+        public Integer getRetentionDays() {
+            return this.retentionDays;
+        }
+
+        public Integer getBatchSize() {
+            return this.batchSize;
+        }
+
+        public String getCron() {
+            return this.cron;
+        }
+
     }
 
 }

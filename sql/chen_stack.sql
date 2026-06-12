@@ -41,9 +41,11 @@ CREATE TABLE `article`  (
                             `create_time` datetime NOT NULL COMMENT '创建时间',
                             `update_time` datetime NOT NULL COMMENT '更新时间',
                             `is_deleted` tinyint NOT NULL DEFAULT 0 COMMENT '是否删除 0-未删除 1-已删除',
+                            `deleted_time` datetime NULL DEFAULT NULL /*!80023 INVISIBLE */ COMMENT '逻辑删除时间',
                             PRIMARY KEY (`id`) USING BTREE,
                             INDEX `idx_examine_edit_visible_status_create_time`(`examine_status` ASC, `edit_status` ASC, `visible_range` ASC, `create_time` ASC) USING BTREE,
-                            INDEX `idx_examine_edit_visible_status_update_time`(`examine_status` ASC, `edit_status` ASC, `visible_range` ASC, `update_time` ASC) USING BTREE
+                            INDEX `idx_examine_edit_visible_status_update_time`(`examine_status` ASC, `edit_status` ASC, `visible_range` ASC, `update_time` ASC) USING BTREE,
+                            INDEX `idx_is_deleted_deleted_time`(`is_deleted` ASC, `deleted_time` ASC) USING BTREE
 ) ENGINE = InnoDB AUTO_INCREMENT = 95 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci ROW_FORMAT = DYNAMIC;
 
 
@@ -59,9 +61,11 @@ CREATE TABLE `article_column`  (
                                    `create_time` datetime NOT NULL COMMENT '创建时间',
                                    `update_time` datetime NOT NULL COMMENT '更新时间',
                                    `is_deleted` tinyint NOT NULL DEFAULT 0 COMMENT '是否删除 0-未删除 1-已删除',
+                                   `deleted_time` datetime NULL DEFAULT NULL /*!80023 INVISIBLE */ COMMENT '逻辑删除时间',
                                    PRIMARY KEY (`id`) USING BTREE,
                                    INDEX `idx_article_id`(`article_id` ASC) USING BTREE,
-                                   INDEX `idx_column_id`(`column_id` ASC) USING BTREE
+                                   INDEX `idx_column_id`(`column_id` ASC) USING BTREE,
+                                   INDEX `idx_is_deleted_deleted_time`(`is_deleted` ASC, `deleted_time` ASC) USING BTREE
 ) ENGINE = InnoDB AUTO_INCREMENT = 77 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci ROW_FORMAT = DYNAMIC;
 
 
@@ -98,8 +102,10 @@ CREATE TABLE `column`  (
                            `create_time` datetime NOT NULL COMMENT '创建时间',
                            `update_time` datetime NOT NULL COMMENT '更新时间',
                            `is_deleted` tinyint NOT NULL DEFAULT 0 COMMENT '是否删除 0-未删除 1-已删除',
+                           `deleted_time` datetime NULL DEFAULT NULL /*!80023 INVISIBLE */ COMMENT '逻辑删除时间',
                            PRIMARY KEY (`id`) USING BTREE,
-                           INDEX `idx_user_id_examine_status`(`user_id` ASC, `examine_status` ASC) USING BTREE
+                           INDEX `idx_user_id_examine_status`(`user_id` ASC, `examine_status` ASC) USING BTREE,
+                           INDEX `idx_is_deleted_deleted_time`(`is_deleted` ASC, `deleted_time` ASC) USING BTREE
 ) ENGINE = InnoDB AUTO_INCREMENT = 17 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci ROW_FORMAT = DYNAMIC;
 
 
@@ -119,8 +125,10 @@ CREATE TABLE `comment`  (
                             `reply_count` int NOT NULL DEFAULT 0 COMMENT '回复数',
                             `create_time` datetime NOT NULL COMMENT '创建时间',
                             `is_deleted` tinyint NOT NULL DEFAULT 0 COMMENT '是否删除 0-未删除 1-已删除',
+                            `deleted_time` datetime NULL DEFAULT NULL /*!80023 INVISIBLE */ COMMENT '逻辑删除时间',
                             PRIMARY KEY (`id`) USING BTREE,
-                            INDEX `idx_article_id_parent_id_examine_status_create_time`(`article_id` ASC, `parent_id` ASC, `examine_status` ASC, `create_time` DESC) USING BTREE
+                            INDEX `idx_article_id_parent_id_examine_status_create_time`(`article_id` ASC, `parent_id` ASC, `examine_status` ASC, `create_time` DESC) USING BTREE,
+                            INDEX `idx_is_deleted_deleted_time`(`is_deleted` ASC, `deleted_time` ASC) USING BTREE
 ) ENGINE = InnoDB AUTO_INCREMENT = 118 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci ROW_FORMAT = Dynamic;
 
 
@@ -139,8 +147,10 @@ CREATE TABLE `conversation`  (
                                  `create_time` datetime NOT NULL COMMENT '创建时间',
                                  `update_time` datetime NOT NULL COMMENT '更新时间',
                                  `is_deleted` tinyint NOT NULL DEFAULT 0 COMMENT '是否删除 0-正常 1-删除',
+                                 `deleted_time` datetime NULL DEFAULT NULL /*!80023 INVISIBLE */ COMMENT '逻辑删除时间',
                                  PRIMARY KEY (`id`) USING BTREE,
-                                 INDEX `idx_user_update`(`user_id` ASC, `update_time` DESC) USING BTREE
+                                 INDEX `idx_user_update`(`user_id` ASC, `update_time` DESC) USING BTREE,
+                                 INDEX `idx_is_deleted_deleted_time`(`is_deleted` ASC, `deleted_time` ASC) USING BTREE
 ) ENGINE = InnoDB AUTO_INCREMENT = 5 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci ROW_FORMAT = Dynamic;
 
 
@@ -156,8 +166,10 @@ CREATE TABLE `favorite`  (
                              `article_count` int NOT NULL DEFAULT 0 COMMENT '文章数量',
                              `create_time` datetime NOT NULL COMMENT '创建时间',
                              `is_deleted` tinyint NOT NULL DEFAULT 0 COMMENT '是否删除 0-未删除 1-已删除',
+                             `deleted_time` datetime NULL DEFAULT NULL /*!80023 INVISIBLE */ COMMENT '逻辑删除时间',
                              PRIMARY KEY (`id`) USING BTREE,
-                             INDEX `idx_user_status_time`(`user_id` ASC, `show_status` ASC, `create_time` DESC) USING BTREE
+                             INDEX `idx_user_status_time`(`user_id` ASC, `show_status` ASC, `create_time` DESC) USING BTREE,
+                             INDEX `idx_is_deleted_deleted_time`(`is_deleted` ASC, `deleted_time` ASC) USING BTREE
 ) ENGINE = InnoDB AUTO_INCREMENT = 11 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci ROW_FORMAT = Dynamic;
 
 
@@ -186,10 +198,12 @@ CREATE TABLE `history`  (
                             `user_id` int NOT NULL COMMENT '用户id',
                             `view_time` datetime NOT NULL COMMENT '浏览时间',
                             `is_deleted` tinyint NOT NULL DEFAULT 0 COMMENT '是否删除 0-未删除 1-已删除',
+                            `deleted_time` datetime NULL DEFAULT NULL /*!80023 INVISIBLE */ COMMENT '逻辑删除时间',
                             PRIMARY KEY (`id`) USING BTREE,
                             INDEX `idx_article_user`(`article_id` ASC, `user_id` ASC) USING BTREE,
                             INDEX `idx_user_view_time`(`user_id` ASC, `view_time` DESC) USING BTREE,
-                            INDEX `idx_history_hot_articles`(`view_time` ASC, `article_id` ASC, `user_id` ASC) USING BTREE
+                            INDEX `idx_history_hot_articles`(`view_time` ASC, `article_id` ASC, `user_id` ASC) USING BTREE,
+                            INDEX `idx_is_deleted_deleted_time`(`is_deleted` ASC, `deleted_time` ASC) USING BTREE
 ) ENGINE = InnoDB AUTO_INCREMENT = 81 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci ROW_FORMAT = Dynamic;
 
 
@@ -223,9 +237,11 @@ CREATE TABLE `message`  (
                             `create_time` datetime NOT NULL COMMENT '创建时间',
                             `update_time` datetime NOT NULL COMMENT '更新时间',
                             `is_deleted` tinyint NOT NULL DEFAULT 0 COMMENT '是否删除 0-未删除 1-已删除',
+                            `deleted_time` datetime NULL DEFAULT NULL /*!80023 INVISIBLE */ COMMENT '逻辑删除时间',
                             PRIMARY KEY (`id`) USING BTREE,
                             INDEX `idx_sender_id_type`(`sender_id` ASC, `type` ASC) USING BTREE,
-                            INDEX `idx_receiver_id_type`(`receiver_id` ASC, `type` ASC) USING BTREE
+                            INDEX `idx_receiver_id_type`(`receiver_id` ASC, `type` ASC) USING BTREE,
+                            INDEX `idx_is_deleted_deleted_time`(`is_deleted` ASC, `deleted_time` ASC) USING BTREE
 ) ENGINE = InnoDB AUTO_INCREMENT = 411 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci ROW_FORMAT = DYNAMIC;
 
 
@@ -241,8 +257,10 @@ CREATE TABLE `photo`  (
                           `create_time` datetime NOT NULL COMMENT '创建时间',
                           `update_time` datetime NOT NULL COMMENT '更新时间',
                           `is_deleted` tinyint NOT NULL DEFAULT 0 COMMENT '是否删除 0-未删除 1-已删除',
+                          `deleted_time` datetime NULL DEFAULT NULL /*!80023 INVISIBLE */ COMMENT '逻辑删除时间',
                           PRIMARY KEY (`id`) USING BTREE,
-                          INDEX `idx_deleted_id_examine_status`(`is_deleted` ASC, `id` ASC, `examine_status` ASC) USING BTREE
+                          INDEX `idx_deleted_id_examine_status`(`is_deleted` ASC, `id` ASC, `examine_status` ASC) USING BTREE,
+                          INDEX `idx_is_deleted_deleted_time`(`is_deleted` ASC, `deleted_time` ASC) USING BTREE
 ) ENGINE = InnoDB AUTO_INCREMENT = 86 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci ROW_FORMAT = DYNAMIC;
 
 
@@ -263,9 +281,11 @@ CREATE TABLE `private_message`  (
                                     `read_time` datetime NULL DEFAULT NULL COMMENT '阅读时间',
                                     `create_time` datetime NOT NULL COMMENT '创建时间',
                                     `is_deleted` tinyint NOT NULL DEFAULT 0 COMMENT '是否删除 0-正常 1-删除',
+                                    `deleted_time` datetime NULL DEFAULT NULL /*!80023 INVISIBLE */ COMMENT '逻辑删除时间',
                                     PRIMARY KEY (`id`) USING BTREE,
                                     INDEX `idx_from_to`(`from_user_id` ASC, `to_user_id` ASC, `create_time` ASC) USING BTREE,
-                                    INDEX `idx_to_from`(`to_user_id` ASC, `from_user_id` ASC, `create_time` ASC) USING BTREE
+                                    INDEX `idx_to_from`(`to_user_id` ASC, `from_user_id` ASC, `create_time` ASC) USING BTREE,
+                                    INDEX `idx_is_deleted_deleted_time`(`is_deleted` ASC, `deleted_time` ASC) USING BTREE
 ) ENGINE = InnoDB AUTO_INCREMENT = 132 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci ROW_FORMAT = Dynamic;
 
 
@@ -301,7 +321,9 @@ CREATE TABLE `sys_menu`  (
                              `create_time` datetime NOT NULL COMMENT '创建时间',
                              `update_time` datetime NOT NULL COMMENT '更新时间',
                              `is_deleted` tinyint NULL DEFAULT 0 COMMENT '是否删除 0-未删除 1-已删除',
-                             PRIMARY KEY (`id`) USING BTREE
+                             `deleted_time` datetime NULL DEFAULT NULL /*!80023 INVISIBLE */ COMMENT '逻辑删除时间',
+                             PRIMARY KEY (`id`) USING BTREE,
+                             INDEX `idx_is_deleted_deleted_time`(`is_deleted` ASC, `deleted_time` ASC) USING BTREE
 ) ENGINE = InnoDB AUTO_INCREMENT = 29 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci ROW_FORMAT = DYNAMIC;
 
 -- ----------------------------
@@ -355,8 +377,10 @@ CREATE TABLE `sys_operationlog`  (
                                      `create_time` datetime NOT NULL COMMENT '创建时间',
                                      `update_time` datetime NOT NULL COMMENT '更新时间',
                                      `is_deleted` tinyint NOT NULL DEFAULT 0 COMMENT '是否删除 0-正常 1-删除',
+                                     `deleted_time` datetime NULL DEFAULT NULL /*!80023 INVISIBLE */ COMMENT '逻辑删除时间',
                                      PRIMARY KEY (`id`) USING BTREE,
-                                     INDEX `idx_operator_time`(`operator_id` ASC, `create_time` DESC) USING BTREE
+                                     INDEX `idx_operator_time`(`operator_id` ASC, `create_time` DESC) USING BTREE,
+                                     INDEX `idx_is_deleted_deleted_time`(`is_deleted` ASC, `deleted_time` ASC) USING BTREE
 ) ENGINE = InnoDB AUTO_INCREMENT = 4885 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci ROW_FORMAT = Dynamic;
 
 
@@ -372,7 +396,9 @@ CREATE TABLE `sys_permission`  (
                                    `create_time` datetime NOT NULL COMMENT '创建时间',
                                    `update_time` datetime NOT NULL COMMENT '更新时间',
                                    `is_deleted` tinyint NOT NULL DEFAULT 0 COMMENT '是否删除 0-未删除 1-已删除',
-                                   PRIMARY KEY (`id`) USING BTREE
+                                   `deleted_time` datetime NULL DEFAULT NULL /*!80023 INVISIBLE */ COMMENT '逻辑删除时间',
+                                   PRIMARY KEY (`id`) USING BTREE,
+                                   INDEX `idx_is_deleted_deleted_time`(`is_deleted` ASC, `deleted_time` ASC) USING BTREE
 ) ENGINE = InnoDB AUTO_INCREMENT = 101 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci ROW_FORMAT = DYNAMIC;
 
 -- ----------------------------
@@ -469,7 +495,9 @@ CREATE TABLE `sys_role`  (
                              `create_time` datetime NOT NULL COMMENT '创建时间',
                              `update_time` datetime NOT NULL COMMENT '更新时间',
                              `is_deleted` tinyint NULL DEFAULT 0 COMMENT '是否删除 0-未删除 1-已删除',
-                             PRIMARY KEY (`id`) USING BTREE
+                             `deleted_time` datetime NULL DEFAULT NULL /*!80023 INVISIBLE */ COMMENT '逻辑删除时间',
+                             PRIMARY KEY (`id`) USING BTREE,
+                             INDEX `idx_is_deleted_deleted_time`(`is_deleted` ASC, `deleted_time` ASC) USING BTREE
 ) ENGINE = InnoDB AUTO_INCREMENT = 15 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci ROW_FORMAT = DYNAMIC;
 
 -- ----------------------------
@@ -689,7 +717,9 @@ CREATE TABLE `sys_user`  (
                              `create_time` datetime NOT NULL COMMENT '创建时间',
                              `update_time` datetime NOT NULL COMMENT '更新时间',
                              `is_deleted` tinyint NULL DEFAULT 0 COMMENT '是否删除 0-未删除 1-已删除',
-                             PRIMARY KEY (`id`) USING BTREE
+                             `deleted_time` datetime NULL DEFAULT NULL /*!80023 INVISIBLE */ COMMENT '逻辑删除时间',
+                             PRIMARY KEY (`id`) USING BTREE,
+                             INDEX `idx_is_deleted_deleted_time`(`is_deleted` ASC, `deleted_time` ASC) USING BTREE
 ) ENGINE = InnoDB AUTO_INCREMENT = 39 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci ROW_FORMAT = DYNAMIC;
 
 -- ----------------------------
@@ -1649,5 +1679,193 @@ CREATE TABLE `user_settings`  (
 -- ----------------------------
 INSERT INTO `user_settings` VALUES (1, 1, 1, 1, 1);
 INSERT INTO `user_settings` VALUES (2, 2, 1, 1, 1);
+
+-- ----------------------------
+-- Triggers for logic delete time
+-- ----------------------------
+DROP TRIGGER IF EXISTS `trg_article_logic_delete_time`;
+DROP TRIGGER IF EXISTS `trg_article_column_logic_delete_time`;
+DROP TRIGGER IF EXISTS `trg_column_logic_delete_time`;
+DROP TRIGGER IF EXISTS `trg_comment_logic_delete_time`;
+DROP TRIGGER IF EXISTS `trg_conversation_logic_delete_time`;
+DROP TRIGGER IF EXISTS `trg_favorite_logic_delete_time`;
+DROP TRIGGER IF EXISTS `trg_history_logic_delete_time`;
+DROP TRIGGER IF EXISTS `trg_message_logic_delete_time`;
+DROP TRIGGER IF EXISTS `trg_photo_logic_delete_time`;
+DROP TRIGGER IF EXISTS `trg_private_message_logic_delete_time`;
+DROP TRIGGER IF EXISTS `trg_sys_menu_logic_delete_time`;
+DROP TRIGGER IF EXISTS `trg_sys_operationlog_logic_delete_time`;
+DROP TRIGGER IF EXISTS `trg_sys_permission_logic_delete_time`;
+DROP TRIGGER IF EXISTS `trg_sys_role_logic_delete_time`;
+DROP TRIGGER IF EXISTS `trg_sys_user_logic_delete_time`;
+
+DELIMITER //
+
+CREATE TRIGGER `trg_article_logic_delete_time`
+BEFORE UPDATE ON `article`
+FOR EACH ROW
+BEGIN
+    IF OLD.`is_deleted` = 0 AND NEW.`is_deleted` = 1 THEN
+        SET NEW.`deleted_time` = CURRENT_TIMESTAMP;
+    ELSEIF OLD.`is_deleted` = 1 AND NEW.`is_deleted` = 0 THEN
+        SET NEW.`deleted_time` = NULL;
+    END IF;
+END//
+
+CREATE TRIGGER `trg_article_column_logic_delete_time`
+BEFORE UPDATE ON `article_column`
+FOR EACH ROW
+BEGIN
+    IF OLD.`is_deleted` = 0 AND NEW.`is_deleted` = 1 THEN
+        SET NEW.`deleted_time` = CURRENT_TIMESTAMP;
+    ELSEIF OLD.`is_deleted` = 1 AND NEW.`is_deleted` = 0 THEN
+        SET NEW.`deleted_time` = NULL;
+    END IF;
+END//
+
+CREATE TRIGGER `trg_column_logic_delete_time`
+BEFORE UPDATE ON `column`
+FOR EACH ROW
+BEGIN
+    IF OLD.`is_deleted` = 0 AND NEW.`is_deleted` = 1 THEN
+        SET NEW.`deleted_time` = CURRENT_TIMESTAMP;
+    ELSEIF OLD.`is_deleted` = 1 AND NEW.`is_deleted` = 0 THEN
+        SET NEW.`deleted_time` = NULL;
+    END IF;
+END//
+
+CREATE TRIGGER `trg_comment_logic_delete_time`
+BEFORE UPDATE ON `comment`
+FOR EACH ROW
+BEGIN
+    IF OLD.`is_deleted` = 0 AND NEW.`is_deleted` = 1 THEN
+        SET NEW.`deleted_time` = CURRENT_TIMESTAMP;
+    ELSEIF OLD.`is_deleted` = 1 AND NEW.`is_deleted` = 0 THEN
+        SET NEW.`deleted_time` = NULL;
+    END IF;
+END//
+
+CREATE TRIGGER `trg_conversation_logic_delete_time`
+BEFORE UPDATE ON `conversation`
+FOR EACH ROW
+BEGIN
+    IF OLD.`is_deleted` = 0 AND NEW.`is_deleted` = 1 THEN
+        SET NEW.`deleted_time` = CURRENT_TIMESTAMP;
+    ELSEIF OLD.`is_deleted` = 1 AND NEW.`is_deleted` = 0 THEN
+        SET NEW.`deleted_time` = NULL;
+    END IF;
+END//
+
+CREATE TRIGGER `trg_favorite_logic_delete_time`
+BEFORE UPDATE ON `favorite`
+FOR EACH ROW
+BEGIN
+    IF OLD.`is_deleted` = 0 AND NEW.`is_deleted` = 1 THEN
+        SET NEW.`deleted_time` = CURRENT_TIMESTAMP;
+    ELSEIF OLD.`is_deleted` = 1 AND NEW.`is_deleted` = 0 THEN
+        SET NEW.`deleted_time` = NULL;
+    END IF;
+END//
+
+CREATE TRIGGER `trg_history_logic_delete_time`
+BEFORE UPDATE ON `history`
+FOR EACH ROW
+BEGIN
+    IF OLD.`is_deleted` = 0 AND NEW.`is_deleted` = 1 THEN
+        SET NEW.`deleted_time` = CURRENT_TIMESTAMP;
+    ELSEIF OLD.`is_deleted` = 1 AND NEW.`is_deleted` = 0 THEN
+        SET NEW.`deleted_time` = NULL;
+    END IF;
+END//
+
+CREATE TRIGGER `trg_message_logic_delete_time`
+BEFORE UPDATE ON `message`
+FOR EACH ROW
+BEGIN
+    IF OLD.`is_deleted` = 0 AND NEW.`is_deleted` = 1 THEN
+        SET NEW.`deleted_time` = CURRENT_TIMESTAMP;
+    ELSEIF OLD.`is_deleted` = 1 AND NEW.`is_deleted` = 0 THEN
+        SET NEW.`deleted_time` = NULL;
+    END IF;
+END//
+
+CREATE TRIGGER `trg_photo_logic_delete_time`
+BEFORE UPDATE ON `photo`
+FOR EACH ROW
+BEGIN
+    IF OLD.`is_deleted` = 0 AND NEW.`is_deleted` = 1 THEN
+        SET NEW.`deleted_time` = CURRENT_TIMESTAMP;
+    ELSEIF OLD.`is_deleted` = 1 AND NEW.`is_deleted` = 0 THEN
+        SET NEW.`deleted_time` = NULL;
+    END IF;
+END//
+
+CREATE TRIGGER `trg_private_message_logic_delete_time`
+BEFORE UPDATE ON `private_message`
+FOR EACH ROW
+BEGIN
+    IF OLD.`is_deleted` = 0 AND NEW.`is_deleted` = 1 THEN
+        SET NEW.`deleted_time` = CURRENT_TIMESTAMP;
+    ELSEIF OLD.`is_deleted` = 1 AND NEW.`is_deleted` = 0 THEN
+        SET NEW.`deleted_time` = NULL;
+    END IF;
+END//
+
+CREATE TRIGGER `trg_sys_menu_logic_delete_time`
+BEFORE UPDATE ON `sys_menu`
+FOR EACH ROW
+BEGIN
+    IF IFNULL(OLD.`is_deleted`, 0) = 0 AND IFNULL(NEW.`is_deleted`, 0) = 1 THEN
+        SET NEW.`deleted_time` = CURRENT_TIMESTAMP;
+    ELSEIF IFNULL(OLD.`is_deleted`, 0) = 1 AND IFNULL(NEW.`is_deleted`, 0) = 0 THEN
+        SET NEW.`deleted_time` = NULL;
+    END IF;
+END//
+
+CREATE TRIGGER `trg_sys_operationlog_logic_delete_time`
+BEFORE UPDATE ON `sys_operationlog`
+FOR EACH ROW
+BEGIN
+    IF OLD.`is_deleted` = 0 AND NEW.`is_deleted` = 1 THEN
+        SET NEW.`deleted_time` = CURRENT_TIMESTAMP;
+    ELSEIF OLD.`is_deleted` = 1 AND NEW.`is_deleted` = 0 THEN
+        SET NEW.`deleted_time` = NULL;
+    END IF;
+END//
+
+CREATE TRIGGER `trg_sys_permission_logic_delete_time`
+BEFORE UPDATE ON `sys_permission`
+FOR EACH ROW
+BEGIN
+    IF OLD.`is_deleted` = 0 AND NEW.`is_deleted` = 1 THEN
+        SET NEW.`deleted_time` = CURRENT_TIMESTAMP;
+    ELSEIF OLD.`is_deleted` = 1 AND NEW.`is_deleted` = 0 THEN
+        SET NEW.`deleted_time` = NULL;
+    END IF;
+END//
+
+CREATE TRIGGER `trg_sys_role_logic_delete_time`
+BEFORE UPDATE ON `sys_role`
+FOR EACH ROW
+BEGIN
+    IF IFNULL(OLD.`is_deleted`, 0) = 0 AND IFNULL(NEW.`is_deleted`, 0) = 1 THEN
+        SET NEW.`deleted_time` = CURRENT_TIMESTAMP;
+    ELSEIF IFNULL(OLD.`is_deleted`, 0) = 1 AND IFNULL(NEW.`is_deleted`, 0) = 0 THEN
+        SET NEW.`deleted_time` = NULL;
+    END IF;
+END//
+
+CREATE TRIGGER `trg_sys_user_logic_delete_time`
+BEFORE UPDATE ON `sys_user`
+FOR EACH ROW
+BEGIN
+    IF IFNULL(OLD.`is_deleted`, 0) = 0 AND IFNULL(NEW.`is_deleted`, 0) = 1 THEN
+        SET NEW.`deleted_time` = CURRENT_TIMESTAMP;
+    ELSEIF IFNULL(OLD.`is_deleted`, 0) = 1 AND IFNULL(NEW.`is_deleted`, 0) = 0 THEN
+        SET NEW.`deleted_time` = NULL;
+    END IF;
+END//
+
+DELIMITER ;
 
 SET FOREIGN_KEY_CHECKS = 1;
