@@ -1,7 +1,9 @@
 package com.zcx.chenstack.redis;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.zcx.chenstack.domain.constants.RedisConstants;
 import com.zcx.chenstack.domain.entity.SysUser;
+import com.zcx.chenstack.domain.vo.SysPermissionVo;
 import com.zcx.chenstack.utils.MyThreadFactory;
 import com.zcx.chenstack.utils.RedisUtils;
 import jakarta.annotation.Resource;
@@ -26,6 +28,9 @@ public class RedisComponent {
 
     @Resource
     private StringRedisTemplate stringRedisTemplate;
+
+    @Resource
+    private ObjectMapper objectMapper;
 
     /**
      * 获取 RedisUtils 工具类实例
@@ -358,6 +363,79 @@ public class RedisComponent {
      */
     public void removeDashboardStatistics() {
         redisUtils.del(RedisConstants.DashboardStatistics);
+    }
+
+    // ==================== 权限完整列表缓存相关方法 ====================
+
+    /**
+     * 获取权限完整列表缓存
+     *
+     * @return 权限完整列表，不存在或缓存异常时返回 null
+     */
+    public List<SysPermissionVo> getPermissionListFromCache() {
+        try {
+            Object cacheValue = redisUtils.get(RedisConstants.PermissionAll);
+            if (cacheValue == null) {
+                return null;
+            }
+            if (!(cacheValue instanceof List<?> cacheList)) {
+                log.warn("权限完整列表缓存类型异常，redisKey={}", RedisConstants.PermissionAll);
+                removePermissionListCache();
+                return null;
+            }
+
+            List<SysPermissionVo> permissionVos = new ArrayList<>();
+            for (Object item : cacheList) {
+                if (item instanceof SysPermissionVo permissionVo) {
+                    permissionVos.add(permissionVo);
+                    continue;
+                }
+                try {
+                    SysPermissionVo permissionVo = objectMapper.convertValue(item, SysPermissionVo.class);
+                    if (permissionVo == null) {
+                        log.warn("权限完整列表缓存元素转换结果为空，redisKey={}", RedisConstants.PermissionAll);
+                        removePermissionListCache();
+                        return null;
+                    }
+                    permissionVos.add(permissionVo);
+                } catch (IllegalArgumentException e) {
+                    log.warn("权限完整列表缓存元素转换失败，redisKey={}，elementType={}",
+                            RedisConstants.PermissionAll, item == null ? "null" : item.getClass().getName(), e);
+                    removePermissionListCache();
+                    return null;
+                }
+            }
+            return permissionVos;
+        } catch (Exception e) {
+            log.warn("读取权限完整列表缓存失败，将回源数据库，redisKey={}", RedisConstants.PermissionAll, e);
+            removePermissionListCache();
+            return null;
+        }
+    }
+
+    /**
+     * 设置权限完整列表缓存
+     *
+     * @param permissions 完整权限列表
+     */
+    public void setPermissionListToCache(List<SysPermissionVo> permissions) {
+        try {
+            redisUtils.set(RedisConstants.PermissionAll, permissions,
+                    RedisConstants.PERMISSION_ALL_EXPIRE_TIME, TimeUnit.SECONDS);
+        } catch (Exception e) {
+            log.warn("写入权限完整列表缓存失败，redisKey={}", RedisConstants.PermissionAll, e);
+        }
+    }
+
+    /**
+     * 删除权限完整列表缓存
+     */
+    public void removePermissionListCache() {
+        try {
+            redisUtils.del(RedisConstants.PermissionAll);
+        } catch (Exception e) {
+            log.warn("删除权限完整列表缓存失败，redisKey={}", RedisConstants.PermissionAll, e);
+        }
     }
 
     // ==================== 用户详情缓存相关方法 ====================

@@ -160,6 +160,17 @@ public class RedisConstants {
     public static final long DASHBOARD_STATISTICS_EXPIRE_TIME = 5 * 60;
 
     /**
+     * 权限完整列表缓存键
+     * 格式：chen_stack:Permission:All
+     */
+    public static final String PermissionAll = RedisKeyPrefix + "Permission:All";
+
+    /**
+     * 权限完整列表缓存过期时间（10 分钟，单位：秒）
+     */
+    public static final long PERMISSION_ALL_EXPIRE_TIME = 10 * 60;
+
+    /**
      * 用户详细信息缓存键前缀（包含角色、菜单、权限信息）
      * 格式：chen_stack:UserDetail: 用户 ID
      * 用于缓存用户的角色、菜单、权限信息，避免每次请求都查询数据库

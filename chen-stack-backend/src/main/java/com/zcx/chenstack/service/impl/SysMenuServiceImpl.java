@@ -18,6 +18,7 @@ import com.zcx.chenstack.exception.BlogException;
 import com.zcx.chenstack.mapper.SysMenuMapper;
 import com.zcx.chenstack.mapper.SysRoleMenuMapper;
 import com.zcx.chenstack.mapper.SysUserRoleMapper;
+import com.zcx.chenstack.redis.RedisComponent;
 import com.zcx.chenstack.service.SysMenuService;
 import com.zcx.chenstack.utils.SecurityUtils;
 import jakarta.annotation.Resource;
@@ -48,6 +49,9 @@ public class SysMenuServiceImpl extends ServiceImpl<SysMenuMapper, SysMenu> impl
 
     @Resource
     private SysUserRoleMapper sysUserRoleMapper;
+
+    @Resource
+    private RedisComponent redisComponent;
 
     /**
      * 查询登录用户的菜单
@@ -140,7 +144,11 @@ public class SysMenuServiceImpl extends ServiceImpl<SysMenuMapper, SysMenu> impl
         }
         sysMenuDto.setStatus(0);// 默认状态为正常
         SysMenu sysMenu = BeanUtil.copyProperties(sysMenuDto, SysMenu.class);
-        this.save(sysMenu);
+        boolean saved = this.save(sysMenu);
+        if (!saved) {
+            throw new BlogException(BlogConstants.SystemInternalError);
+        }
+        redisComponent.removePermissionListCache();
     }
 
     // 更新菜单
@@ -182,7 +190,11 @@ public class SysMenuServiceImpl extends ServiceImpl<SysMenuMapper, SysMenu> impl
         }
 
         SysMenu sysMenu = BeanUtil.copyProperties(sysMenuDto, SysMenu.class);
-        this.updateById(sysMenu);
+        boolean updated = this.updateById(sysMenu);
+        if (!updated) {
+            throw new BlogException(BlogConstants.SystemInternalError);
+        }
+        redisComponent.removePermissionListCache();
     }
 
     // 删除菜单
@@ -202,6 +214,7 @@ public class SysMenuServiceImpl extends ServiceImpl<SysMenuMapper, SysMenu> impl
         }
         // 删除角色_菜单关联表
         sysRoleMenuMapper.delete(new QueryWrapper<SysRoleMenu>().lambda().eq(SysRoleMenu::getMenuId, id));
+        redisComponent.removePermissionListCache();
     }
 
     // 根据菜单名称查找菜单
