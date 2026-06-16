@@ -100,23 +100,6 @@
               </div>
             </div>
 
-            <!-- 移动端专属：热门标签（在热门搜索下方） -->
-            <div v-if="!hasSearched" class="mobile-hot-tags">
-              <div class="section-header">
-                <span class="section-title">🏷️ 热门标签</span>
-              </div>
-              <div class="tag-cloud">
-                <span
-                  v-for="(tag, index) in hotTags"
-                  :key="index"
-                  class="cloud-tag"
-                  :class="getTagSizeClass(index)"
-                  @click="searchByTag(tag.name)"
-                >
-                  {{ tag.name }}
-                </span>
-              </div>
-            </div>
           </div>
         </section>
 
@@ -313,27 +296,6 @@
       </aside>
     </div>
 
-    <!-- 移动端侧边栏 - 在主内容下方垂直排列 -->
-    <aside class="mobile-sidebar">
-      <!-- 推荐作者 -->
-      <div class="sidebar-card">
-        <h3 class="sidebar-title">👨‍ 推荐作者</h3>
-        <div class="author-list">
-          <div
-            v-for="(author, index) in recommendedAuthors"
-            :key="index"
-            class="author-item"
-            @click="goToAuthor(author.id)"
-          >
-            <el-avatar :size="40" :src="author.avatar || ''" class="author-avatar" />
-            <div class="author-info">
-              <div class="author-name">{{ author.nickname || author.username }}</div>
-              <div class="author-desc">{{ author.articleCount || 0 }} 篇文章</div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </aside>
   </div>
 </template>
 
@@ -1533,100 +1495,11 @@ onUnmounted(() => {
     }
   }
 
-  // 移动端侧边栏 - 显示在主内容下方
-  .search-container > .mobile-sidebar {
-    display: flex;
-    flex-direction: column;
-    gap: 16px;
-    padding: 16px;
-
-    .sidebar-card {
-      background: var(--bg-card);
-      border-radius: 12px;
-      padding: 16px;
-      box-shadow: var(--shadow);
-
-      .sidebar-title {
-        font-size: 15px;
-        font-weight: 600;
-        margin-bottom: 12px;
-        color: var(--text-primary);
-      }
-    }
-
-    // 标签云
-    .tag-cloud {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
-
-      .cloud-tag {
-        padding: 6px 12px;
-        font-size: 13px;
-      }
-    }
-
-    // 作者列表
-    .author-list {
-      display: flex;
-      flex-direction: column;
-      gap: 12px;
-
-      .author-item {
-        display: flex;
-        align-items: center;
-        gap: 12px;
-        padding: 8px;
-        border-radius: 8px;
-        cursor: pointer;
-        transition: background 0.2s;
-
-        &:hover {
-          background: var(--bg-page);
-        }
-
-        .author-avatar {
-          flex-shrink: 0;
-          width: 40px;
-          height: 40px;
-          border-radius: 50%;
-          background: var(--bg-page);
-        }
-
-        .author-info {
-          flex: 1;
-          min-width: 0;
-
-          .author-name {
-            font-size: 14px;
-            font-weight: 500;
-            color: var(--text-primary);
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-          }
-
-          .author-desc {
-            font-size: 12px;
-            color: var(--text-muted);
-            margin-top: 2px;
-          }
-        }
-      }
-    }
-  }
 }
 
 // ≥769px: 桌面端，隐藏移动端侧边栏，显示原始侧边栏
 @media (min-width: 769px) {
-  .search-container > .mobile-sidebar {
-    display: none;
-  }
 
-  // 隐藏移动端专属热门标签
-  .mobile-hot-tags {
-    display: none;
-  }
 }
 
 // 768px 移动端其他样式优化
@@ -1657,62 +1530,6 @@ onUnmounted(() => {
           grid-template-columns: 1fr;
         }
 
-        // 移动端专属：热门标签（在热门搜索下方）
-        .mobile-hot-tags {
-          margin-top: 20px;
-          padding-top: 20px;
-          border-top: 1px solid var(--border);
-
-          .section-header {
-            margin-bottom: 12px;
-
-            .section-title {
-              font-size: 14px;
-              font-weight: 500;
-              color: var(--text-muted);
-            }
-          }
-
-          .tag-cloud {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 8px;
-
-            .cloud-tag {
-              display: inline-flex;
-              align-items: center;
-              justify-content: center;
-              padding: 6px 12px;
-              font-size: 13px;
-              background: var(--bg-page);
-              border-radius: 16px;
-              color: var(--text-regular);
-              cursor: pointer;
-              transition: all 0.2s;
-              line-height: 1;
-              min-height: 32px;
-
-              &:hover {
-                background: var(--primary);
-                color: white;
-              }
-
-              &.large {
-                font-size: 15px;
-                padding: 6px 14px;
-                font-weight: 500;
-              }
-
-              &.medium {
-                font-size: 14px;
-              }
-
-              &.small {
-                font-size: 12px;
-              }
-            }
-          }
-        }
       }
     }
 
@@ -1859,17 +1676,6 @@ onUnmounted(() => {
           }
         }
 
-        // 移动端专属热门标签
-        .mobile-hot-tags {
-          .tag-cloud {
-            gap: 6px;
-
-            .cloud-tag {
-              padding: 5px 10px;
-              font-size: 12px;
-            }
-          }
-        }
       }
     }
 
@@ -1991,49 +1797,6 @@ onUnmounted(() => {
       }
     }
 
-    // 移动端侧边栏
-    .mobile-sidebar {
-      padding: 12px;
-      gap: 12px;
-
-      .sidebar-card {
-        padding: 12px;
-
-        .sidebar-title {
-          font-size: 15px;
-        }
-      }
-
-      .tag-cloud {
-        gap: 6px;
-
-        .cloud-tag {
-          padding: 6px 10px;
-          font-size: 12px;
-        }
-      }
-
-      .author-list {
-        gap: 8px;
-
-        .author-item {
-          padding: 8px;
-
-          .author-avatar {
-            width: 36px;
-            height: 36px;
-          }
-
-          .author-name {
-            font-size: 13px;
-          }
-
-          .author-desc {
-            font-size: 11px;
-          }
-        }
-      }
-    }
   }
 
   // 触摸优化 - 所有可点击元素

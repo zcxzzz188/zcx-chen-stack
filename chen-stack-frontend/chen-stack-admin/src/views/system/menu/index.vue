@@ -61,80 +61,6 @@
         </el-table>
       </div>
     </template>
-
-    <!-- 移动端卡片视图 -->
-    <template #card-view>
-      <div class="menu-cards" v-loading="loading">
-        <div v-for="menu in flatMenuList" :key="menu.id" class="menu-card" :style="{ marginLeft: menu.level * 16 + 'px' }">
-          <div class="menu-card-header">
-            <div v-if="menu.hasChildren" class="expand-button" @click="toggleMenuExpand(menu.id)">
-              <el-icon :class="['expand-icon', { expanded: isMenuExpanded(menu.id) }]">
-                <ArrowRight />
-              </el-icon>
-            </div>
-            <div class="menu-icon-wrapper">
-              <el-icon v-if="menu.icon" class="menu-icon"><component :is="menu.icon" /></el-icon>
-              <el-icon v-else class="menu-icon placeholder"><Document /></el-icon>
-            </div>
-            <div class="menu-main-info">
-              <div class="menu-id-badge">ID: {{ menu.id }}</div>
-              <div class="menu-name">{{ menu.name }}</div>
-              <div v-if="menu.path" class="menu-path">{{ menu.path }}</div>
-            </div>
-          </div>
-          <div class="menu-details">
-            <div v-if="menu.parentId !== undefined" class="detail-item">
-              <span class="label">父菜单ID:</span>
-              <span class="value">{{ menu.parentId === 0 ? '无' : menu.parentId }}</span>
-            </div>
-            <div v-if="menu.component" class="detail-item">
-              <span class="label">组件路径:</span>
-              <span class="value">{{ menu.component }}</span>
-            </div>
-            <div class="detail-item">
-              <span class="label">排序:</span>
-              <span class="value">{{ menu.sort }}</span>
-            </div>
-            <div class="detail-item">
-              <span class="label">创建时间:</span>
-              <span class="value">{{ menu.createTime }}</span>
-            </div>
-            <div class="detail-item">
-              <span class="label">更新时间:</span>
-              <span class="value">{{ menu.updateTime }}</span>
-            </div>
-          </div>
-          <div class="menu-status-section">
-            <span :title="getStatusDisabledReason(menu) || ''">
-              <el-switch
-                v-model="menu.status"
-                size="large"
-                active-color="var(--admin-primary)"
-                inactive-color="#cccccc"
-                active-text="正常"
-                inactive-text="禁用"
-                :active-value="0"
-                :inactive-value="1"
-                inline-prompt
-                :loading="switchLoading"
-                :disabled="isSystemManagementMenu(menu)"
-                :before-change="() => handleStatusChange(menu, menu.status === 0 ? 1 : 0)"
-              />
-            </span>
-          </div>
-          <div class="menu-actions">
-            <span v-if="menu.hasChildren || menu.parentId == 0" :title="getAddDisabledReason(menu) || ''">
-              <el-button text bg type="success" size="small" :icon="Plus" @click="handleAddMenu(menu)" :disabled="isSystemManagementMenu(menu)">新增</el-button>
-            </span>
-            <el-button text bg type="primary" size="small" :icon="Edit" @click="handleEditMenu(menu)">编辑</el-button>
-            <span :title="getDeleteDisabledReason(menu) || ''">
-              <el-button text bg type="danger" size="small" :icon="Delete" @click="handleDeleteMenu(menu)" :disabled="isSystemManagementMenu(menu)">删除</el-button>
-            </span>
-            <el-button text bg type="warning" size="small" :icon="Avatar" @click="handleAuthorizeRole(menu)">角色</el-button>
-          </div>
-        </div>
-      </div>
-    </template>
   </ManagementCard>
 
   <!-- 新增/编辑菜单对话框 -->
@@ -236,22 +162,6 @@ const getAddDisabledReason = (menu) => (isSystemManagementMenu(menu) ? '系统�
 
 const getDeleteDisabledReason = (menu) => (isSystemManagementMenu(menu) ? '系统管理菜单不能删除' : '')
 
-// 移动端检测
-const isMobileView = ref(false)
-const expandedMenus = ref(new Set())
-
-const toggleMenuExpand = (menuId) => {
-  if (expandedMenus.value.has(menuId)) {
-    expandedMenus.value.delete(menuId)
-  } else {
-    expandedMenus.value.add(menuId)
-  }
-  expandedMenus.value = new Set(expandedMenus.value)
-}
-
-const isMenuExpanded = (menuId) => {
-  return expandedMenus.value.has(menuId)
-}
 
 // 菜单列表数据
 const menuList = ref([])
@@ -621,33 +531,9 @@ const handleAuthorizeDialogClose = () => {
   currentMenu.value = null
 }
 
-// 扁平化的菜单列表（用于移动端显示）
-const flatMenuList = computed(() => {
-  const flattenMenus = (menus, level = 0, result = []) => {
-    menus.forEach((menu) => {
-      const flatMenu = { ...menu, level, hasChildren: menu.children && menu.children.length > 0 }
-      result.push(flatMenu)
-      if (flatMenu.hasChildren && isMenuExpanded(menu.id)) {
-        flattenMenus(menu.children, level + 1, result)
-      }
-    })
-    return result
-  }
-  return flattenMenus(paginatedMenuList.value)
-})
-
-const handleResize = () => {
-  isMobileView.value = window.innerWidth <= 768
-}
 
 onMounted(() => {
   fetchMenus()
-  handleResize()
-  window.addEventListener('resize', handleResize)
-})
-
-onUnmounted(() => {
-  window.removeEventListener('resize', handleResize)
 })
 </script>
 
@@ -738,169 +624,6 @@ onUnmounted(() => {
   }
 }
 
-// 移动端卡片视图
-.menu-cards {
-  display: flex;
-  flex-direction: column;
-  gap: 0;
-  padding: 10px;
-
-  .menu-card {
-    background: var(--el-bg-color);
-    border-radius: 8px;
-    border: 1px solid var(--el-border-color-lighter);
-    overflow: hidden;
-    box-shadow: var(--shadow-card);
-    transition: all 0.3s ease;
-    margin-bottom: 8px;
-
-    &:hover {
-      transform: translateY(-2px);
-      box-shadow: var(--shadow-hover);
-    }
-
-    .menu-card-header {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      padding: 16px;
-      background-color: var(--el-bg-color-page);
-      border-bottom: 1px solid var(--el-border-color-lighter);
-
-      .expand-button {
-        cursor: pointer;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        width: 32px;
-        height: 32px;
-        border-radius: 6px;
-        background-color: var(--el-fill-color-light);
-        flex-shrink: 0;
-
-        &:hover {
-          background-color: var(--admin-primary-lighter);
-        }
-
-        .expand-icon {
-          font-size: 18px;
-          color: var(--text-light);
-          transition: transform 0.3s ease;
-
-          &.expanded {
-            transform: rotate(90deg);
-          }
-        }
-      }
-
-      .menu-icon-wrapper {
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        width: 48px;
-        height: 48px;
-        border-radius: 12px;
-        background: linear-gradient(135deg, var(--admin-primary) 0%, var(--admin-primary-dark) 100%);
-
-        .menu-icon {
-          font-size: 24px;
-          color: white;
-
-          &.placeholder {
-            opacity: 0.6;
-          }
-        }
-      }
-
-      .menu-main-info {
-        flex: 1;
-        min-width: 0;
-
-        .menu-id-badge {
-          display: inline-block;
-          padding: 2px 8px;
-          background-color: var(--bg-blue-light);
-          color: var(--text-article-link);
-          border-radius: 12px;
-          font-size: 10px;
-          font-weight: 600;
-          margin-bottom: 4px;
-        }
-
-        .menu-name {
-          font-size: 16px;
-          font-weight: 600;
-          color: var(--el-text-color-primary);
-          margin-bottom: 4px;
-          overflow: hidden;
-          text-overflow: ellipsis;
-          white-space: nowrap;
-        }
-
-        .menu-path {
-          font-size: 12px;
-          color: var(--el-text-color-secondary);
-          overflow: hidden;
-          text-overflow: ellipsis;
-          white-space: nowrap;
-        }
-      }
-    }
-
-    .menu-details {
-      padding: 12px 16px;
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
-      background-color: var(--el-bg-color);
-
-      .detail-item {
-        display: flex;
-        align-items: flex-start;
-        font-size: 12px;
-        line-height: 1.5;
-
-        .label {
-          flex-shrink: 0;
-          width: 80px;
-          color: var(--el-text-color-secondary);
-          font-weight: 500;
-        }
-
-        .value {
-          flex: 1;
-          color: var(--el-text-color-primary);
-          word-break: break-all;
-        }
-      }
-    }
-
-    .menu-status-section {
-      display: flex;
-      justify-content: center;
-      border-top: 1px solid var(--el-border-color-lighter);
-      border-bottom: 1px solid var(--el-border-color-lighter);
-      background-color: var(--el-bg-color);
-    }
-
-    .menu-actions {
-      display: flex;
-      gap: 6px;
-      padding: 12px 16px;
-      justify-content: space-between;
-      background-color: var(--el-bg-color);
-
-      .el-button {
-        font-size: 12px;
-        padding: 6px 10px;
-        height: auto;
-        border-radius: 4px;
-        flex: 1;
-        min-width: 0;
-      }
-    }
-  }
-}
 
 // 对话框样式
 :deep(.el-dialog) {

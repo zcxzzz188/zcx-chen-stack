@@ -83,23 +83,6 @@
         <el-table-column prop="loginTime" label="登录时间" sortable width="180" />
       </DataTable>
     </template>
-
-    <!-- 移动端卡片视图 -->
-    <template #card-view>
-      <MobileCardList :data="paginatedLogList" :selectedItems="selectedLogs" showSelection showMeta :hasDeleteAction="true" @select="handleMobileSelect" @delete="handleDelete">
-        <!-- 自定义卡片内容 -->
-        <template #custom="{ item }">
-          <div class="mobile-meta">
-            <span class="meta-item">
-              <span class="label">用户:</span>
-              <span class="value">{{ item.username || '未知' }} (ID: {{ item.userId || '-' }})</span>
-            </span>
-          </div>
-          <div class="mobile-ip" v-if="item.loginIp">IP: {{ item.loginIp }}</div>
-          <div class="login-type" :class="getLoginTypeClass(item.loginType)">{{ item.loginTypeDesc }}</div>
-        </template>
-      </MobileCardList>
-    </template>
   </ManagementCard>
 </template>
 
@@ -111,7 +94,6 @@ import { getLoginLogList, searchLoginLog, deleteLoginLogs } from '@/api/loginLog
 // 组件
 import ManagementCard from '@/components/management/ManagementCard.vue'
 import DataTable from '@/components/data/DataTable.vue'
-import MobileCardList from '@/components/data/MobileCardList.vue'
 import BatchActions from '@/components/actions/BatchActions.vue'
 import KeywordSearch from '@/components/search/KeywordSearch.vue'
 import SearchButtons from '@/components/search/SearchButtons.vue'
@@ -246,15 +228,6 @@ const handleSelectionChange = (logs) => {
   selectedLogs.value = logs
 }
 
-// 移动端选择处理
-const handleMobileSelect = (log) => {
-  const index = selectedLogs.value.findIndex((item) => item.id === log.id)
-  if (index > -1) {
-    selectedLogs.value.splice(index, 1)
-  } else {
-    selectedLogs.value.push(log)
-  }
-}
 
 // 智能刷新列表
 const refreshLogList = async (deletedCount = 0) => {
@@ -415,25 +388,5 @@ onMounted(() => {
   }
 }
 
-// 移动端元信息
-.mobile-meta {
-  display: flex;
-  gap: 12px;
-  font-size: 12px;
-  color: var(--text-muted);
-  margin: 4px 0;
 
-  .meta-item {
-    .label {
-      font-weight: 500;
-      color: var(--text-secondary);
-    }
-  }
-}
-
-.mobile-ip {
-  font-size: 12px;
-  color: var(--text-muted);
-  margin-bottom: 4px;
-}
 </style>

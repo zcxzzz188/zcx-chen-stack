@@ -71,38 +71,6 @@
         <el-table-column prop="createTime" label="创建时间" sortable width="160" />
       </DataTable>
     </template>
-
-    <!-- 移动端卡片视图 -->
-    <template #card-view>
-      <MobileCardList
-        :data="paginatedMessageList"
-        :selectedItems="selectedMessages"
-        showSelection
-        showId
-        showMeta
-        :hasViewAction="true"
-        :hasDeleteAction="true"
-        @select="handleMobileSelect"
-        @view="handleView"
-        @delete="handleDelete"
-      >
-        <!-- 自定义卡片内容 -->
-        <template #custom="{ item }">
-          <div class="mobile-meta">
-            <span class="meta-item">
-              <span class="label">发送者:</span>
-              <span class="value">{{ item.senderId }}</span>
-            </span>
-            <span class="meta-item">
-              <span class="label">接收者:</span>
-              <span class="value">{{ item.receiverId }}</span>
-            </span>
-          </div>
-          <div class="mobile-content">{{ getMessageContent(item) }}</div>
-          <el-tag :type="item.isRead === 0 ? 'warning' : 'info'" size="small">{{ item.isRead === 0 ? '未读' : '已读' }}</el-tag>
-        </template>
-      </MobileCardList>
-    </template>
   </ManagementCard>
 
   <el-dialog v-model="detailVisible" title="通知详情" width="640px">
@@ -128,7 +96,6 @@ import { getMessagePage, readAdminMessages, unreadAdminMessages, deleteAdminMess
 // 组件
 import ManagementCard from '@/components/management/ManagementCard.vue'
 import DataTable from '@/components/data/DataTable.vue'
-import MobileCardList from '@/components/data/MobileCardList.vue'
 import ExamineStatusSelect from '@/components/search/ExamineStatusSelect.vue'
 import SearchButtons from '@/components/search/SearchButtons.vue'
 
@@ -226,15 +193,6 @@ const handleSelectionChange = (messages) => {
   selectedMessages.value = messages
 }
 
-// 移动端选择处理
-const handleMobileSelect = (message) => {
-  const index = selectedMessages.value.findIndex((item) => item.id === message.id)
-  if (index > -1) {
-    selectedMessages.value.splice(index, 1)
-  } else {
-    selectedMessages.value.push(message)
-  }
-}
 
 // 查看通知详情
 const handleView = async (row) => {
@@ -401,34 +359,7 @@ onMounted(() => {
   }
 }
 
-// 移动端元信息
-.mobile-meta {
-  display: flex;
-  gap: 12px;
-  font-size: 12px;
-  color: var(--text-muted);
-  margin: 4px 0;
 
-  .meta-item {
-    .label {
-      font-weight: 500;
-      color: var(--text-secondary);
-    }
-  }
-}
-
-// 移动端内容样式
-.mobile-content {
-  font-size: 13px;
-  color: var(--text-muted);
-  margin: 6px 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  line-clamp: 2;
-  -webkit-box-orient: vertical;
-}
 
 .detail-message-content {
   white-space: pre-wrap;

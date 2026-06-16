@@ -138,40 +138,6 @@
           <el-table-column prop="createTime" label="创建时间" sortable width="110" />
         </DataTable>
       </template>
-
-      <!-- 移动端卡片视图 -->
-      <template #card-view>
-        <MobileCardList
-          :data="paginatedCommentList"
-          :selectedItems="selectedComments"
-          showSelection
-          showMeta
-          :hasDetailAction="true"
-          :hasDeleteAction="true"
-          @select="handleMobileSelect"
-          @detail="handleViewComment"
-          @delete="handleDeleteComment"
-        >
-          <!-- 自定义卡片内容 -->
-          <template #custom="{ item }">
-            <div class="mobile-meta">
-              <span class="article-label">文章:</span>
-              <span class="article-name">{{ item.articleTitle || '未知文章' }}</span>
-            </div>
-            <div class="mobile-meta">
-              <StatusBadge :value="normalizeExamineStatus(item.examineStatus)" type="examine" />
-              <span v-if="item.replyUserNickname" class="reply-to">回复: {{ item.replyUserNickname }}</span>
-            </div>
-            <div class="mobile-stats">
-              <span><svg-icon name="like" width="12px" height="12px" /> {{ item.likeCount || 0 }}</span>
-              <span
-                ><el-icon><ChatDotRound /></el-icon> {{ item.replyCount || 0 }}</span
-              >
-            </div>
-            <div class="mobile-time">创建: {{ item.createTime }}</div>
-          </template>
-        </MobileCardList>
-      </template>
     </ManagementCard>
 
     <!-- 评论详情对话框 -->
@@ -281,7 +247,6 @@ import { getUserListWithCommentCount } from '@/api/comment'
 import { adminGetCommentsByUserId, adminSearchComment, adminExamineComment, adminExamineBatchComment, adminDeleteComment, adminDeleteBatchComment } from '@/api/comment'
 import ManagementCard from '@/components/management/ManagementCard.vue'
 import DataTable from '@/components/data/DataTable.vue'
-import MobileCardList from '@/components/data/MobileCardList.vue'
 import BatchActions from '@/components/actions/BatchActions.vue'
 import SearchButtons from '@/components/search/SearchButtons.vue'
 import ExamineStatusSelect from '@/components/search/ExamineStatusSelect.vue'
@@ -463,15 +428,6 @@ const isCommentSelected = (commentId) => {
   return selectedComments.value.some((comment) => comment.id === commentId)
 }
 
-// 移动端选择处理
-const handleMobileSelect = (comment) => {
-  const index = selectedComments.value.findIndex((item) => item.id === comment.id)
-  if (index > -1) {
-    selectedComments.value.splice(index, 1)
-  } else {
-    selectedComments.value.push(comment)
-  }
-}
 
 // 对话框关闭处理
 const handleDialogClose = () => {
@@ -854,50 +810,8 @@ onMounted(() => {
   font-size: 12px;
 }
 
-// 移动端元信息
-.mobile-meta {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 8px;
-  font-size: 12px;
-  color: var(--text-muted);
-  margin: 4px 0;
 
-  .article-label {
-    font-weight: 500;
-    color: var(--text-regular);
-  }
 
-  .article-name {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    flex: 1;
-  }
-
-  .reply-to {
-    color: var(--text-muted);
-  }
-}
-
-.mobile-stats {
-  display: flex;
-  gap: 12px;
-  font-size: 12px;
-  color: var(--text-muted);
-
-  span {
-    display: flex;
-    align-items: center;
-    gap: 2px;
-  }
-}
-
-.mobile-time {
-  font-size: 12px;
-  color: var(--text-muted);
-}
 
 // 评论详情对话框
 :deep(.comment-detail-dialog) {

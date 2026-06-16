@@ -128,34 +128,6 @@
         <el-table-column prop="createTime" label="操作时间" sortable width="110" />
       </DataTable>
     </template>
-
-    <!-- 移动端卡片视图 -->
-    <template #card-view>
-      <MobileCardList :data="logList" :selectedItems="selectedLogs" showSelection :hasDeleteAction="true" @select="handleMobileSelect" @delete="handleDelete">
-        <!-- 自定义卡片内容 -->
-        <template #custom="{ item }">
-          <div class="mobile-meta">
-            <span class="meta-item">
-              <span class="label">操作人员:</span>
-              <span class="value">{{ item.operatorName || '未知' }}</span>
-            </span>
-            <div class="role-type" :class="getRoleTypeClass(item.operatorRole)">
-              {{ item.operatorRole === 'admin' ? '超级管理员' : '内容管理员' }}
-            </div>
-            <div class="log-status" :class="getStatusClass(item.status)">
-              {{ getStatusText(item.status) }}
-            </div>
-          </div>
-          <div class="mobile-info-row" v-if="item.module">模块: {{ item.module }}</div>
-          <div class="mobile-info-row">操作: {{ item.operation }}</div>
-          <div class="mobile-info-row">
-            <span class="request-method-badge" :class="'method-' + item.requestMethod?.toLowerCase()">{{ item.requestMethod }}</span>
-            {{ item.requestUrl }}
-          </div>
-          <div class="mobile-time">耗时: {{ item.time }}ms | {{ item.createTime }}</div>
-        </template>
-      </MobileCardList>
-    </template>
   </ManagementCard>
 
   <!-- 详情弹窗 -->
@@ -214,7 +186,6 @@ import { getOperationLogList, searchOperationLog, deleteOperationLogs, getOperat
 // 组件
 import ManagementCard from '@/components/management/ManagementCard.vue'
 import DataTable from '@/components/data/DataTable.vue'
-import MobileCardList from '@/components/data/MobileCardList.vue'
 import BatchActions from '@/components/actions/BatchActions.vue'
 import KeywordSearch from '@/components/search/KeywordSearch.vue'
 import SearchButtons from '@/components/search/SearchButtons.vue'
@@ -446,15 +417,6 @@ const handleSelectionChange = (logs) => {
   selectedLogs.value = logs
 }
 
-// 移动端选择处理
-const handleMobileSelect = (log) => {
-  const index = selectedLogs.value.findIndex((item) => item.id === log.id)
-  if (index > -1) {
-    selectedLogs.value.splice(index, 1)
-  } else {
-    selectedLogs.value.push(log)
-  }
-}
 
 // 智能刷新列表
 const refreshLogList = async (deletedCount = 0) => {
@@ -649,30 +611,8 @@ onMounted(() => {
   font-weight: 600;
 }
 
-// 移动端元信息
-.mobile-meta {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 8px;
-  font-size: 12px;
-  margin-bottom: 4px;
-}
 
-.mobile-info-row {
-  font-size: 12px;
-  color: var(--text-muted);
-  margin-bottom: 2px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 
-.mobile-time {
-  font-size: 11px;
-  color: var(--text-muted);
-  margin-top: 4px;
-}
 
 // 请求方式徽章
 .request-method-badge {

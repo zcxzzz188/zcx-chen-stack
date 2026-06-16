@@ -8,10 +8,6 @@
     :ellipsis="false"
     :class="{ hidden: !isVisible }"
   >
-    <!-- 移动端菜单按钮 -->
-    <div class="mobile-menu-button" @click="toggleMobileMenu">
-      <svg-icon name="menu" width="50px" height="50px" cursor="pointer" />
-    </div>
     <a class="logo" href="/"><el-text size="large" class="logo-text">辰栈</el-text></a>
     <a href="/creation"><el-text class="creation-center">创作中心</el-text></a>
     <div class="right">
@@ -45,42 +41,6 @@
     </div>
   </el-menu>
 
-  <!-- 移动端菜单 -->
-  <teleport to="body">
-    <transition name="slide-fade">
-      <div v-show="isMobileMenuVisible" class="mobile-menu-overlay" @click="closeMobileMenu">
-        <el-menu
-          class="mobile-menu"
-          router
-          @click.stop
-          @select="closeMobileMenu"
-          :default-openeds="['/creation/manage']"
-        >
-          <el-menu-item index="/editor" class="menu-item">
-            <el-icon><Plus /></el-icon>
-            <span class="menu-text">创作</span>
-          </el-menu-item>
-          <el-menu-item index="/" class="menu-item">
-            <el-icon><House /></el-icon>
-            <span class="menu-text">网站首页</span>
-          </el-menu-item>
-          <el-menu-item index="/creation" class="menu-item">
-            <el-icon><HomeFilled /></el-icon>
-            <span class="menu-text">创作首页</span>
-          </el-menu-item>
-          <el-sub-menu index="/creation/manage" class="menu-item">
-            <template #title>
-              <el-icon><Management /></el-icon>
-              <span class="menu-text">管理</span>
-            </template>
-            <el-menu-item index="/creation/articlemanage"> 内容管理 </el-menu-item>
-            <el-menu-item index="/creation/columnmanage"> 专栏管理 </el-menu-item>
-            <el-menu-item index="/creation/commentmanage"> 评论管理 </el-menu-item>
-          </el-sub-menu>
-        </el-menu>
-      </div>
-    </transition>
-  </teleport>
 </template>
 
 <script setup>
@@ -90,7 +50,7 @@ import { ref, onMounted } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useRouter } from 'vue-router'
 import { info } from '@/api/user'
-import { UserFilled, HomeFilled, Management, House, Plus } from '@element-plus/icons-vue'
+import { UserFilled } from '@element-plus/icons-vue'
 import { ElMessageBox } from 'element-plus'
 
 const LAST_LOGOUT_USERNAME_KEY = 'chen_stack_user_last_logout_username'
@@ -155,18 +115,6 @@ const goToProfile = () => {
 
 const goToUserSettings = () => {
   window.location.href = '/setting'
-}
-
-// 移动端菜单是否可见
-const isMobileMenuVisible = ref(false)
-// 切换移动端菜单
-const toggleMobileMenu = () => {
-  isMobileMenuVisible.value = !isMobileMenuVisible.value
-}
-
-// 关闭移动端菜单
-const closeMobileMenu = () => {
-  isMobileMenuVisible.value = false
 }
 
 onMounted(() => {
@@ -287,63 +235,12 @@ onMounted(() => {
       cursor: pointer;
     }
   }
-  // 移动端菜单按钮
-  .mobile-menu-button {
-    // margin-right: 10px;
-    display: none;
-    cursor: pointer;
-  }
-}
-
-// 移动端菜单覆盖层
-.mobile-menu-overlay {
-  position: fixed; // 将遮罩层固定在视窗中，不随页面滚动
-  top: 0; // 使遮盖层覆盖整个视窗
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background-color: var(--mask);
-  z-index: 999;
-  display: flex;
-  .mobile-menu {
-    width: 150px;
-    display: flex;
-    flex-direction: column;
-    justify-content: center;
-    align-items: flex-start; // 菜单项水平左对齐
-    background-color: var(--el-bg-color);
-    .el-menu-item {
-      width: 100%;
-    }
-    ::v-deep(.el-sub-menu) {
-      width: 100%;
-    }
-  }
-}
-
-// 过渡动画
-.slide-fade-enter-active,
-.slide-fade-leave-active {
-  transition: all 0.3s ease;
-}
-
-.slide-fade-enter-from {
-  transform: translateX(-100%);
-  opacity: 0;
-}
-
-.slide-fade-leave-to {
-  transform: translateX(-100%);
-  opacity: 0;
 }
 
 // 响应式设计 - 移动端
 @media (max-width: 870px) {
   .pc-menu {
     padding: 0 5px 0 0;
-    .mobile-menu-button {
-      display: block; // 显示移动端菜单按钮
-    }
     .logo {
       margin-right: 0;
       .logo-text {

@@ -21,7 +21,6 @@
  * - 基于 el-pagination 的分页控件
  * - 支持 v-model:currentPage 和 v-model:pageSize 双向绑定
  * - 支持自定义每页条数选项（默认 [10, 20, 50, 100]）
- * - 支持响应式：移动端自动减少页码按钮数量
  *
  * 使用方式：
  * ```vue
@@ -29,7 +28,7 @@
  * ```
  */
 
-import { computed, ref, onMounted, onUnmounted } from 'vue'
+import { computed } from 'vue'
 
 // Props 定义
 const props = defineProps({
@@ -88,29 +87,7 @@ const handleCurrentChange = (current) => {
   emit('current-change', current)
 }
 
-// 移动端检测
-const isMobile = ref(false)
-
-// 根据屏幕宽度动态设置页码按钮数量
-const pagerCount = computed(() => {
-  return isMobile.value ? 3 : 7 // 移动端显示5个，桌面端显示7个
-})
-
-// 监听窗口大小变化
-const handleResize = () => {
-  isMobile.value = window.innerWidth <= 768
-}
-
-// 组件挂载时初始化
-onMounted(() => {
-  handleResize()
-  window.addEventListener('resize', handleResize)
-})
-
-// 组件卸载时移除监听
-onUnmounted(() => {
-  window.removeEventListener('resize', handleResize)
-})
+const pagerCount = 7
 </script>
 
 <style lang="scss" scoped>
@@ -128,10 +105,4 @@ onUnmounted(() => {
   box-sizing: border-box;
 }
 
-// 响应式设计
-@media screen and (max-width: 768px) {
-  .pagination-container {
-    padding: 4px;
-  }
-}
 </style>

@@ -91,38 +91,6 @@
         <el-table-column prop="replyCount" label="回复数" width="80" />
       </DataTable>
     </template>
-
-    <!-- 移动端卡片视图 -->
-    <template #card-view>
-      <MobileCardList
-        :data="paginatedCommentList"
-        :selectedItems="selectedComments"
-        showSelection
-        :hasAuditAction="true"
-        :hasRejectAction="true"
-        :hasDeleteAction="true"
-        @select="handleMobileSelect"
-        @audit="handleAuditComment"
-        @reject="handleRejectComment"
-        @delete="handleDeleteComment"
-      >
-        <!-- 自定义卡片内容 -->
-        <template #custom="{ item }">
-          <div class="mobile-header">
-            <span class="comment-id">#{{ item.id }}</span>
-            <span class="comment-status" :class="item.examineStatus === 0 ? 'status-unaudited' : item.examineStatus === 1 ? 'status-audited' : 'status-rejected'">
-              {{ item.examineStatus === 0 ? '待审核' : item.examineStatus === 1 ? '已审核' : '未通过' }}
-            </span>
-          </div>
-          <div class="mobile-content">{{ item.content }}</div>
-          <div class="mobile-meta">
-            <span>用户: {{ item.nickname }}</span>
-            <span v-if="item.articleTitle">文章: {{ item.articleTitle }}</span>
-          </div>
-          <div class="mobile-stats">点赞:{{ item.likeCount || 0 }} 回复:{{ item.replyCount || 0 }} | {{ item.createTime }}</div>
-        </template>
-      </MobileCardList>
-    </template>
   </ManagementCard>
 
   <!-- 评论详情对话框 -->
@@ -244,7 +212,6 @@ import { adminGetCommentList, adminDeleteComment, adminDeleteBatchComment, admin
 // 组件
 import ManagementCard from '@/components/management/ManagementCard.vue'
 import DataTable from '@/components/data/DataTable.vue'
-import MobileCardList from '@/components/data/MobileCardList.vue'
 import BatchActions from '@/components/actions/BatchActions.vue'
 import ExamineStatusSelect from '@/components/search/ExamineStatusSelect.vue'
 import UserSearchSelect from '@/components/search/UserSearchSelect.vue'
@@ -354,15 +321,6 @@ const handleSelectionChange = (comments) => {
   selectedComments.value = comments
 }
 
-// 移动端选择处理
-const handleMobileSelect = (comment) => {
-  const index = selectedComments.value.findIndex((item) => item.id === comment.id)
-  if (index > -1) {
-    selectedComments.value.splice(index, 1)
-  } else {
-    selectedComments.value.push(comment)
-  }
-}
 
 // 智能刷新列表
 const refreshCommentList = async (deletedCount = 0) => {
@@ -655,36 +613,9 @@ onMounted(() => {
   }
 }
 
-// 移动端卡片样式
-.mobile-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 4px;
-}
 
-.mobile-content {
-  font-size: 14px;
-  font-weight: 500;
-  color: var(--text-primary);
-  margin-bottom: 4px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 
-.mobile-meta {
-  display: flex;
-  gap: 8px;
-  font-size: 12px;
-  color: var(--text-muted);
-  margin-bottom: 4px;
-}
 
-.mobile-stats {
-  font-size: 11px;
-  color: var(--text-muted);
-}
 
 // ===== 评论详情对话框样式 ===== //
 :deep(.comment-detail-dialog) {

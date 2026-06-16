@@ -42,61 +42,10 @@
       </el-menu>
     </el-aside>
 
-    <!-- 移动端菜单 -->
-    <transition name="slide-fade">
-      <div v-show="isMobileMenuVisible" class="mobile-menu-overlay" @click="closeMobileMenu">
-        <el-menu
-          :default-active="activeMenu"
-          class="el-menu-mobile"
-          :background-color="sidebarBg"
-          :text-color="sidebarText"
-          :active-text-color="sidebarActiveText"
-          :router="true"
-          @click.stop
-          @select="closeMobileMenu"
-        >
-          <template v-for="menu in menus" :key="menu.id">
-            <el-sub-menu v-if="menu.children && menu.children.length > 0" :index="menu.path">
-              <template #title>
-                <el-icon :size="18"><component :is="menu.icon || 'Menu'" /></el-icon>
-                <span>{{ menu.name }}</span>
-              </template>
-              <template v-for="child in menu.children" :key="child.id">
-                <el-sub-menu v-if="child.children && child.children.length > 0" :index="child.path">
-                  <template #title>
-                    <el-icon :size="16"><component :is="child.icon || 'Menu'" /></el-icon>
-                    <span>{{ child.name }}</span>
-                  </template>
-                  <template v-for="grandchild in child.children" :key="grandchild.id">
-                    <el-menu-item :index="grandchild.path">
-                      <el-icon :size="16"><component :is="grandchild.icon || 'Menu'" /></el-icon>
-                      <span>{{ grandchild.name }}</span>
-                    </el-menu-item>
-                  </template>
-                </el-sub-menu>
-                <el-menu-item v-else :index="child.path">
-                  <el-icon :size="16"><component :is="child.icon || 'Menu'" /></el-icon>
-                  <span>{{ child.name }}</span>
-                </el-menu-item>
-              </template>
-            </el-sub-menu>
-            <el-menu-item v-else :index="menu.path">
-              <el-icon :size="18"><component :is="menu.icon || 'Menu'" /></el-icon>
-              <span>{{ menu.name }}</span>
-            </el-menu-item>
-          </template>
-        </el-menu>
-      </div>
-    </transition>
-
     <!-- 主内容区域 -->
     <el-container class="main-content">
       <!-- 顶部导航栏 -->
       <el-header class="header">
-        <!-- 移动端菜单按钮 -->
-        <div class="mobile-menu-button" @click="toggleMobileMenu">
-          <svg-icon name="menu" width="35px" height="35px" cursor="pointer" />
-        </div>
         <div class="header-right">
           <Dark />
           <!-- 消息通知 -->
@@ -182,10 +131,9 @@
  *
  * 功能说明：
  * - 后台管理系统的整体布局框架
- * - 包含左侧导航菜单（支持 PC 端和移动端）、顶部导航栏
- * - 顶部导航栏包含：移动端菜单按钮、主题切换、消息通知、用户信息下拉
+ * - 包含左侧导航菜单、顶部导航栏
+ * - 顶部导航栏包含：主题切换、消息通知、用户信息下拉
  * - 消息通知支持：未读数量显示、下拉列表、标记已读、删除
- * - 响应式设计：移动端菜单以 overlay 形式展示
  *
  * 使用方式：
  * ```vue
@@ -350,18 +298,6 @@ onMounted(() => {
 const menus = computed(() => {
   return userStore.menus
 })
-
-// 移动端菜单是否可见
-const isMobileMenuVisible = ref(false)
-// 切换移动端菜单
-const toggleMobileMenu = () => {
-  isMobileMenuVisible.value = !isMobileMenuVisible.value
-}
-
-// 关闭移动端菜单
-const closeMobileMenu = () => {
-  isMobileMenuVisible.value = false
-}
 
 // 当前激活的菜单
 const activeMenu = computed(() => {
@@ -549,10 +485,6 @@ const handleLogout = () => {
       padding: 0 24px;
       position: relative;
       z-index: 1000;
-
-      .mobile-menu-button {
-        display: none;
-      }
 
       .header-right {
         display: flex;
@@ -761,124 +693,6 @@ const handleLogout = () => {
     }
   }
 
-  // 响应式 - 手机端
-  @media screen and (max-width: 768px) {
-    .mobile-menu-overlay {
-      position: fixed; // 将遮罩层固定在视窗中，不随页面滚动
-      top: 0; // 使遮盖层覆盖整个视窗
-      left: 0;
-      right: 0;
-      bottom: 0;
-      background-color: rgba(0, 0, 0, 0.3);
-      z-index: 999;
-      display: flex;
-      .el-menu-mobile {
-        position: absolute;
-        border: 0;
-        top: 50px;
-        background-color: var(--sidebar-bg);
-        height: 100vh;
-        display: flex;
-        flex-direction: column;
-        align-items: flex-start; // 菜单项水平左对齐
-        overflow-y: auto;
-        overflow-x: hidden;
-        scrollbar-gutter: stable; // 始终为滚动条预留空间，避免布局抖动
-
-        // 自定义滚动条样式
-        &::-webkit-scrollbar {
-          width: 8px;
-        }
-
-        &::-webkit-scrollbar-track {
-          background: transparent;
-          margin: 4px 0;
-        }
-
-        &::-webkit-scrollbar-thumb {
-          background-color: var(--sidebar-scrollbar);
-          border-radius: 4px;
-          border: 2px solid transparent;
-          background-clip: content-box;
-
-          &:hover {
-            background-color: var(--sidebar-scrollbar-hover);
-          }
-        }
-
-        // 移动端子菜单样式
-        .el-sub-menu {
-          width: 100%;
-
-          // 移动端子菜单下的菜单项缩进
-          .el-menu-item {
-            padding-left: 40px !important;
-          }
-
-          // 移动端孙子菜单样式
-          .el-sub-menu {
-            // 移动端孙子菜单下的菜单项额外缩进
-            .el-menu-item {
-              padding-left: 60px !important;
-            }
-          }
-        }
-      }
-    }
-
-    // 侧边栏默认收起
-    .sidebar {
-      display: none;
-    }
-
-    // 主内容区域自适应
-    .main-content {
-      // 顶部导航栏
-      .header {
-        justify-content: space-between;
-        padding: 0 16px;
-        height: 50px;
-        .mobile-menu-button {
-          display: block;
-        }
-        .user-info {
-          span {
-            // display: none;
-          }
-        }
-      }
-    }
-  }
-
-  /* 移动端菜单动画 */
-  // 进入前和离开后的状态（初始和结束状态）
-  .slide-fade-enter-from,
-  .slide-fade-leave-to {
-    background-color: var(--mobile-overlay-bg);
-    .el-menu-mobile {
-      transform: translateX(-100%); // 菜单在左侧，向右滑入
-      opacity: 0;
-    }
-  }
-
-  // 进入和离开过程中的动画属性
-  .slide-fade-enter-active,
-  .slide-fade-leave-active {
-    transition: all 0.5s ease;
-    .el-menu-mobile {
-      transition: all 0.5s ease;
-    }
-  }
-
-  // 进入后和离开前的状态（目标和初始状态）
-  .slide-fade-enter-to,
-  .slide-fade-leave-from {
-    background-color: var(--mobile-overlay-active-bg); // 半透明背景
-    .el-menu-mobile {
-      transform: translateX(0); // 菜单在原位
-      opacity: 1;
-    }
-  }
 }
 
 .detail-message-content {

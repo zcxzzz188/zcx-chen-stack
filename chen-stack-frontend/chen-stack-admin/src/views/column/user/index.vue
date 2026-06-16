@@ -142,40 +142,6 @@
           <el-table-column prop="createTime" label="创建时间" sortable width="110" />
         </DataTable>
       </template>
-
-      <!-- 移动端卡片视图 -->
-      <template #card-view>
-        <MobileCardList
-          :data="paginatedColumnList"
-          :selectedItems="selectedColumns"
-          showSelection
-          showMeta
-          :hasDetailAction="true"
-          :hasEditAction="true"
-          :hasDeleteAction="true"
-          @select="handleMobileSelect"
-          @detail="handleViewColumn"
-          @edit="handleEditColumn"
-          @delete="handleDeleteColumn"
-        >
-          <!-- 自定义卡片内容 -->
-          <template #custom="{ item }">
-            <div class="mobile-meta">
-              <el-tag :type="item.showStatus === 0 ? 'success' : 'warning'" size="small">{{ item.showStatus === 0 ? '公开' : '私密' }}</el-tag>
-              <StatusBadge :value="normalizeExamineStatus(item.examineStatus)" type="examine" />
-            </div>
-            <div class="mobile-stats">
-              <span
-                ><el-icon><Star /></el-icon> {{ item.focusCount || 0 }}</span
-              >
-              <span
-                ><el-icon><Document /></el-icon> {{ item.articleCount || 0 }}</span
-              >
-            </div>
-            <div class="mobile-time">创建: {{ item.createTime }}</div>
-          </template>
-        </MobileCardList>
-      </template>
     </ManagementCard>
 
     <!-- 专栏详情对话框 -->
@@ -399,7 +365,6 @@ import {
 } from '@/api/column'
 import ManagementCard from '@/components/management/ManagementCard.vue'
 import DataTable from '@/components/data/DataTable.vue'
-import MobileCardList from '@/components/data/MobileCardList.vue'
 import BatchActions from '@/components/actions/BatchActions.vue'
 import SearchButtons from '@/components/search/SearchButtons.vue'
 import ExamineStatusSelect from '@/components/search/ExamineStatusSelect.vue'
@@ -591,15 +556,6 @@ const isColumnSelected = (columnId) => {
   return selectedColumns.value.some((column) => column.id === columnId)
 }
 
-// 移动端选择处理
-const handleMobileSelect = (column) => {
-  const index = selectedColumns.value.findIndex((item) => item.id === column.id)
-  if (index > -1) {
-    selectedColumns.value.splice(index, 1)
-  } else {
-    selectedColumns.value.push(column)
-  }
-}
 
 // 对话框关闭处理
 const handleDialogClose = () => {
@@ -1024,32 +980,8 @@ onMounted(() => {
   }
 }
 
-// 移动端元信息
-.mobile-meta {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 8px;
-  margin: 4px 0;
-}
 
-.mobile-stats {
-  display: flex;
-  gap: 12px;
-  font-size: 12px;
-  color: var(--text-muted);
 
-  span {
-    display: flex;
-    align-items: center;
-    gap: 2px;
-  }
-}
-
-.mobile-time {
-  font-size: 12px;
-  color: var(--text-muted);
-}
 
 // 专栏详情对话框
 :deep(.column-detail-dialog) {

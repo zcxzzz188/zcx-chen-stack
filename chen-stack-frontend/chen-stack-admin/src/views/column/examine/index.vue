@@ -84,40 +84,6 @@
         <el-table-column prop="articleCount" label="文章数" width="80" />
       </DataTable>
     </template>
-
-    <!-- 移动端卡片视图 -->
-    <template #card-view>
-      <MobileCardList
-        :data="paginatedColumnList"
-        :selectedItems="selectedColumns"
-        showSelection
-        showCover
-        showId
-        showName
-        showMeta
-        :hasEditAction="true"
-        :hasDeleteAction="true"
-        :hasAuditAction="true"
-        :hasRejectAction="true"
-        @select="handleMobileSelect"
-        @edit="handleEditColumn"
-        @audit="handleAuditColumn"
-        @reject="handleRejectColumn"
-        @delete="handleDeleteColumn"
-      >
-        <!-- 自定义卡片内容 -->
-        <template #custom="{ item }">
-          <div class="mobile-description">{{ item.description || '暂无描述' }}</div>
-          <el-tag :type="item.showStatus === 0 ? 'success' : 'warning'" size="small">
-            {{ item.showStatus === 0 ? '公开' : '私密' }}
-          </el-tag>
-          <div class="mobile-stats">
-            <span>关注: {{ item.focusCount || 0 }}</span>
-            <span>文章: {{ item.articleCount || 0 }}</span>
-          </div>
-        </template>
-      </MobileCardList>
-    </template>
   </ManagementCard>
 
   <!-- 专栏详情对话框 -->
@@ -293,7 +259,6 @@ import { adminGetColumnList, adminSearchColumn, adminExamineColumn, adminBatchEx
 // 组件
 import ManagementCard from '@/components/management/ManagementCard.vue'
 import DataTable from '@/components/data/DataTable.vue'
-import MobileCardList from '@/components/data/MobileCardList.vue'
 import BatchActions from '@/components/actions/BatchActions.vue'
 import ExamineStatusSelect from '@/components/search/ExamineStatusSelect.vue'
 import UserSearchSelect from '@/components/search/UserSearchSelect.vue'
@@ -402,15 +367,6 @@ const handleSelectionChange = (columns) => {
   selectedColumns.value = columns
 }
 
-// 移动端选择处理
-const handleMobileSelect = (column) => {
-  const index = selectedColumns.value.findIndex((item) => item.id === column.id)
-  if (index > -1) {
-    selectedColumns.value.splice(index, 1)
-  } else {
-    selectedColumns.value.push(column)
-  }
-}
 
 // 对话框关闭处理
 const handleDialogClose = () => {
@@ -662,27 +618,7 @@ onMounted(() => {
   }
 }
 
-// 移动端描述样式
-.mobile-description {
-  font-size: 13px;
-  color: var(--text-muted);
-  margin: 6px 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  line-clamp: 2;
-  -webkit-box-orient: vertical;
-}
 
-// 移动端统计样式
-.mobile-stats {
-  display: flex;
-  gap: 12px;
-  font-size: 12px;
-  color: var(--text-muted);
-  margin-top: 4px;
-}
 
 // 专栏详情对话框样式
 :deep(.column-detail-dialog) {

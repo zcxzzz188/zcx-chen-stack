@@ -27,9 +27,6 @@
             </div>
           </div>
 
-          <!-- 移动端作者信息 -->
-          <MobileAuthorInfo v-if="userInfo" :user-info="userInfo" :loading="userLoading" />
-
           <!-- 文章元信息 -->
           <div class="article-meta">
             <!-- 第一行：基础信息 -->
@@ -51,12 +48,6 @@
                     </el-icon>
                     {{ article.createTime }}
                   </span>
-                </div>
-                <!-- 移动端编辑按钮 - 与发布时间在同一行 -->
-                <div class="edit-actions mobile-edit" v-if="isCurrentUser">
-                  <el-button link type="info" size="small" :icon="Edit" @click="handleEditArticle">
-                    编辑文章
-                  </el-button>
                 </div>
               </div>
               <div class="stats-info">
@@ -145,7 +136,6 @@ import { ElMessage } from 'element-plus'
 import { Clock, View, Star, Edit } from '@element-plus/icons-vue'
 import { useUserStore } from '@/stores/userStore'
 import { formatCompactNumber } from '@/utils/formatNumber'
-import MobileAuthorInfo from './MobileAuthorInfo.vue'
 
 // 路由
 const router = useRouter()
@@ -334,10 +324,6 @@ const handleEditArticle = () => {
               }
             }
 
-            // 移动端编辑按钮样式
-            .edit-actions.mobile-edit {
-              display: none; // 桌面端隐藏
-            }
           }
 
           .stats-info {
@@ -645,18 +631,6 @@ const handleEditArticle = () => {
                 align-items: center;
               }
 
-              // 移动端编辑按钮显示
-              .edit-actions.mobile-edit {
-                display: flex;
-                margin-left: auto;
-                flex-shrink: 0;
-
-                .el-button {
-                  font-size: 12px;
-                  padding: 4px 8px;
-                  height: auto;
-                }
-              }
             }
 
             .stats-info {

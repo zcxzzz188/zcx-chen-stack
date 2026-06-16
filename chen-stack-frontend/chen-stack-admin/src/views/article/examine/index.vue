@@ -98,39 +98,6 @@
         <el-table-column prop="collectCount" label="收藏量" width="80" />
       </DataTable>
     </template>
-
-    <!-- 移动端卡片视图 -->
-    <template #card-view>
-      <MobileCardList
-        :data="paginatedArticleList"
-        :selectedItems="selectedArticles"
-        showSelection
-        :hasAuditAction="true"
-        :hasRejectAction="true"
-        :hasDeleteAction="true"
-        @select="handleMobileSelect"
-        @audit="handleAuditArticle"
-        @reject="handleRejectArticle"
-        @delete="handleDeleteArticle"
-      >
-        <!-- 自定义卡片内容 -->
-        <template #custom="{ item }">
-          <div class="mobile-cover" v-if="item.coverUrl">
-            <el-image :src="item.coverUrl" style="width: 100%; height: 120px" :preview-src-list="[item.coverUrl]" fit="cover" preview-teleported />
-          </div>
-          <div class="mobile-cover-placeholder" v-else>暂无封面</div>
-          <div class="mobile-info">
-            <span class="article-status" :class="item.examineStatus === 0 ? 'status-unaudited' : item.examineStatus === 1 ? 'status-audited' : 'status-rejected'">
-              {{ item.examineStatus === 0 ? '待审核' : item.examineStatus === 1 ? '已审核' : '未通过' }}
-            </span>
-            <span class="mobile-time">{{ item.createTime }}</span>
-          </div>
-          <div class="mobile-title">{{ item.title }}</div>
-          <div class="mobile-meta">作者: {{ item.nickname }}</div>
-          <div class="mobile-stats">阅读:{{ item.readCount || 0 }} 点赞:{{ item.likeCount || 0 }} 评论:{{ item.commentCount || 0 }}</div>
-        </template>
-      </MobileCardList>
-    </template>
   </ManagementCard>
 
   <!-- 文章详情对话框 -->
@@ -309,7 +276,6 @@ import { adminGetArticleList, adminDeleteArticle, adminDeleteBatchArticle, admin
 // 组件
 import ManagementCard from '@/components/management/ManagementCard.vue'
 import DataTable from '@/components/data/DataTable.vue'
-import MobileCardList from '@/components/data/MobileCardList.vue'
 import BatchActions from '@/components/actions/BatchActions.vue'
 import ExamineStatusSelect from '@/components/search/ExamineStatusSelect.vue'
 import UserSearchSelect from '@/components/search/UserSearchSelect.vue'
@@ -419,15 +385,6 @@ const handleSelectionChange = (articles) => {
   selectedArticles.value = articles
 }
 
-// 移动端选择处理
-const handleMobileSelect = (article) => {
-  const index = selectedArticles.value.findIndex((item) => item.id === article.id)
-  if (index > -1) {
-    selectedArticles.value.splice(index, 1)
-  } else {
-    selectedArticles.value.push(article)
-  }
-}
 
 // 智能刷新列表
 const refreshArticleList = async (deletedCount = 0) => {
@@ -787,61 +744,12 @@ onMounted(() => {
   }
 }
 
-// 移动端封面
-.mobile-cover {
-  width: 100%;
-  height: 120px;
-  border-radius: 6px;
-  overflow: hidden;
-  margin-bottom: 8px;
-}
 
-.mobile-cover-placeholder {
-  width: 100%;
-  height: 120px;
-  background-color: var(--el-fill-color);
-  border: 1px dashed var(--el-border-color);
-  border-radius: 6px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 12px;
-  color: var(--el-text-color-placeholder);
-  margin-bottom: 8px;
-}
 
-.mobile-info {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 4px;
-}
 
-.mobile-time {
-  font-size: 11px;
-  color: var(--text-muted);
-}
 
-.mobile-title {
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--text-primary);
-  margin-bottom: 4px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 
-.mobile-meta {
-  font-size: 12px;
-  color: var(--text-muted);
-  margin-bottom: 4px;
-}
 
-.mobile-stats {
-  font-size: 11px;
-  color: var(--text-muted);
-}
 
 // ===== 文章详情对话框样式 ===== //
 :deep(.article-detail-dialog) {

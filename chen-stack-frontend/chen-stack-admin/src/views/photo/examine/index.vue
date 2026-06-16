@@ -73,33 +73,6 @@
         <el-table-column prop="updateTime" label="更新时间" sortable min-width="110" />
       </DataTable>
     </template>
-
-    <!-- 移动端卡片视图 -->
-    <template #card-view>
-      <MobileCardList
-        :data="paginatedPhotoList"
-        :selectedItems="selectedPhotos"
-        showSelection
-        :hasAuditAction="true"
-        :hasRejectAction="true"
-        :hasDeleteAction="true"
-        @select="handleMobileSelect"
-        @audit="handleAuditPhoto"
-        @reject="handleRejectPhoto"
-        @delete="handleDeletePhoto"
-      >
-        <!-- 自定义卡片内容 -->
-        <template #custom="{ item }">
-          <el-image preview-teleported :src="item.url" style="width: 100%; height: 150px" :preview-src-list="[item.url]" fit="cover" />
-          <div class="mobile-info">
-            <span class="photo-status" :class="item.examineStatus === 0 ? 'status-unaudited' : item.examineStatus === 1 ? 'status-audited' : 'status-rejected'">
-              {{ item.examineStatus === 0 ? '待审核' : item.examineStatus === 1 ? '已审核' : '未通过' }}
-            </span>
-            <span class="mobile-time">{{ item.createTime }}</span>
-          </div>
-        </template>
-      </MobileCardList>
-    </template>
   </ManagementCard>
 </template>
 
@@ -111,7 +84,6 @@ import { adminDeletePhoto, adminDeleteBatchPhoto, adminAuditPhoto, adminAuditBat
 // 组件
 import ManagementCard from '@/components/management/ManagementCard.vue'
 import DataTable from '@/components/data/DataTable.vue'
-import MobileCardList from '@/components/data/MobileCardList.vue'
 import BatchActions from '@/components/actions/BatchActions.vue'
 import ExamineStatusSelect from '@/components/search/ExamineStatusSelect.vue'
 import UserSearchSelect from '@/components/search/UserSearchSelect.vue'
@@ -222,15 +194,6 @@ const handleSelectionChange = (photos) => {
   selectedPhotos.value = photos
 }
 
-// 移动端选择处理
-const handleMobileSelect = (photo) => {
-  const index = selectedPhotos.value.findIndex((item) => item.id === photo.id)
-  if (index > -1) {
-    selectedPhotos.value.splice(index, 1)
-  } else {
-    selectedPhotos.value.push(photo)
-  }
-}
 
 // 处理单个图片审核
 const handleAuditPhoto = (row) => {
@@ -425,16 +388,4 @@ onMounted(() => {
   }
 }
 
-// 移动端信息
-.mobile-info {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-top: 8px;
-
-  .mobile-time {
-    font-size: 12px;
-    color: var(--text-muted);
-  }
-}
 </style>

@@ -1,1 +1,1 @@
-export { useMobileView, useDebounceSearch, usePagination, useBatchSelection, useConfirmDelete, useConfirmAction } from './useAdmin'
+export { useDebounceSearch, usePagination, useBatchSelection, useConfirmDelete, useConfirmAction } from './useAdmin'

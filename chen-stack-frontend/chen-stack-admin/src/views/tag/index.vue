@@ -12,7 +12,7 @@
       </div>
 
       <!-- 桌面端列表视图 -->
-      <div v-if="!isMobileView" class="desktop-view">
+      <div class="desktop-view">
         <div v-loading="loading" class="tag-categories">
           <div v-if="filteredCategories.length === 0" class="empty-state">
             <el-empty description="暂无标签数据" />
@@ -58,56 +58,6 @@
         </div>
       </div>
 
-      <!-- 移动端卡片视图 -->
-      <div v-else class="mobile-view">
-        <div v-loading="loading" class="tag-categories-mobile">
-          <div v-if="filteredCategories.length === 0" class="empty-state">
-            <el-empty description="暂无标签数据" />
-          </div>
-          <div v-else>
-            <el-card v-for="(category, index) in filteredCategories" :key="index" class="category-card">
-              <div class="category-card-content">
-                <div class="category-header-mobile" @click="toggleCategory(category.name)">
-                  <div class="category-info">
-                    <el-icon class="expand-icon" :class="{ expanded: expandedCategories.includes(category.name) }">
-                      <ArrowRight />
-                    </el-icon>
-                    <span class="category-name">{{ category.name }}</span>
-                    <span class="category-count">({{ category.tags.length }})</span>
-                  </div>
-                </div>
-
-                <div class="category-actions-mobile" @click.stop>
-                  <div class="sort-control-mobile">
-                    <span class="sort-label">排序:</span>
-                    <el-input-number v-model="category.sort" :min="0" :max="maxSortValue" size="small" @change="handleSortChange(category)" class="sort-input" />
-                  </div>
-                  <div class="button-group-mobile">
-                    <el-button type="primary" size="small" @click="handleAddToCategory(category.name)" :icon="Plus">新增</el-button>
-                    <el-button type="danger" size="small" @click="handleDeleteCategory(category.name)" :icon="Delete">删除</el-button>
-                  </div>
-                </div>
-
-                <!-- 移动端标签列表 -->
-                <transition name="slide-fade">
-                  <div v-if="expandedCategories.includes(category.name)" class="tags-container-mobile">
-                    <div v-if="category.tags.length === 0" class="empty-tags">
-                      <span>该分类下暂无标签</span>
-                    </div>
-                    <div v-else class="tags-list-mobile">
-                      <div v-for="(tag, tagIndex) in category.tags" :key="tagIndex" class="tag-item-mobile">
-                        <el-checkbox v-model="tag.checked" @change="handleTagCheck(category.name, tag)" />
-                        <span class="tag-name">{{ tag.name }}</span>
-                        <el-button type="danger" size="small" :icon="Delete" circle @click="handleDeleteTag(category.name, tag)" />
-                      </div>
-                    </div>
-                  </div>
-                </transition>
-              </div>
-            </el-card>
-          </div>
-        </div>
-      </div>
     </div>
 
     <!-- 新增/编辑标签对话框 -->
@@ -136,7 +86,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
+import { ref, reactive, computed, onMounted } from 'vue'
 import { Search, Plus, Delete, ArrowRight } from '@element-plus/icons-vue'
 import { getTagList, addTag, deleteTags, updateCategorySort } from '@/api/tag'
 
@@ -167,8 +117,6 @@ const tagForm = reactive({
 // 批量操作加载状态
 const batchDeleteLoading = ref(false)
 
-// 移动端检测
-const isMobileView = ref(false)
 
 // 表单验证规则
 const rules = {
@@ -216,10 +164,6 @@ const filteredCategories = computed(() => {
     .filter((category) => category !== null)
 })
 
-// 监听窗口大小变化
-const handleResize = () => {
-  isMobileView.value = window.innerWidth <= 768
-}
 
 // 获取标签列表
 const getTagsList = async () => {
@@ -421,13 +365,6 @@ const handleSortChange = async (category) => {
 // 初始化
 onMounted(() => {
   getTagsList()
-  handleResize()
-  window.addEventListener('resize', handleResize)
-})
-
-// 组件卸载时移除监听
-onUnmounted(() => {
-  window.removeEventListener('resize', handleResize)
 })
 </script>
 
@@ -693,162 +630,6 @@ onUnmounted(() => {
     }
   }
 
-  // 移动端卡片视图
-  .mobile-view {
-    flex: 1;
-    overflow-y: auto;
-    padding: 10px;
-
-    // 移动端分类列表
-    .tag-categories-mobile {
-      display: flex;
-      flex-direction: column;
-      gap: 12px;
-
-      .empty-state {
-        padding: 60px 0;
-        text-align: center;
-      }
-
-      // 分类卡片
-      .category-card {
-        transition: all 0.3s ease;
-        border-radius: 8px;
-
-        &:hover {
-          box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
-        }
-
-        .category-card-content {
-          display: flex;
-          flex-direction: column;
-          gap: 12px;
-
-          // 移动端分类头部
-          .category-header-mobile {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            cursor: pointer;
-            user-select: none;
-
-            .category-info {
-              display: flex;
-              align-items: center;
-              gap: 8px;
-
-              .expand-icon {
-                transition: transform 0.3s ease;
-                color: var(--el-text-color-secondary);
-
-                &.expanded {
-                  transform: rotate(90deg);
-                }
-              }
-
-              .category-name {
-                font-size: 16px;
-                font-weight: 600;
-                color: var(--el-text-color-primary);
-              }
-
-              .category-count {
-                font-size: 14px;
-                color: var(--el-text-color-secondary);
-              }
-            }
-          }
-
-          // 移动端操作按钮
-          .category-actions-mobile {
-            display: flex;
-            flex-direction: column;
-            gap: 10px;
-            padding-top: 12px;
-            border-top: 1px solid var(--el-border-color-lighter);
-
-            .sort-control-mobile {
-              display: flex;
-              align-items: center;
-              gap: 8px;
-              padding: 8px 12px;
-              background-color: var(--el-fill-color-light);
-              border-radius: 6px;
-              border: 1px solid var(--el-border-color-lighter);
-
-              .sort-label {
-                font-size: 13px;
-                color: var(--el-text-color-secondary);
-                font-weight: 500;
-                white-space: nowrap;
-              }
-
-              .sort-input {
-                flex: 1;
-
-                :deep(.el-input-number__decrease),
-                :deep(.el-input-number__increase) {
-                  background-color: var(--el-fill-color);
-                  border: none;
-                  color: var(--el-text-color-regular);
-
-                  &:hover {
-                    color: var(--el-color-primary);
-                  }
-                }
-
-                :deep(.el-input__wrapper) {
-                  padding: 1px 8px;
-                }
-              }
-            }
-
-            .button-group-mobile {
-              display: flex;
-              gap: 8px;
-
-              :deep(.el-button) {
-                margin-left: 0;
-                flex: 1;
-              }
-            }
-          }
-
-          // 移动端标签容器
-          .tags-container-mobile {
-            .empty-tags {
-              text-align: center;
-              padding: 20px;
-              color: var(--el-text-color-secondary);
-              font-size: 14px;
-            }
-
-            // 移动端标签列表
-            .tags-list-mobile {
-              display: flex;
-              flex-direction: column;
-              gap: 8px;
-
-              .tag-item-mobile {
-                display: flex;
-                align-items: center;
-                gap: 8px;
-                padding: 8px 12px;
-                background-color: var(--el-fill-color-light);
-                border-radius: 6px;
-
-                .tag-name {
-                  flex: 1;
-                  font-size: 14px;
-                  color: var(--el-text-color-regular);
-                }
-              }
-            }
-          }
-        }
-      }
-    }
-  }
 }
 
 // 表单提示

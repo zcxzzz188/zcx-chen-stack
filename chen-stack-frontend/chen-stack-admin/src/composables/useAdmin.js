@@ -1,29 +1,4 @@
-import { ref, onMounted, onUnmounted } from 'vue'
-
-/**
- * 移动端视图检测 composable
- * @param {number} breakpoint - 移动端断点，默认 768
- */
-export function useMobileView(breakpoint = 768) {
-  const isMobileView = ref(false)
-
-  const handleResize = () => {
-    isMobileView.value = window.innerWidth <= breakpoint
-  }
-
-  onMounted(() => {
-    handleResize()
-    window.addEventListener('resize', handleResize)
-  })
-
-  onUnmounted(() => {
-    window.removeEventListener('resize', handleResize)
-  })
-
-  return {
-    isMobileView,
-  }
-}
+import { ref, onUnmounted } from 'vue'
 
 /**
  * 防抖搜索 composable

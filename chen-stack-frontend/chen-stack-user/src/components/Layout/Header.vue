@@ -8,10 +8,6 @@
     :ellipsis="false"
     :class="{ hidden: !isVisible }"
   >
-    <!-- 移动端菜单按钮 -->
-    <div class="mobile-menu-button" @click="toggleMobileMenu">
-      <svg-icon name="menu" width="40px" height="40px" />
-    </div>
     <router-link class="logo" to="/">
       <img class="logo-img" src="/favicon.ico" alt="logo" />
       <el-text size="large" class="logo-text">辰栈</el-text>
@@ -79,27 +75,6 @@
     </div>
   </el-menu>
 
-  <!-- 移动端菜单 -->
-  <teleport to="body">
-    <transition name="slide-fade">
-      <div v-show="isMobileMenuVisible" class="mobile-menu-overlay" @click="closeMobileMenu">
-        <el-menu class="mobile-menu" router @click.stop @select="closeMobileMenu">
-          <el-menu-item index="/" class="menu-item">
-            <el-icon><House /></el-icon>
-            <span class="menu-text">首页</span>
-          </el-menu-item>
-          <el-menu-item index="/article" class="menu-item">
-            <el-icon><Message /></el-icon>
-            <span class="menu-text">文章</span>
-          </el-menu-item>
-          <el-menu-item index="/creation" class="menu-item">
-            <el-icon><MagicStick /></el-icon>
-            <span class="menu-text">创作中心</span>
-          </el-menu-item>
-        </el-menu>
-      </div>
-    </transition>
-  </teleport>
 </template>
 
 <script setup>
@@ -361,19 +336,6 @@ const handleScroll = () => {
   }
   // 更新上次记录的位置
   lastScrollY.value = currentScrollY
-}
-
-// 移动端菜单是否可见
-const isMobileMenuVisible = ref(false)
-// 切换移动端菜单
-const toggleMobileMenu = () => {
-  isMobileMenuVisible.value = !isMobileMenuVisible.value
-}
-
-// 关闭移动端菜单
-const closeMobileMenu = (index) => {
-  isMobileMenuVisible.value = false
-  handleSelect(index)
 }
 
 // 监听用户登录状态变化，自动初始化 WebSocket
@@ -680,26 +642,6 @@ onBeforeUnmount(() => {
     }
   }
 
-  // 移动端菜单按钮
-  .mobile-menu-button {
-    display: none; // 默认隐藏，电脑端不显示
-    cursor: pointer;
-    width: 36px;
-    height: 36px;
-    align-items: center;
-    justify-content: center;
-    border-radius: 8px;
-    transition: background-color 0.2s ease;
-
-    &:hover {
-      background-color: var(--el-fill-color-light);
-    }
-
-    // 确保 SVG 图标垂直居中
-    ::v-deep(svg) {
-      display: block;
-    }
-  }
 }
 
 .user-dropdown-menu {
@@ -795,39 +737,6 @@ onBeforeUnmount(() => {
   }
 }
 
-// 移动端菜单覆盖层
-.mobile-menu-overlay {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background-color: var(--mask);
-  z-index: 999;
-  display: flex;
-
-  .mobile-menu {
-    width: 200px;
-    height: 100%;
-    display: flex;
-    flex-direction: column;
-    justify-content: flex-start;
-    padding-top: 60px;
-    background-color: var(--el-bg-color);
-    border-radius: 0 16px 16px 0;
-
-    .el-menu-item {
-      height: 52px;
-      padding-left: 20px !important;
-
-      .menu-text {
-        font-size: 15px;
-        margin-left: 10px;
-      }
-    }
-  }
-}
-
 // 响应式设计 - 平板及以下尺寸
 @media (max-width: 1270px) {
   .pc-menu {
@@ -845,10 +754,6 @@ onBeforeUnmount(() => {
     padding: 0 12px 0 12px;
     .menu-item {
       display: none; // 隐藏PC端菜单
-    }
-    .mobile-menu-button {
-      display: flex; // 显示移动端菜单按钮
-      margin-left: 4px;
     }
     .logo {
       display: none; // 手机端隐藏 logo
