@@ -172,8 +172,8 @@ public class SysUserServiceImpl extends ServiceImpl<SysUserMapper, SysUser> impl
                 throw new BlogException(BlogConstants.AdminAccountUseAdminLogin);
             }
             recordLoginSuccess(loginUser.getSysUser(), RegisterOrLoginTypeEnum.EMAIL.getCode());
-            // 创建token,此处的token时由UUID编码而成JWT字符串
-            String token = jwtUtils.createToken(loginUser.getSysUser().getId(), loginDto.getRememberMe());
+            // 认证成功，生成 2 小时有效的 JWT
+            String token = jwtUtils.createToken(loginUser.getSysUser().getId());
             return token;
         } catch (Exception e) {
             // 记录登录失败日志
@@ -253,7 +253,7 @@ public class SysUserServiceImpl extends ServiceImpl<SysUserMapper, SysUser> impl
         sysUserRoleService.setRegisterRole(userId);
         recordLoginSuccess(user, RegisterOrLoginTypeEnum.EMAIL.getCode());
         redisComponent.cleanEmailCheckCode(registerDto.getEmail(), MailEnum.REGISTER.getType());
-        return jwtUtils.createToken(userId, false);
+        return jwtUtils.createToken(userId);
     }
 
     @Override
@@ -527,8 +527,8 @@ public class SysUserServiceImpl extends ServiceImpl<SysUserMapper, SysUser> impl
                 throw new BlogException(BlogConstants.NotAdminAccount); // 不是管理后台账户
             }
             recordLoginSuccess(loginUser.getSysUser(), RegisterOrLoginTypeEnum.EMAIL.getCode());
-            // 创建token,此处的token时由UUID编码而成JWT字符串
-            String token = jwtUtils.createToken(loginUser.getSysUser().getId(), adminLoginDto.getRememberMe());
+            // 认证成功，生成 2 小时有效的 JWT
+            String token = jwtUtils.createToken(loginUser.getSysUser().getId());
             return token;
         } catch (Exception e) {
             // 记录管理员登录失败日志

@@ -149,7 +149,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                         loginUser, null, loginUser.getAuthorities());
                 SecurityContextHolder.getContext().setAuthentication(authenticationToken);
 
-                String newToken = jwtUtils.createToken(id, false);
+                String newToken = jwtUtils.createToken(id);
                 response.setHeader(REFRESH_TOKEN_HEADER, newToken);
             }
 

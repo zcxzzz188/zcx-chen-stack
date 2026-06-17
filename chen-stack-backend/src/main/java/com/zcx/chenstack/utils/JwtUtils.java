@@ -21,12 +21,11 @@ public class JwtUtils {
      * 生成token
      * 
      * @param id           用户id
-     * @param isRememberMe 是否记住我
      * @return
      */
-    public String createToken(Integer id, boolean isRememberMe) {
+    public String createToken(Integer id) {
         String token = JWT.create()
-                // 设置过期时间 rememberMe为true时，token有效期为7天，否则为1天
+                // 设置 JWT 过期时间，当前统一为 2 小时
                 .setExpiresAt(new Date(System.currentTimeMillis() + TimeUnit.HOURS.toMillis(2)))
                 .addPayloads(Map.of("id", id))
                 .setSigner(JWTSignerUtil.createSigner("HS256", secret.getBytes()))
