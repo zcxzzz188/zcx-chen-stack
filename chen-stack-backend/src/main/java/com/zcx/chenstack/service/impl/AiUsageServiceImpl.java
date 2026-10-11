@@ -6,10 +6,13 @@ import com.zcx.chenstack.service.AiUsageService;
 import com.zcx.chenstack.utils.RedisUtils;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.stereotype.Service;
 
 import java.time.Duration;
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -23,9 +26,36 @@ import java.util.concurrent.TimeUnit;
 public class AiUsageServiceImpl implements AiUsageService {
 
     private static final int DAILY_LIMIT = 50;
+    private static final DefaultRedisScript<Long> RESERVE_DAILY_USAGE = new DefaultRedisScript<>("""
+            local current = redis.call('GET', KEYS[1])
+            if current and tonumber(current) >= tonumber(ARGV[1]) then return 0 end
+            redis.call('INCR', KEYS[1])
+            if redis.call('TTL', KEYS[1]) < 0 then
+                redis.call('EXPIRE', KEYS[1], ARGV[2])
+            end
+            return 1
+            """, Long.class);
 
     @Resource
     private RedisUtils redisUtils;
+
+    @Resource
+    private StringRedisTemplate stringRedisTemplate;
+
+    @Override
+    public boolean tryReserveUsage(Integer userId) {
+        if (userId == null || userId <= 0) {
+            return false;
+        }
+
+        String key = RedisConstants.AiUsage + userId;
+        Long reserved = stringRedisTemplate.execute(
+                RESERVE_DAILY_USAGE,
+                List.of(key),
+                String.valueOf(DAILY_LIMIT),
+                String.valueOf(getSecondsUntilMidnight()));
+        return Long.valueOf(1L).equals(reserved);
+    }
 
     /**
      * 检查用户今日AI调用次数是否已达上限

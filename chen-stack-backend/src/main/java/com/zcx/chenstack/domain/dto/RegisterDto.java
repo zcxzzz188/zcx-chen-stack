@@ -19,8 +19,9 @@ public class RegisterDto {
     private String username;
 
     // 密码
-    @Pattern(regexp = "^[a-zA-Z0-9!@#$%^&*._-]+$", message = "密码只能包含英文、数字和特殊字符(!@#$%^&*._-)")
-    @Length(min = 6, max = 20, message = "密码长度必须在6-20位之间")
+    @NotEmpty(message = "请输入密码")
+    @Length(min = 6, max = 20, message = "密码长度必须为 6～20 位")
+    @Pattern(regexp = "^[a-zA-Z0-9!@#$%^&*._-]+$", message = "密码格式不正确：仅允许英文字母、数字及以下特殊字符：!@#$%^&*._-")
     private String password;
 
     // 邮箱
@@ -36,11 +37,6 @@ public class RegisterDto {
     // trim 后的 setter
     public RegisterDto setUsername(String username) {
         this.username = username != null ? username.trim() : null;
-        return this;
-    }
-
-    public RegisterDto setPassword(String password) {
-        this.password = password != null ? password.trim() : null;
         return this;
     }
 

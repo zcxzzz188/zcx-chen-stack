@@ -130,6 +130,7 @@ export default defineConfig({
     environment: 'jsdom',
     globals: true,
     css: true,
+    server: { deps: { inline: ['element-plus'] } },
     setupFiles: ['./src/tests/setup.js'],
   },
 

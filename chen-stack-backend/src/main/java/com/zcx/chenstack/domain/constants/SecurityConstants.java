@@ -52,9 +52,6 @@ public class SecurityConstants {
             "/follow/followList/{userId:\\d+}",
             "/follow/fansList/{userId:\\d+}",
 
-            // AI 相关
-            "/ai/customer-service",
-
             // 标签相关
             "/tag/hot",
             "/tag/list",

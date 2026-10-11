@@ -3,6 +3,7 @@ package com.zcx.chenstack.security;
 import com.zcx.chenstack.config.ChenStackConfig;
 import com.zcx.chenstack.domain.constants.SecurityConstants;
 import jakarta.annotation.Resource;
+import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.security.authentication.AuthenticationManager;
@@ -34,6 +35,7 @@ public class SecurityConfiguration {
     @Resource
     private ChenStackConfig chenStackConfig; // 现在导入正确
 
+    // Keep JWT authentication inside Spring Security, including stream async dispatches.
     @Bean
     public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
         // 设置认证管理器
@@ -47,6 +49,13 @@ public class SecurityConfiguration {
         // 添加JWT过滤器
         http.addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class);
         return http.build();
+    }
+
+    @Bean
+    public FilterRegistrationBean<JwtAuthenticationFilter> jwtFilterServletRegistration(JwtAuthenticationFilter filter) {
+        FilterRegistrationBean<JwtAuthenticationFilter> registration = new FilterRegistrationBean<>(filter);
+        registration.setEnabled(false);
+        return registration;
     }
 
     // 创建AuthenticationManager

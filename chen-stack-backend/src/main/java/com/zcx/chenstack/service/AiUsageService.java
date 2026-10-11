@@ -10,6 +10,11 @@ package com.zcx.chenstack.service;
 public interface AiUsageService {
 
     /**
+     * 原子预占一次当日 AI 调用额度；Provider 失败也计入尝试次数。
+     */
+    boolean tryReserveUsage(Integer userId);
+
+    /**
      * 检查用户今日AI调用次数是否已达上限
      *
      * @param userId 用户ID

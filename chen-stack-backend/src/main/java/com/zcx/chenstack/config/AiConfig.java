@@ -3,7 +3,6 @@ package com.zcx.chenstack.config;
 import com.zcx.chenstack.domain.constants.AiPromptConstants;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.client.advisor.MessageChatMemoryAdvisor;
-import org.springframework.ai.chat.client.advisor.SimpleLoggerAdvisor;
 import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.ai.chat.memory.InMemoryChatMemory;
 import org.springframework.ai.openai.OpenAiChatModel;
@@ -68,7 +67,6 @@ public class AiConfig {
         return ChatClient.builder(openAiChatModel)
                 .defaultSystem(AiPromptConstants.CUSTOMER_SERVICE_SYSTEM_PROMPT)
                 .defaultAdvisors(
-                        new SimpleLoggerAdvisor(),
                         new MessageChatMemoryAdvisor(chatMemory))
                 .build();
     }
@@ -81,7 +79,6 @@ public class AiConfig {
     public ChatClient writingAssistantChatClient(OpenAiChatModel openAiChatModel) {
         return ChatClient.builder(openAiChatModel)
                 .defaultSystem(AiPromptConstants.WRITING_ASSISTANT_SYSTEM_PROMPT)
-                .defaultAdvisors(new SimpleLoggerAdvisor())
                 .build();
     }
 }

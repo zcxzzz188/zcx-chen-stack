@@ -76,7 +76,7 @@ public class AiServiceImpl implements AiService {
             }
 
             // 5. 检查每日调用次数限制
-            if (!aiUsageService.checkDailyLimit(userId)) {
+            if (!aiUsageService.tryReserveUsage(userId)) {
                 throw new BlogException(BlogConstants.AiDailyLimitExceeded);
             }
 
@@ -118,7 +118,6 @@ public class AiServiceImpl implements AiService {
             }
 
             // 7. 调用成功后记录使用次数和内容hash
-            aiUsageService.recordUsage(userId);
             aiUsageService.recordContentHash(userId, plainText);
 
             return summary;
@@ -127,7 +126,7 @@ public class AiServiceImpl implements AiService {
             throw e;
         } catch (Exception e) {
             log.error("用户 [ID: {}] AI摘要提取异常", userId, e);
-            throw new BlogException(BlogConstants.AiExtractSummaryError + ": " + e.getMessage());
+            throw new BlogException(BlogConstants.AiExtractSummaryError);
         }
     }
 
@@ -140,6 +139,9 @@ public class AiServiceImpl implements AiService {
     @Override
     public Flux<String> customerServiceChat(String message, String chatId) {
         Integer userId = SecurityUtils.getUserId();
+        if (userId == null || userId <= 0) {
+            throw new BlogException(BlogConstants.LoginRequired);
+        }
 
         // 记录用户ID获取情况，便于调试
         if (userId == null || userId == 0) {
@@ -150,7 +152,7 @@ public class AiServiceImpl implements AiService {
 
         try {
             // 1. 检查每日调用次数限制
-            if (!aiUsageService.checkDailyLimit(userId)) {
+            if (!aiUsageService.tryReserveUsage(userId)) {
                 log.warn("用户 [ID: {}] 智能客服调用次数已达上限", userId);
                 return Flux.just("今日AI调用次数已达上限，请明天再试。");
             }
@@ -161,22 +163,24 @@ public class AiServiceImpl implements AiService {
             // 3. 使用流式返回，提升用户体验
             Flux<String> aiResponse = customerServiceChatClient.prompt()
                     .user(message)
-                    .advisors(a -> a.param(CHAT_MEMORY_CONVERSATION_ID_KEY, chatId))
+                    .advisors(a -> a.param(CHAT_MEMORY_CONVERSATION_ID_KEY, conversationMemoryId(userId, chatId)))
                     .stream()
-                    .content();
+                    .content()
+                    .doOnError(error -> log.error("用户 [ID: {}] 智能客服会话异常 [chatId: {}]", userId, chatId, error))
+                    .onErrorMap(error -> new BlogException("抱歉，客服系统暂时无法响应，请稍后再试。"));
 
-            return aiResponse
-                    .doOnSubscribe(subscription -> {
-                        // 流式返回开始时记录使用次数
-                        aiUsageService.recordUsage(userId);
-                    });
+            return aiResponse;
         } catch (BlogException e) {
             log.error("用户 [ID: {}] 智能客服会话失败: {}", userId, e.getMessage());
-            return Flux.just(e.getMessage());
+            return Flux.error(e);
         } catch (Exception e) {
             log.error("用户 [ID: {}] 智能客服会话异常 [chatId: {}]", userId, chatId, e);
-            return Flux.just("抱歉，客服系统暂时无法响应，请稍后再试。");
+            return Flux.error(new BlogException("抱歉，客服系统暂时无法响应，请稍后再试。"));
         }
+    }
+
+    static String conversationMemoryId(Integer userId, String chatId) {
+        return userId + ":" + chatId;
     }
 
     @Override
@@ -190,7 +194,7 @@ public class AiServiceImpl implements AiService {
             }
 
             // 2. 检查每日调用次数限制
-            if (!aiUsageService.checkDailyLimit(userId)) {
+            if (!aiUsageService.tryReserveUsage(userId)) {
                 throw new BlogException(BlogConstants.AiDailyLimitExceeded);
             }
 
@@ -217,15 +221,13 @@ public class AiServiceImpl implements AiService {
                     .collect(Collectors.toList());
 
             // 7. 调用成功后记录使用次数
-            aiUsageService.recordUsage(userId);
-
             return titles;
         } catch (BlogException e) {
             log.error("用户 [ID: {}] 生成标题建议失败: {}", userId, e.getMessage());
             throw e;
         } catch (Exception e) {
             log.error("用户 [ID: {}] 生成标题建议异常", userId, e);
-            throw new BlogException("生成标题建议失败: " + e.getMessage());
+            throw new BlogException("生成标题建议失败");
         }
     }
 
@@ -240,7 +242,7 @@ public class AiServiceImpl implements AiService {
             }
 
             // 2. 检查每日调用次数限制
-            if (!aiUsageService.checkDailyLimit(userId)) {
+            if (!aiUsageService.tryReserveUsage(userId)) {
                 throw new BlogException(BlogConstants.AiDailyLimitExceeded);
             }
 
@@ -285,15 +287,13 @@ public class AiServiceImpl implements AiService {
             
 
             // 10. 调用成功后记录使用次数
-            aiUsageService.recordUsage(userId);
-
             return recommendedTags;
         } catch (BlogException e) {
             log.error("用户 [ID: {}] 推荐标签失败: {}", userId, e.getMessage());
             throw e;
         } catch (Exception e) {
             log.error("用户 [ID: {}] 推荐标签异常", userId, e);
-            throw new BlogException("推荐标签失败: " + e.getMessage());
+            throw new BlogException("推荐标签失败");
         }
     }
 
@@ -308,7 +308,7 @@ public class AiServiceImpl implements AiService {
             }
 
             // 2. 检查每日调用次数限制
-            if (!aiUsageService.checkDailyLimit(userId)) {
+            if (!aiUsageService.tryReserveUsage(userId)) {
                 throw new BlogException(BlogConstants.AiDailyLimitExceeded);
             }
 
@@ -336,15 +336,13 @@ public class AiServiceImpl implements AiService {
             List<String> finalReplies = replies.stream().limit(3).collect(Collectors.toList());
 
             // 5. 调用成功后记录使用次数
-            aiUsageService.recordUsage(userId);
-
             return finalReplies;
         } catch (BlogException e) {
             log.error("用户 [ID: {}] 生成评论回复建议失败: {}", userId, e.getMessage());
             throw e;
         } catch (Exception e) {
             log.error("用户 [ID: {}] 生成评论回复建议异常", userId, e);
-            throw new BlogException("生成回复建议失败: " + e.getMessage());
+            throw new BlogException("生成回复建议失败");
         }
     }
 }

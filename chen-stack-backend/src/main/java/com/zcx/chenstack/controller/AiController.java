@@ -2,6 +2,7 @@ package com.zcx.chenstack.controller;
 
 import com.zcx.chenstack.aspect.RateLimit;
 import com.zcx.chenstack.domain.constants.BlogConstants;
+import com.zcx.chenstack.domain.dto.AiChatRequestDto;
 import com.zcx.chenstack.domain.dto.AiSummaryDto;
 import com.zcx.chenstack.domain.result.Result;
 import com.zcx.chenstack.exception.BlogException;
@@ -10,8 +11,6 @@ import com.zcx.chenstack.service.AiUsageService;
 import com.zcx.chenstack.utils.SecurityUtils;
 import jakarta.annotation.Resource;
 import jakarta.validation.Valid;
-import jakarta.validation.constraints.NotBlank;
-import jakarta.validation.constraints.Size;
 import org.springframework.web.bind.annotation.*;
 import reactor.core.publisher.Flux;
 
@@ -67,19 +66,16 @@ public class AiController {
      * message 长度限制 1000 字符
      * 需要登录才能使用
      *
-     * @param message 用户消息
-     * @param chatId  会话ID
+     * @param request 用户消息与会话ID
      * @return 流式响应
      */
     @PostMapping(value = "/customer-service", produces = "text/plain;charset=UTF-8")
-    public Flux<String> customerServiceChat(
-            @RequestParam @NotBlank(message = "消息内容不能为空") @Size(max = 1000, message = "消息内容不能超过1000字符") String message,
-            @RequestParam String chatId) {
+    public Flux<String> customerServiceChat(@Valid @RequestBody AiChatRequestDto request) {
         // 检查用户是否登录
         if (SecurityUtils.getLoginUser() == null) {
-            return Flux.just("请先登录后再使用智能客服功能");
+            throw new BlogException(BlogConstants.LoginRequired);
         }
-        return aiService.customerServiceChat(message, chatId);
+        return aiService.customerServiceChat(request.getMessage(), request.getChatId());
     }
 
     /**

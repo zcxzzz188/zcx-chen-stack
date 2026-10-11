@@ -136,6 +136,7 @@
             <div class="message-bubble">
               <span class="bubble-text">{{ msg.content }}</span>
             </div>
+            <div v-if="msg.incomplete" class="message-time incomplete-indicator">回答未完成，已保留部分内容</div>
             <div class="message-time">{{ msg.time }}</div>
           </div>
         </div>
@@ -182,7 +183,11 @@
             show-word-limit
             class="chat-input"
           />
+          <el-button v-if="isSending" class="send-button" @click="stopGeneration">
+            停止生成
+          </el-button>
           <el-button
+            v-else
             class="send-button"
             @click="sendMessage"
             :loading="isSending"
@@ -248,10 +253,11 @@
 
 <script setup>
 import { ref, nextTick, watch, computed, onMounted, onUnmounted } from 'vue'
-import { customerServiceChat } from '@/api/ai'
+import { customerServiceChat, CUSTOMER_SERVICE_TIMEOUT_MS } from '@/api/ai'
 import { useUserStore } from '@/stores/userStore'
 
 const userStore = useUserStore()
+let requestGeneration = 0
 
 // 响应式对话框宽度
 const windowWidth = ref(window.innerWidth)
@@ -279,6 +285,8 @@ onMounted(() => {
 
 onUnmounted(() => {
   window.removeEventListener('resize', handleResize)
+  requestGeneration += 1
+  chatAbortController.value?.abort()
 })
 
 // 生成唯一 ID 的函数
@@ -300,12 +308,31 @@ const inputMessage = ref('')
 
 // 发送状态
 const isSending = ref(false)
+const chatAbortController = ref(null)
 
 // AI 正在输入状态
 const isAiTyping = ref(false)
 
 // 消息列表引用
 const messageListRef = ref(null)
+
+const resetChatContext = () => {
+  requestGeneration += 1
+  chatAbortController.value?.abort()
+  chatAbortController.value = null
+  chatId.value = generateUniqueId()
+  messageList.value = []
+  inputMessage.value = ''
+  isSending.value = false
+  isAiTyping.value = false
+}
+
+watch(
+  () => userStore.user?.id ?? null,
+  (userId, previousUserId) => {
+    if (userId !== previousUserId) resetChatContext()
+  },
+)
 
 // 快捷问题 - 常见问题列表
 const quickQuestions = ref([
@@ -366,21 +393,43 @@ const sendMessage = async () => {
   inputMessage.value = ''
   isSending.value = true
   isAiTyping.value = true
+  const controller = new AbortController()
+  const currentGeneration = ++requestGeneration
+  const requestUserId = userStore.user?.id ?? null
+  const isCurrentRequest = () =>
+    requestGeneration === currentGeneration &&
+    chatAbortController.value === controller &&
+    (userStore.user?.id ?? null) === requestUserId
+  chatAbortController.value = controller
+  let timedOut = false
+  const timeoutId = window.setTimeout(() => {
+    if (isCurrentRequest()) {
+      timedOut = true
+      controller.abort(new DOMException('客服响应超时', 'TimeoutError'))
+    }
+  }, CUSTOMER_SERVICE_TIMEOUT_MS)
+  let reader
+  let aiMessage
   scrollToBottom()
 
   try {
     // 调用流式 API
-    const response = await customerServiceChat(message, chatId.value)
+    const response = await customerServiceChat(message, chatId.value, controller.signal)
+    if (!isCurrentRequest()) return
 
     if (!response.ok) {
       throw new Error('网络请求失败')
     }
+    if (response.headers?.get?.('content-type')?.toLowerCase().includes('json')) {
+      throw new Error('客服错误响应')
+    }
 
-    const reader = response.body.getReader()
+    if (!response.body) throw new Error('响应流不可用')
+    reader = response.body.getReader()
     const decoder = new TextDecoder()
 
     // 创建 AI 消息对象
-    const aiMessage = {
+    aiMessage = {
       role: 'ai',
       content: '',
       time: formatTime(),
@@ -397,7 +446,9 @@ const sendMessage = async () => {
     // 读取流式响应
     while (true) {
       const { done, value } = await reader.read()
+      if (!isCurrentRequest()) return
       if (done) {
+        if (timedOut) throw new DOMException('客服响应超时', 'TimeoutError')
         break
       }
 
@@ -408,18 +459,50 @@ const sendMessage = async () => {
 
       // 使用 nextTick 确保 DOM 更新后再滚动
       await nextTick()
+      if (!isCurrentRequest()) return
       scrollToBottom()
     }
+    messageList.value[messageIndex].content += decoder.decode()
+    if (!messageList.value[messageIndex].content.trim()) throw new Error('响应内容为空')
   } catch (error) {
-    ElMessage.error('发送消息失败，请稍后重试')
-    // 移除最后一条消息
-    if (messageList.value[messageList.value.length - 1].role === 'ai') {
-      messageList.value.pop()
+    if (!isCurrentRequest()) return
+    if (timedOut || error.name === 'TimeoutError') {
+      ElMessage.error('客服响应超时，请稍后重试')
+    } else if (error.name !== 'AbortError') {
+      ElMessage.error('发送消息失败，请稍后重试')
+    }
+    if (aiMessage) {
+      const failedMessageIndex = messageList.value.indexOf(aiMessage)
+      if (failedMessageIndex !== -1) {
+        if (aiMessage.content.trim()) aiMessage.incomplete = true
+        else messageList.value.splice(failedMessageIndex, 1)
+      }
     }
   } finally {
-    isSending.value = false
-    isAiTyping.value = false
+    window.clearTimeout(timeoutId)
+    if (reader) {
+      try {
+        await reader.cancel()
+      } catch {}
+      try {
+        reader.releaseLock()
+      } catch {}
+    }
+    if (isCurrentRequest()) {
+      chatAbortController.value = null
+      isSending.value = false
+      isAiTyping.value = false
+    }
   }
+}
+
+const stopGeneration = () => {
+  if (!chatAbortController.value) return
+  requestGeneration += 1
+  chatAbortController.value.abort()
+  chatAbortController.value = null
+  isSending.value = false
+  isAiTyping.value = false
 }
 
 // 选择快捷问题
@@ -436,8 +519,7 @@ const clearChat = () => {
     type: 'warning',
   })
     .then(() => {
-      messageList.value = []
-      chatId.value = generateUniqueId() // 重新生成会话 ID
+      resetChatContext()
       ElMessage.success('对话已清空')
     })
     .catch(() => {})

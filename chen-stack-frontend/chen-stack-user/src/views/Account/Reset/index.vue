@@ -90,6 +90,7 @@
         <el-form-item prop="password">
           <el-input
             v-model="formData.password"
+            maxlength="20"
             placeholder="请输入新密码"
             show-password
             class="login-input"
@@ -106,6 +107,7 @@
         <el-form-item prop="repeatPassword">
           <el-input
             v-model="formData.repeatPassword"
+            maxlength="20"
             placeholder="请再次输入密码"
             show-password
             class="login-input"
@@ -186,14 +188,22 @@ const validateEmailCheckCode = (rule, value, callback) => {
   }
 }
 
-// 验证密码字符类型
+const PasswordRegex = /^[a-zA-Z0-9!@#$%^&*._-]{6,20}$/
+
+const isPasswordValid = (value) => {
+  // 确保结尾换行符不会被 `$` 当作合法密码的一部分。
+  const match = value.match(PasswordRegex)
+  return match?.[0] === value
+}
+
+// 验证密码
 const validatePasswordCharacters = (rule, value, callback) => {
-  if (value === '') {
+  if (value === null || value === undefined || value === '') {
     callback(new Error('请输入密码'))
-  } else if (!/^[a-zA-Z0-9@]+$/.test(value)) {
-    callback(new Error('密码只能包含英文、数字和@符号'))
   } else if (value.length < 6 || value.length > 20) {
-    callback(new Error('密码的长度必须在 6-20 个字符之间'))
+    callback(new Error('密码长度必须为 6～20 位'))
+  } else if (!isPasswordValid(value)) {
+    callback(new Error('密码格式不正确：仅允许英文字母、数字及以下特殊字符：!@#$%^&*._-'))
   } else {
     callback()
   }
@@ -201,8 +211,10 @@ const validatePasswordCharacters = (rule, value, callback) => {
 
 // 验证重复密码
 const validatePassword = (rule, value, callback) => {
-  if (value === '') {
+  if (value === null || value === undefined || value === '') {
     callback(new Error('请再次输入密码'))
+  } else if (!isPasswordValid(formData.value.password)) {
+    callback()
   } else if (value !== formData.value.password) {
     callback(new Error('两次输入的密码不一致'))
   } else {
@@ -265,7 +277,6 @@ const jumpTime = ref(3)
 const resetPasswordBtn = () => {
   formDataRef.value.validate((valid) => {
     if (!valid) {
-      ElMessage.error('请填写完整信息')
       return
     } else {
       resetPassword(formData.value).then(() => {

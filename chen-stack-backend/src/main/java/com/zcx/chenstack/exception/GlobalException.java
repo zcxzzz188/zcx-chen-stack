@@ -69,8 +69,8 @@ public class GlobalException {
 
     @ExceptionHandler(MethodArgumentNotValidException.class)
     Object handleMethodArgumentNotValidException(MethodArgumentNotValidException e) {
-        log.error("参数校验异常:{}({})", e.getMessage(), e.getStackTrace());
         BindingResult bindingResult = e.getBindingResult();// 获取参数绑定结果
+        log.warn("请求参数校验失败，错误数: {}", bindingResult.getErrorCount());
         String errorMsg = bindingResult.getFieldError().getDefaultMessage(); // 获取参数校验错误信息
         return Result.error(errorMsg == null ? "参数校验异常" : errorMsg);
     }

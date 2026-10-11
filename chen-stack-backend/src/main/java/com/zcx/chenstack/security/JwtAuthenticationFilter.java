@@ -16,6 +16,7 @@ import com.zcx.chenstack.utils.IpUtils;
 import com.zcx.chenstack.utils.JwtUtils;
 import com.zcx.chenstack.utils.WebUtils;
 import jakarta.annotation.Resource;
+import jakarta.servlet.DispatcherType;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -43,6 +44,7 @@ import java.util.Map;
 public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
     private static final String REFRESH_TOKEN_HEADER = "X-Refresh-Token";
+    private static final String AUTHENTICATED_LOGIN_USER_ATTRIBUTE = JwtAuthenticationFilter.class.getName() + ".LOGIN_USER";
 
     @Resource
     private JwtUtils jwtUtils;
@@ -63,11 +65,32 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
     private IpUtils ipUtils;
 
     @Override
+    protected boolean shouldNotFilterAsyncDispatch() {
+        return false;
+    }
+
+    @Override
+    protected boolean shouldNotFilter(HttpServletRequest request) {
+        return request.getDispatcherType() == DispatcherType.ASYNC
+                && !request.getRequestURI().endsWith("/ai/customer-service");
+    }
+
+    @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain filterChain)
             throws ServletException, IOException {
 
         // 发送访客记录消息（异步处理，不影响主业务）
-        sendVisitorRecordMessage(request);
+        if (request.getDispatcherType() != DispatcherType.ASYNC) {
+            sendVisitorRecordMessage(request);
+        } else {
+            Object loginUser = request.getAttribute(AUTHENTICATED_LOGIN_USER_ATTRIBUTE);
+            if (loginUser instanceof LoginUser user) {
+                SecurityContextHolder.getContext().setAuthentication(
+                        new UsernamePasswordAuthenticationToken(user, null, user.getAuthorities()));
+                filterChain.doFilter(request, response);
+                return;
+            }
+        }
 
         // 检查是否是可选认证接口（有token就认证，没有就跳过）
         boolean isOptionalAuth = false;
@@ -148,6 +171,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                 UsernamePasswordAuthenticationToken authenticationToken = new UsernamePasswordAuthenticationToken(
                         loginUser, null, loginUser.getAuthorities());
                 SecurityContextHolder.getContext().setAuthentication(authenticationToken);
+                request.setAttribute(AUTHENTICATED_LOGIN_USER_ATTRIBUTE, loginUser);
 
                 String newToken = jwtUtils.createToken(id);
                 response.setHeader(REFRESH_TOKEN_HEADER, newToken);

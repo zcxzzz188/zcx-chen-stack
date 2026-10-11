@@ -36,6 +36,9 @@ job
 .worktrees/
 /tests/
 
+# 本地工作证据
+/.work/
+
 
 node_modules/
 /jmeter/
