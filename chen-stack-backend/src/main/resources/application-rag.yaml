@@ -1,0 +1,22 @@
+# 显式启用rag profile只加载配置；不自动创建集合或索引、不调用Provider。
+# 聊天配置仍为spring.ai.openai，Embedding凭据不得复用聊天Key。
+chen:
+  rag:
+    enabled: ${CHEN_RAG_ENABLED:false}
+    embedding-api-key: ${CHEN_RAG_EMBEDDING_API_KEY:}
+    embedding-base-url: ${CHEN_RAG_EMBEDDING_BASE_URL:https://dashscope.aliyuncs.com/compatible-mode/v1}
+    embedding-model: ${CHEN_RAG_EMBEDDING_MODEL:text-embedding-v4}
+    dimensions: 1024
+    embedding-timeout-seconds: 10
+    max-embedding-input-chars: 1000
+    max-embedding-requests-per-day: 1000
+    qdrant-host: ${CHEN_RAG_QDRANT_HOST:127.0.0.1}
+    qdrant-grpc-port: ${CHEN_RAG_QDRANT_GRPC_PORT:6334}
+    qdrant-tls: ${CHEN_RAG_QDRANT_TLS:false}
+    qdrant-api-key: ${CHEN_RAG_QDRANT_API_KEY:}
+    qdrant-timeout-seconds: 5
+    collection: ${CHEN_RAG_QDRANT_COLLECTION:chen_platform_help_v1}
+    top-k: 4
+    similarity-threshold: 0.65
+    context-token-budget: 2400
+    chat-timeout-seconds: 60

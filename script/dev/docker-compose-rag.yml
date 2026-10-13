@@ -1,0 +1,22 @@
+# 独立启动：docker compose -p chen-rag -f script/dev/docker-compose-rag.yml up -d
+# 不合并业务Compose；独立端口、网络、卷；不允许down -v清理既有数据。
+services:
+  qdrant:
+    image: qdrant/qdrant:v1.13.6
+    restart: unless-stopped
+    environment:
+      QDRANT__SERVICE__API_KEY: ${CHEN_RAG_QDRANT_API_KEY:?必须配置独立Qdrant凭据}
+    ports:
+      - "127.0.0.1:${CHEN_RAG_QDRANT_HTTP_PORT:-16333}:6333"
+      - "127.0.0.1:${CHEN_RAG_QDRANT_GRPC_PORT:-16334}:6334"
+    volumes:
+      - rag_qdrant_data:/qdrant/storage
+    healthcheck:
+      # /readyz无需API Key；官方镜像无curl，使用bash TCP检查真实HTTP健康响应。
+      test: ["CMD", "bash", "-ec", "exec 3<>/dev/tcp/127.0.0.1/6333; printf 'GET /readyz HTTP/1.0\\r\\nHost: localhost\\r\\n\\r\\n' >&3; head -n 1 <&3 | grep '200'"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+volumes:
+  rag_qdrant_data:

@@ -33,6 +33,10 @@ public interface AiService {
      */
     Flux<String> customerServiceChat(String message, String chatId);
 
+    Flux<String> customerServiceChat(String message, String chatId, String mode);
+
+    java.util.Map<String, Object> customerServiceStatus();
+
     /**
      * 生成文章标题建议
      *

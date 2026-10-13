@@ -1,11 +1,9 @@
 package com.zcx.chenstack.utils;
 
-import org.springframework.ai.chat.client.advisor.api.AdvisedRequest;
+import org.springframework.ai.chat.client.ChatClientRequest;
+import org.springframework.ai.chat.client.ChatClientResponse;
+import org.springframework.ai.chat.client.advisor.api.AdvisorChain;
 import org.springframework.ai.chat.client.advisor.api.BaseAdvisor;
-import org.springframework.ai.chat.client.advisor.api.AdvisedResponse;
-
-import java.util.HashMap;
-import java.util.Map;
 
 /**
  * Re-Reading Advisor (Re2)
@@ -19,28 +17,22 @@ import java.util.Map;
  */
 public class ReReadingAdvisor implements BaseAdvisor {
 
-    private static final String RE2_INPUT_QUERY_KEY = "re2_input_query";
-
     private static final String DEFAULT_RE2_ADVISE_TEMPLATE = """
             {re2_input_query}
             Read the question again: {re2_input_query}
             """;
 
     @Override
-    public AdvisedRequest before(AdvisedRequest advisedRequest) {
-        // 将原始查询存入参数，以便在模板中使用
-        Map<String, Object> advisedUserParams = new HashMap<>(advisedRequest.userParams());
-        advisedUserParams.put(RE2_INPUT_QUERY_KEY, advisedRequest.userText());
-
-        // 使用 Re2 模板构建新请求
-        return AdvisedRequest.from(advisedRequest)
-                .userText(DEFAULT_RE2_ADVISE_TEMPLATE)
-                .userParams(advisedUserParams)
+    public ChatClientRequest before(ChatClientRequest request, AdvisorChain advisorChain) {
+        return request.mutate()
+                .prompt(request.prompt().augmentUserMessage(user -> user.mutate()
+                        .text(DEFAULT_RE2_ADVISE_TEMPLATE.replace("{re2_input_query}", user.getText()))
+                        .build()))
                 .build();
     }
 
     @Override
-    public AdvisedResponse after(AdvisedResponse advisedResponse) {
+    public ChatClientResponse after(ChatClientResponse advisedResponse, AdvisorChain advisorChain) {
         // 不修改响应，直接返回
         return advisedResponse;
     }

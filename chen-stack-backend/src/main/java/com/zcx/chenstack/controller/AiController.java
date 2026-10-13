@@ -75,7 +75,15 @@ public class AiController {
         if (SecurityUtils.getLoginUser() == null) {
             throw new BlogException(BlogConstants.LoginRequired);
         }
-        return aiService.customerServiceChat(request.getMessage(), request.getChatId());
+        if ("chat".equals(request.getMode())) {
+            return aiService.customerServiceChat(request.getMessage(), request.getChatId());
+        }
+        return aiService.customerServiceChat(request.getMessage(), request.getChatId(), request.getMode());
+    }
+
+    @GetMapping("/customer-service/status")
+    public Result<Map<String, Object>> customerServiceStatus() {
+        return Result.success(aiService.customerServiceStatus());
     }
 
     /**

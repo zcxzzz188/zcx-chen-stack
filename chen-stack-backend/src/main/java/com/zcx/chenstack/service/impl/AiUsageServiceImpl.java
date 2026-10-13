@@ -28,7 +28,12 @@ public class AiUsageServiceImpl implements AiUsageService {
     private static final int DAILY_LIMIT = 50;
     private static final DefaultRedisScript<Long> RESERVE_DAILY_USAGE = new DefaultRedisScript<>("""
             local current = redis.call('GET', KEYS[1])
-            if current and tonumber(current) >= tonumber(ARGV[1]) then return 0 end
+            if current and tonumber(current) >= tonumber(ARGV[1]) then
+                if redis.call('TTL', KEYS[1]) < 0 then
+                    redis.call('EXPIRE', KEYS[1], ARGV[2])
+                end
+                return 0
+            end
             redis.call('INCR', KEYS[1])
             if redis.call('TTL', KEYS[1]) < 0 then
                 redis.call('EXPIRE', KEYS[1], ARGV[2])
@@ -179,6 +184,6 @@ public class AiUsageServiceImpl implements AiUsageService {
     private long getSecondsUntilMidnight() {
         LocalDateTime now = LocalDateTime.now();
         LocalDateTime midnight = now.toLocalDate().plusDays(1).atStartOfDay();
-        return Duration.between(now, midnight).getSeconds();
+        return Math.max(1, Duration.between(now, midnight).getSeconds());
     }
 }

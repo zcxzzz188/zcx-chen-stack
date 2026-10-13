@@ -19,6 +19,7 @@ import com.zcx.chenstack.mapper.ArticleMapper;
 import com.zcx.chenstack.mapper.FavoriteMapper;
 import com.zcx.chenstack.mapper.SysUserMapper;
 import com.zcx.chenstack.service.FavoriteService;
+import com.zcx.chenstack.service.ArticleAccessService;
 import com.zcx.chenstack.service.MessageService;
 import com.zcx.chenstack.utils.SecurityUtils;
 import com.zcx.chenstack.redis.NotificationThreadPool;
@@ -45,6 +46,9 @@ public class FavoriteServiceImpl extends ServiceImpl<FavoriteMapper, Favorite> i
 
     @Resource
     private ArticleMapper articleMapper;
+
+    @Resource
+    private ArticleAccessService articleAccessService;
 
     @Resource
     private FavoriteMapper favoriteMapper;
@@ -398,6 +402,7 @@ public class FavoriteServiceImpl extends ServiceImpl<FavoriteMapper, Favorite> i
 
         // 转换为ArticleVo
         List<ArticleVo> articleVoList = articles.stream()
+                .filter(article -> articleAccessService.canReadArticle(article, currentUserId))
                 .map(article -> BeanUtil.copyProperties(article, ArticleVo.class))
                 .toList();
 

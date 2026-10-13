@@ -1,6 +1,8 @@
 package com.zcx.chenstack.service.impl;
 
 import com.zcx.chenstack.domain.entity.Article;
+import com.zcx.chenstack.domain.enums.EditStatusEnum;
+import com.zcx.chenstack.domain.enums.ExamineStatusEnum;
 import com.zcx.chenstack.domain.enums.VisibleRangeEnum;
 import com.zcx.chenstack.service.ArticleAccessService;
 import com.zcx.chenstack.service.FollowService;
@@ -17,6 +19,19 @@ public class ArticleAccessServiceImpl implements ArticleAccessService {
 
     @Resource
     private FollowService followService;
+
+    @Override
+    public boolean canReadArticle(Article article, Integer currentUserId) {
+        if (article == null || !Objects.equals(article.getIsDeleted(), 0)) {
+            return false;
+        }
+        if (currentUserId != null && currentUserId > 0 && Objects.equals(article.getUserId(), currentUserId)) {
+            return true;
+        }
+        return Objects.equals(article.getEditStatus(), EditStatusEnum.PUBLISHED.getCode())
+                && Objects.equals(article.getExamineStatus(), ExamineStatusEnum.PASS.getCode())
+                && canAccessArticle(article, currentUserId);
+    }
 
     /**
      * 详情页和列表页都复用这里，避免不同入口出现鉴权分叉。

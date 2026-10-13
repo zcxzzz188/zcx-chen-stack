@@ -390,16 +390,13 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
         }
         Integer currentUserId = SecurityUtils.getUserId();
         boolean isOwner = currentUserId != null && currentUserId != 0 && Objects.equals(article.getUserId(), currentUserId);
-        if (!isOwner) {
-            // 非作者访问时，先兜底发布态，再按可见范围做统一权限校验。
+        if (!articleAccessService.canReadArticle(article, currentUserId)) {
             boolean isPublished = Objects.equals(article.getEditStatus(), EditStatusEnum.PUBLISHED.getCode());
             boolean isPass = Objects.equals(article.getExamineStatus(), ExamineStatusEnum.PASS.getCode());
-            if (!isPublished || !isPass) {
+            if (!isPublished || !isPass || !Objects.equals(article.getIsDeleted(), 0)) {
                 throw new BlogException(BlogConstants.NotFoundArticle);
             }
-            if (!articleAccessService.canAccessArticle(article, currentUserId)) {
-                throw buildArticleAccessException(article.getVisibleRange());
-            }
+            throw buildArticleAccessException(article.getVisibleRange());
         }
 
         ArticleVo articleVo = BeanUtil.copyProperties(article, ArticleVo.class);
@@ -732,27 +729,56 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
     }
 
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public void addArticle(ArticleDto articleDto) {
-        Article article = BeanUtil.copyProperties(articleDto, Article.class);
-        Integer userId = SecurityUtils.getUserId();
-        article.setUserId(userId);
+        Article article = createArticle(articleDto);
+        saveArticleColumnRelations(article.getId(), articleDto.getColumnIds());
+        auditArticleAfterCommit(BeanUtil.copyProperties(article, ArticleDto.class));
+    }
 
-        // XSS 过滤文章内容，防止 XSS 攻击
-        article.setTitle(XssUtils.cleanPlainText(article.getTitle()));
-        article.setContent(XssUtils.cleanRichText(article.getContent()));
-        article.setDescription(XssUtils.cleanPlainText(article.getDescription()));
+    private Article createArticle(ArticleDto articleDto) {
+        Integer userId = SecurityUtils.getUserId();
+        if (userId == null || userId <= 0) {
+            throw new BlogException(BlogConstants.LoginRequired);
+        }
+        Article article = articleInput(articleDto);
+        article.setUserId(userId);
+        article.setExamineStatus(ExamineStatusEnum.WAIT.getCode());
 
         // 如果前端没有设置editStatus，默认为已发布状态
         if (article.getEditStatus() == null) {
             article.setEditStatus(EditStatusEnum.PUBLISHED.getCode());
         }
-        if (!articleMapper.insertOrUpdate(article)) {
+        if (articleMapper.insert(article) != 1) {
             throw new BlogException(BlogConstants.AddArticleError);
         }
         articleDto.setId(article.getId()); // 回显id
         articleDto.setUserId(userId);
-        saveArticleColumnRelations(articleDto.getId(), articleDto.getColumnIds());
-        auditArticle(articleDto);
+        articleDto.setExamineStatus(article.getExamineStatus());
+        return article;
+    }
+
+    // 只映射作者可编辑字段，ID、归属、审核状态、统计和时间由服务端维护。
+    private Article articleInput(ArticleDto dto) {
+        return new Article().setTitle(XssUtils.cleanPlainText(dto.getTitle()))
+                .setContent(XssUtils.cleanRichText(dto.getContent()))
+                .setDescription(XssUtils.cleanPlainText(dto.getDescription()))
+                .setTag(dto.getTag()).setCoverUrl(dto.getCoverUrl())
+                .setEditStatus(dto.getEditStatus()).setVisibleRange(dto.getVisibleRange())
+                .setReprintType(dto.getReprintType()).setReprintUrl(dto.getReprintUrl());
+    }
+
+    private void auditArticleAfterCommit(ArticleDto articleDto) {
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    auditArticle(articleDto);
+                }
+            });
+        } else {
+            auditArticle(articleDto);
+        }
     }
 
     // 文章审核
@@ -761,8 +787,9 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
             try {
                 Article currentArticle = articleMapper.selectOne(
                         new LambdaQueryWrapper<Article>()
-                                .select(Article::getId, Article::getEditStatus, Article::getExamineStatus)
-                                .eq(Article::getId, articleDto.getId()));
+                                .select(Article::getId, Article::getUserId, Article::getEditStatus, Article::getExamineStatus)
+                                .eq(Article::getId, articleDto.getId())
+                                .eq(Article::getUserId, articleDto.getUserId()));
                 if (ObjectUtil.isEmpty(currentArticle)) {
                     log.warn("文章审核任务未找到文章，ID: {}", articleDto.getId());
                     return;
@@ -841,7 +868,7 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
         messageService.sendToAdmin(messageDto);
 
         HashMap<String, Object> sendEmail = new HashMap<>();
-        sendEmail.put("text", String.format(MessageConstants.ARTICLE_NEED_REVIEW, articleDto.getId(), reason));
+        sendEmail.put("text", String.format(MessageConstants.ARTICLE_NEED_REVIEW, articleDto.getId(), articleDto.getTitle(), reason));
         rabbitTemplate.convertAndSend(RabbitMQConstants.Examine_Exchange, RabbitMQConstants.Examine_Routing_Key,
                 sendEmail);
     }
@@ -877,22 +904,28 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
 
     // 保存草稿
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public void saveDraft(ArticleDto articleDto) {
-        Article article = BeanUtil.copyProperties(articleDto, Article.class);
-        article.setUserId(SecurityUtils.getUserId());
-        article.setEditStatus(EditStatusEnum.DRAFT.getCode());
-        articleMapper.insertOrUpdate(article);
-        // 将生成的ID回写到DTO中，供前端使用
-        articleDto.setId(article.getId());
+        articleDto.setEditStatus(EditStatusEnum.DRAFT.getCode());
+        if (articleDto.getId() == null) {
+            createArticle(articleDto);
+        } else {
+            updateArticle(articleDto);
+        }
     }
 
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public void updateArticle(ArticleDto articleDto) {
+        Integer currentUserId = SecurityUtils.getUserId();
+        if (currentUserId == null || currentUserId <= 0) {
+            throw new BlogException(BlogConstants.LoginRequired);
+        }
         Article userArticle = articleMapper.selectById(articleDto.getId());
         if (ObjectUtil.isEmpty(userArticle)) {
             throw new BlogException(BlogConstants.NotFoundArticle);
         }
-        if (userArticle.getUserId() != SecurityUtils.getUserId()) {
+        if (!Objects.equals(userArticle.getUserId(), currentUserId)) {
             throw new BlogException(BlogConstants.CannotHandleOthersArticle);
         }
 
@@ -905,17 +938,13 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
         }
         Integer targetEditStatus = resolveTargetEditStatus(articleDto, userArticle);
         boolean shouldReAudit = shouldTriggerReAuditOnUpdate(articleDto, userArticle, targetEditStatus);
-        if (shouldReAudit) {
-            articleDto.setExamineStatus(ExamineStatusEnum.WAIT.getCode());
-        }
+        articleDto.setUserId(currentUserId);
+        articleDto.setExamineStatus(shouldReAudit ? ExamineStatusEnum.WAIT.getCode() : userArticle.getExamineStatus());
         // 更新文章, 处理专栏关联
         handleColumnAssociation(articleDto, userArticle);
 
-        Article article = BeanUtil.copyProperties(articleDto, Article.class);
-        // XSS 过滤文章内容，防止 XSS 攻击
-        article.setTitle(XssUtils.cleanPlainText(article.getTitle()));
-        article.setContent(XssUtils.cleanRichText(article.getContent()));
-        article.setDescription(XssUtils.cleanPlainText(article.getDescription()));
+        Article article = articleInput(articleDto).setId(userArticle.getId())
+                .setExamineStatus(articleDto.getExamineStatus());
         articleDto.setTitle(article.getTitle());
         articleDto.setContent(article.getContent());
         articleDto.setDescription(article.getDescription());
@@ -924,8 +953,9 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
             throw new BlogException(BlogConstants.UpdateArticleError);
         }
         if (shouldReAudit) {
-            articleDto.setUserId(userArticle.getUserId());
-            auditArticle(articleDto);
+            ArticleDto auditDto = BeanUtil.copyProperties(userArticle, ArticleDto.class);
+            BeanUtil.copyProperties(article, auditDto, cn.hutool.core.bean.copier.CopyOptions.create().ignoreNullValue());
+            auditArticleAfterCommit(auditDto);
         }
     }
 
@@ -1063,7 +1093,9 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
             newArticleColumn.setArticleId(articleId);
             newArticleColumn.setColumnId(columnId);
             newArticleColumn.setSort(sort + 1);
-            articleColumnMapper.insert(newArticleColumn);
+            if (articleColumnMapper.insert(newArticleColumn) != 1) {
+                throw new BlogException(BlogConstants.AddArticleError);
+            }
         });
     }
 

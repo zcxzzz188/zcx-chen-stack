@@ -1,0 +1,119 @@
+package com.zcx.chenstack.rag;
+
+import com.zcx.chenstack.config.RagProperties;
+import io.qdrant.client.QdrantClient;
+import io.qdrant.client.QdrantGrpcClient;
+import io.qdrant.client.grpc.Collections;
+import io.qdrant.client.grpc.JsonWithInt;
+import io.qdrant.client.grpc.Points;
+import org.springframework.ai.document.Document;
+import org.springframework.ai.vectorstore.SearchRequest;
+import org.springframework.ai.vectorstore.filter.Filter;
+import org.springframework.ai.vectorstore.filter.FilterExpressionBuilder;
+import org.springframework.ai.vectorstore.qdrant.QdrantVectorStore;
+
+import java.nio.charset.StandardCharsets;
+import java.time.Duration;
+import java.util.*;
+import java.util.concurrent.TimeUnit;
+
+import static io.qdrant.client.PointIdFactory.id;
+import static io.qdrant.client.VectorsFactory.vectors;
+
+/** 官方 VectorStore + 显式集合校验；从不重建或删除集合。 */
+public class QdrantKnowledgeIndex implements AutoCloseable {
+    private static final UUID BINDING_ID = UUID.nameUUIDFromBytes("chen-rag-index-binding-v1".getBytes(StandardCharsets.UTF_8));
+    private final QdrantClient client;
+    private final QdrantVectorStore store;
+    private final RagProperties properties;
+    private final String signature;
+
+    public QdrantKnowledgeIndex(RagProperties properties, GuardedEmbeddingModel embedding) {
+        properties.validate();
+        this.properties = properties;
+        this.signature = KnowledgeCatalog.hash(properties.getEmbeddingBaseUrl() + "|" + properties.getEmbeddingModel() + "|1024|chunk-v1");
+        var builder = QdrantGrpcClient.newBuilder(properties.getQdrantHost(), properties.getQdrantGrpcPort(), properties.isQdrantTls(), false)
+                .withTimeout(Duration.ofSeconds(properties.getQdrantTimeoutSeconds()));
+        if (!properties.getQdrantApiKey().isBlank()) builder.withApiKey(properties.getQdrantApiKey());
+        client = new QdrantClient(builder.build());
+        store = QdrantVectorStore.builder(client, embedding).collectionName(properties.getCollection()).initializeSchema(false).build();
+    }
+
+    public void verify(boolean createIfAbsent) {
+        try {
+            if (!client.collectionExistsAsync(properties.getCollection()).get(properties.getQdrantTimeoutSeconds(), TimeUnit.SECONDS)) {
+                if (!createIfAbsent) throw new RagFailure(RagFailure.Code.INDEX_MISMATCH);
+                client.createCollectionAsync(properties.getCollection(), Collections.VectorParams.newBuilder()
+                        .setSize(1024).setDistance(Collections.Distance.Cosine).build())
+                        .get(properties.getQdrantTimeoutSeconds(), TimeUnit.SECONDS);
+                float[] control = new float[1024]; control[0] = 1;
+                client.upsertAsync(properties.getCollection(), List.of(Points.PointStruct.newBuilder().setId(id(BINDING_ID))
+                        .setVectors(vectors(control)).putPayload("embedding_signature", JsonWithInt.Value.newBuilder().setStringValue(signature).build()).build()))
+                        .get(properties.getQdrantTimeoutSeconds(), TimeUnit.SECONDS);
+            }
+            var vector = client.getCollectionInfoAsync(properties.getCollection()).get(properties.getQdrantTimeoutSeconds(), TimeUnit.SECONDS)
+                    .getConfig().getParams().getVectorsConfig();
+            if (!vector.hasParams() || vector.getParams().getSize() != 1024 || vector.getParams().getDistance() != Collections.Distance.Cosine) {
+                throw new RagFailure(RagFailure.Code.DIMENSION_MISMATCH);
+            }
+            var marker = client.retrieveAsync(properties.getCollection(), List.of(id(BINDING_ID)), true, false, null)
+                    .get(properties.getQdrantTimeoutSeconds(), TimeUnit.SECONDS);
+            if (marker.size() != 1 || !signature.equals(marker.getFirst().getPayloadMap()
+                    .getOrDefault("embedding_signature", JsonWithInt.Value.getDefaultInstance()).getStringValue())) {
+                throw new RagFailure(RagFailure.Code.INDEX_MISMATCH);
+            }
+        } catch (RagFailure failure) { throw failure; }
+        catch (InterruptedException failure) { Thread.currentThread().interrupt(); throw new RagFailure(RagFailure.Code.QDRANT_UNAVAILABLE); }
+        catch (Exception failure) { throw new RagFailure(RagFailure.Code.QDRANT_UNAVAILABLE); }
+    }
+
+    public void upsert(List<Document> chunks) {
+        verify(false);
+        try {
+            for (int i = 0; i < chunks.size(); i += 10) {
+                List<Document> batch = chunks.subList(i, Math.min(chunks.size(), i + 10)).stream().map(doc -> {
+                    Map<String, Object> metadata = new HashMap<>(doc.getMetadata());
+                    metadata.put("embedding_signature", signature);
+                    return new Document(doc.getId(), doc.getText(), metadata);
+                }).toList();
+                store.add(batch);
+            }
+        } catch (RagFailure failure) { throw failure; }
+        catch (Exception failure) { throw new RagFailure(RagFailure.Code.QDRANT_UNAVAILABLE); }
+    }
+
+    /** 物理索引操作，不代表权威目录撤权；业务调用须经RagKnowledgeService校验。 */
+    public void deleteSource(String sourceId) {
+        verify(false);
+        try { store.delete(new FilterExpressionBuilder().eq("source_id", sourceId).build()); }
+        catch (Exception failure) { throw new RagFailure(RagFailure.Code.QDRANT_UNAVAILABLE); }
+    }
+
+    public void deleteObsoleteChunks(List<Document> current) {
+        verify(false);
+        Map<String, List<Object>> idsBySource = new LinkedHashMap<>();
+        for (Document chunk : current) {
+            idsBySource.computeIfAbsent((String) chunk.getMetadata().get("source_id"), key -> new ArrayList<>()).add(chunk.getId());
+        }
+        try {
+            for (var source : idsBySource.entrySet()) {
+                FilterExpressionBuilder filter = new FilterExpressionBuilder();
+                store.delete(filter.and(filter.eq("source_id", source.getKey()), filter.nin("chunk_id", source.getValue())).build());
+            }
+        } catch (Exception failure) { throw new RagFailure(RagFailure.Code.QDRANT_UNAVAILABLE); }
+    }
+
+    public List<Document> search(String query) {
+        verify(false);
+        FilterExpressionBuilder filters = new FilterExpressionBuilder();
+        Filter.Expression filter = filters.and(filters.eq("visibility", "PUBLIC"),
+                filters.and(filters.eq("review_status", "DOCUMENT_REVIEWED"), filters.eq("embedding_signature", signature))).build();
+        try {
+            return store.similaritySearch(SearchRequest.builder().query(query).topK(properties.getTopK())
+                    .similarityThreshold(properties.getSimilarityThreshold()).filterExpression(filter).build());
+        } catch (RagFailure failure) { throw failure; }
+        catch (Exception failure) { throw new RagFailure(RagFailure.Code.QDRANT_UNAVAILABLE); }
+    }
+
+    @Override public void close() { client.close(); }
+}

@@ -12,6 +12,9 @@ public interface ArticleAccessService {
      */
     boolean canAccessArticle(Article article, Integer currentUserId);
 
+    /** 完整读取权限，包含删除、发布、审核状态及作者例外。 */
+    boolean canReadArticle(Article article, Integer currentUserId);
+
     /**
      * 校验当前用户是否可以访问粉丝可见内容。
      */

@@ -30,6 +30,7 @@ import com.zcx.chenstack.mapper.LikeMapper;
 import com.zcx.chenstack.mapper.SysUserMapper;
 import com.zcx.chenstack.redis.NotificationThreadPool;
 import com.zcx.chenstack.service.CommentService;
+import com.zcx.chenstack.service.ArticleAccessService;
 import com.zcx.chenstack.service.MessageService;
 import com.zcx.chenstack.service.UserSettingsService;
 import com.zcx.chenstack.utils.CountUpdateUtils;
@@ -67,6 +68,9 @@ public class CommentServiceImpl extends ServiceImpl<CommentMapper, Comment> impl
     private ArticleMapper articleMapper;
 
     @Resource
+    private ArticleAccessService articleAccessService;
+
+    @Resource
     private SysUserMapper sysUserMapper;
 
     @Resource
@@ -95,13 +99,21 @@ public class CommentServiceImpl extends ServiceImpl<CommentMapper, Comment> impl
     public Integer addComment(CommentDto commentDto) {
         Integer currentUserId = SecurityUtils.getUserId();
 
+        if (currentUserId == null || currentUserId <= 0) {
+            throw new BlogException(BlogConstants.LoginRequired);
+        }
+        requireReadableArticle(commentDto.getArticleId(), currentUserId);
+
         // 验证父评论是否存在
         if (commentDto.getParentId() != null && commentDto.getParentId() > 0) {
             Comment parentComment = getById(commentDto.getParentId());
             EntityCheckUtils.getOrThrowNotDeleted(parentComment, BlogConstants.NotFoundParentComment);
 
             // 如果父评论的审核状态不是通过，不允许回复
-            if (parentComment.getExamineStatus() != 1) {
+            if (!Objects.equals(parentComment.getArticleId(), commentDto.getArticleId())) {
+                throw new BlogException(BlogConstants.NotFoundParentComment);
+            }
+            if (!Objects.equals(parentComment.getExamineStatus(), ExamineStatusEnum.PASS.getCode())) {
                 throw new BlogException(BlogConstants.CannotReplyUnApprovedComment);
             }
         }
@@ -109,6 +121,7 @@ public class CommentServiceImpl extends ServiceImpl<CommentMapper, Comment> impl
         // 创建评论实体
         Comment comment = new Comment();
         BeanUtil.copyProperties(commentDto, comment);
+        comment.setId(null);
         comment.setUserId(currentUserId);
         // 先设置为待审核状态
         comment.setExamineStatus(ExamineStatusEnum.WAIT.getCode());
@@ -298,11 +311,11 @@ public class CommentServiceImpl extends ServiceImpl<CommentMapper, Comment> impl
             throw new BlogException(BlogConstants.ArticleIdRequired);
         }
 
-        Integer offset = (pageNum - 1) * pageSize;
-        // 添加参数边界验证，防止负数或过大值导致 SQL 错误
-        offset = Math.max(0, offset);
         pageSize = Math.min(Math.max(1, pageSize), 100);
+        long offset = (Math.max(1L, pageNum) - 1) * pageSize;
         Integer currentUserId = getCurrentUserIdOrNull();
+        requireReadableArticle(articleId, currentUserId);
+        Long total = count(buildVisibleCommentWrapper(articleId, 0, currentUserId));
 
         // 1. 查询顶级评论基础信息
         LambdaQueryWrapper<Comment> topCommentWrapper = buildVisibleCommentWrapper(articleId, 0, currentUserId)
@@ -311,19 +324,20 @@ public class CommentServiceImpl extends ServiceImpl<CommentMapper, Comment> impl
 
         List<Comment> topComments = list(topCommentWrapper);
         if (topComments.isEmpty()) {
-            return new PageVo<>(new ArrayList<>(), 0L);
+            return new PageVo<>(new ArrayList<>(), total);
         }
 
         Set<Integer> topCommentIds = topComments.stream().map(Comment::getId).collect(Collectors.toSet());
 
         // 2. 批量查询子评论（每个顶级评论最多2条）
-        List<Comment> allReplies = batchQueryReplies(articleId, topCommentIds, 2, currentUserId);
+        Map<Integer, Integer> visibleReplyCounts = new HashMap<>();
+        List<Comment> allReplies = batchQueryReplies(articleId, topCommentIds, 2, currentUserId, visibleReplyCounts);
 
         // 3. 批量构建CommentVo
         List<CommentVo> result = batchBuildCommentVos(topComments, allReplies, currentUserId, true);
+        result.forEach(vo -> vo.setReplyCount(visibleReplyCounts.getOrDefault(vo.getId(), 0)));
 
         // 4. 查询总数
-        Long total = count(buildVisibleCommentWrapper(articleId, 0, currentUserId));
 
         return new PageVo<>(result, total);
     }
@@ -336,12 +350,16 @@ public class CommentServiceImpl extends ServiceImpl<CommentMapper, Comment> impl
 
         Comment parentComment = getById(commentId);
         EntityCheckUtils.getOrThrowNotDeleted(parentComment, BlogConstants.NotFoundParentComment);
-
-        Integer offset = (pageNum - 1) * pageSize;
-        // 添加参数边界验证，防止负数或过大值导致 SQL 错误
-        offset = Math.max(0, offset);
         pageSize = Math.min(Math.max(1, pageSize), 100);
+        long offset = (Math.max(1L, pageNum) - 1) * pageSize;
         Integer currentUserId = getCurrentUserIdOrNull();
+        requireReadableArticle(parentComment.getArticleId(), currentUserId);
+        if (!Objects.equals(parentComment.getExamineStatus(), ExamineStatusEnum.PASS.getCode())
+                && !(Objects.equals(parentComment.getExamineStatus(), ExamineStatusEnum.WAIT.getCode())
+                && currentUserId != null && Objects.equals(parentComment.getUserId(), currentUserId))) {
+            throw new BlogException(BlogConstants.NotFoundParentComment);
+        }
+        Long total = count(buildVisibleCommentWrapper(parentComment.getArticleId(), commentId, currentUserId));
 
         // 1. 查询回复评论基础信息
         LambdaQueryWrapper<Comment> replyWrapper = buildVisibleCommentWrapper(parentComment.getArticleId(), commentId, currentUserId)
@@ -350,14 +368,13 @@ public class CommentServiceImpl extends ServiceImpl<CommentMapper, Comment> impl
 
         List<Comment> replies = list(replyWrapper);
         if (replies.isEmpty()) {
-            return new PageVo<>(new ArrayList<>(), 0L);
+            return new PageVo<>(new ArrayList<>(), total);
         }
 
         // 2. 批量构建CommentVo（回复列表不需要子评论）
         List<CommentVo> result = batchBuildCommentVos(replies, new ArrayList<>(), currentUserId, false);
 
         // 3. 查询总数
-        Long total = count(buildVisibleCommentWrapper(parentComment.getArticleId(), commentId, currentUserId));
 
         return new PageVo<>(result, total);
     }
@@ -371,7 +388,7 @@ public class CommentServiceImpl extends ServiceImpl<CommentMapper, Comment> impl
      * @return 子评论列表
      */
     private List<Comment> batchQueryReplies(Integer articleId, Set<Integer> parentIds, int limitPerParent,
-            Integer currentUserId) {
+            Integer currentUserId, Map<Integer, Integer> visibleReplyCounts) {
         if (parentIds.isEmpty()) {
             return new ArrayList<>();
         }
@@ -392,6 +409,7 @@ public class CommentServiceImpl extends ServiceImpl<CommentMapper, Comment> impl
 
         List<Comment> limitedReplies = new ArrayList<>();
         replyMap.forEach((parentId, replies) -> {
+            visibleReplyCounts.put(parentId, replies.size());
             limitedReplies.addAll(replies.stream().limit(limitPerParent).collect(Collectors.toList()));
         });
 
@@ -401,6 +419,13 @@ public class CommentServiceImpl extends ServiceImpl<CommentMapper, Comment> impl
     private Integer getCurrentUserIdOrNull() {
         Integer currentUserId = SecurityUtils.getUserId();
         return currentUserId == null || currentUserId <= 0 ? null : currentUserId;
+    }
+
+    private void requireReadableArticle(Integer articleId, Integer currentUserId) {
+        if (articleId == null || articleId <= 0
+                || !articleAccessService.canReadArticle(articleMapper.selectById(articleId), currentUserId)) {
+            throw new BlogException(BlogConstants.NotFoundArticle);
+        }
     }
 
     private LambdaQueryWrapper<Comment> buildVisibleCommentWrapper(Integer articleId, Integer parentId,

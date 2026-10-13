@@ -16,6 +16,7 @@ import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
+import org.springframework.http.HttpMethod;
 import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
@@ -40,6 +41,7 @@ public class SecurityConfiguration {
     public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
         // 设置认证管理器
         http.authorizeHttpRequests(auth -> auth
+                .requestMatchers(HttpMethod.PUT, "/user/info").authenticated()
                 .requestMatchers(SecurityConstants.Optional_Auth_Urls).permitAll() // 可选认证接口允许访问
                 .requestMatchers("/actuator/**").permitAll() // actuator 端点无需认证
                 .anyRequest().authenticated());

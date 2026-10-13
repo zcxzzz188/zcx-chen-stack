@@ -94,9 +94,10 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
         // 检查是否是可选认证接口（有token就认证，没有就跳过）
         boolean isOptionalAuth = false;
+        boolean isProfileUpdate = new AntPathRequestMatcher("/user/info", "PUT").matches(request);
         for (String url : SecurityConstants.Optional_Auth_Urls) {
             AntPathRequestMatcher matcher = new AntPathRequestMatcher(url);
-            if (matcher.matches(request)) {
+            if (matcher.matches(request) && !isProfileUpdate) {
                 isOptionalAuth = true;
                 break;
             }
@@ -144,7 +145,12 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             return false;
         }
 
-        Integer id = jwtUtils.parseToken(jwt);
+        Integer id;
+        try {
+            id = jwtUtils.parseToken(jwt);
+        } catch (RuntimeException invalidToken) {
+            id = null;
+        }
         if (ObjectUtil.isEmpty(id)) {
             log.error("用户id: {}, 访问接口{},提示:登录过期", id, request.getRequestURI());
             WebUtils.Unauthorized(response, Result.unauthorized(BlogConstants.LoginExpired).toJson());

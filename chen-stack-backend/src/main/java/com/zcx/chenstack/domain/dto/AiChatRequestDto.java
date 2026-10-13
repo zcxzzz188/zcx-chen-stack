@@ -2,6 +2,8 @@ package com.zcx.chenstack.domain.dto;
 
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
+import jakarta.validation.constraints.Pattern;
+import jakarta.validation.constraints.NotNull;
 import lombok.Data;
 
 /**
@@ -17,4 +19,8 @@ public class AiChatRequestDto {
     @NotBlank(message = "会话ID不能为空")
     @Size(max = 128, message = "会话ID不能超过128字符")
     private String chatId;
+
+    @NotNull(message = "客服模式不能为空")
+    @Pattern(regexp = "chat|rag", message = "仅支持chat或rag模式")
+    private String mode = "chat";
 }

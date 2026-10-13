@@ -134,7 +134,8 @@
           <div class="message-content">
             <div class="message-sender" v-if="msg.role === 'ai'">小辰</div>
             <div class="message-bubble">
-              <span class="bubble-text">{{ msg.content }}</span>
+              <div v-if="msg.role === 'ai'" class="bubble-text markdown-text" v-html="markdown.render(msg.content)"></div>
+              <span v-else class="bubble-text">{{ msg.content }}</span>
             </div>
             <div v-if="msg.incomplete" class="message-time incomplete-indicator">回答未完成，已保留部分内容</div>
             <div class="message-time">{{ msg.time }}</div>
@@ -255,8 +256,10 @@
 import { ref, nextTick, watch, computed, onMounted, onUnmounted } from 'vue'
 import { customerServiceChat, CUSTOMER_SERVICE_TIMEOUT_MS } from '@/api/ai'
 import { useUserStore } from '@/stores/userStore'
+import MarkdownIt from 'markdown-it'
 
 const userStore = useUserStore()
+const markdown = new MarkdownIt({ html: false, breaks: true })
 let requestGeneration = 0
 
 // 响应式对话框宽度
@@ -498,6 +501,11 @@ const sendMessage = async () => {
 
 const stopGeneration = () => {
   if (!chatAbortController.value) return
+  const lastMessage = messageList.value[messageList.value.length - 1]
+  if (lastMessage?.role === 'ai') {
+    if (lastMessage.content.trim()) lastMessage.incomplete = true
+    else messageList.value.pop()
+  }
   requestGeneration += 1
   chatAbortController.value.abort()
   chatAbortController.value = null
@@ -784,6 +792,39 @@ watch(dialogVisible, (newVal) => {
 
         .bubble-text {
           color: var(--el-text-color-primary);
+        }
+
+        .markdown-text {
+          white-space: normal;
+
+          :deep(> :first-child) { margin-top: 0; }
+          :deep(> :last-child) { margin-bottom: 0; }
+          :deep(h1) { font-size: 1.4em; }
+          :deep(h2) { font-size: 1.25em; }
+          :deep(h3) { font-size: 1.1em; }
+          :deep(ul), :deep(ol) { padding-left: 1.5em; }
+          :deep(blockquote) {
+            margin-left: 0;
+            padding-left: 12px;
+            border-left: 3px solid var(--el-border-color);
+            color: var(--el-text-color-secondary);
+          }
+          :deep(code) {
+            font-family: monospace;
+            background: var(--el-fill-color-light);
+            padding: 2px 4px;
+            border-radius: 4px;
+          }
+          :deep(pre) {
+            white-space: pre;
+            overflow-x: auto;
+            max-width: 100%;
+            padding: 12px;
+            background: var(--el-fill-color-light);
+            border-radius: 8px;
+          }
+          :deep(pre code) { padding: 0; }
+          :deep(a) { color: var(--accent); overflow-wrap: anywhere; }
         }
       }
 

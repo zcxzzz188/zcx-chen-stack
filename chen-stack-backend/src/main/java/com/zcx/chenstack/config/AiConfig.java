@@ -4,7 +4,7 @@ import com.zcx.chenstack.domain.constants.AiPromptConstants;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.client.advisor.MessageChatMemoryAdvisor;
 import org.springframework.ai.chat.memory.ChatMemory;
-import org.springframework.ai.chat.memory.InMemoryChatMemory;
+import org.springframework.ai.chat.memory.MessageWindowChatMemory;
 import org.springframework.ai.openai.OpenAiChatModel;
 import org.springframework.ai.openai.OpenAiChatOptions;
 import org.springframework.ai.openai.api.OpenAiApi;
@@ -38,7 +38,10 @@ public class AiConfig {
     @Bean
     public OpenAiChatModel openAiChatModel() {
         // 创建 OpenAI API 客户端，指向 DeepSeek API 地址
-        OpenAiApi openAiApi = new OpenAiApi(baseUrl, apiKey);
+        OpenAiApi openAiApi = OpenAiApi.builder()
+                .baseUrl(baseUrl)
+                .apiKey(apiKey)
+                .build();
 
         // 创建聊天选项（使用新的 API 方式）
         OpenAiChatOptions options = new OpenAiChatOptions();
@@ -46,7 +49,10 @@ public class AiConfig {
         options.setTemperature(temperature);
 
         // 创建并返回 OpenAI Chat 模型
-        return new OpenAiChatModel(openAiApi, options);
+        return OpenAiChatModel.builder()
+                .openAiApi(openAiApi)
+                .defaultOptions(options)
+                .build();
     }
 
     /**
@@ -55,7 +61,8 @@ public class AiConfig {
      */
     @Bean
     public ChatMemory chatMemory() {
-        return new InMemoryChatMemory();
+        // M5 的 Advisor 每次读取最近 100 条消息，避免使用新版默认的 20 条窗口。
+        return MessageWindowChatMemory.builder().maxMessages(100).build();
     }
 
     /**
@@ -67,7 +74,7 @@ public class AiConfig {
         return ChatClient.builder(openAiChatModel)
                 .defaultSystem(AiPromptConstants.CUSTOMER_SERVICE_SYSTEM_PROMPT)
                 .defaultAdvisors(
-                        new MessageChatMemoryAdvisor(chatMemory))
+                        MessageChatMemoryAdvisor.builder(chatMemory).build())
                 .build();
     }
 
