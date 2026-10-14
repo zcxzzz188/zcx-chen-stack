@@ -105,7 +105,7 @@ spring:
       base-url: ${SPRING_AI_OPENAI_BASE_URL:https://api.deepseek.com} # DeepSeek API 地址
       chat:
         options:
-          model: ${SPRING_AI_OPENAI_CHAT_OPTIONS_MODEL:deepseek-chat} # DeepSeek 模型名称
+          model: ${SPRING_AI_OPENAI_CHAT_OPTIONS_MODEL:deepseek-flash} # DeepSeek 模型名称
           temperature: 0.3 # 温度参数，控制输出的随机性（0-1，越小越稳定，越不容易胡编）
           max-tokens: 200 # 最大 token 数量
 minio: # minio 配置
