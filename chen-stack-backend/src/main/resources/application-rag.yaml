@@ -4,7 +4,7 @@ chen:
   rag:
     enabled: ${CHEN_RAG_ENABLED:false}
     embedding-api-key: ${CHEN_RAG_EMBEDDING_API_KEY:}
-    embedding-base-url: ${CHEN_RAG_EMBEDDING_BASE_URL:https://dashscope.aliyuncs.com/compatible-mode/v1}
+    embedding-base-url: ${CHEN_RAG_EMBEDDING_BASE_URL:https://ws-oy47ndolze5z0j6p.cn-beijing.maas.aliyuncs.com/compatible-mode/v1}
     embedding-model: ${CHEN_RAG_EMBEDDING_MODEL:text-embedding-v4}
     dimensions: 1024
     embedding-timeout-seconds: 10
