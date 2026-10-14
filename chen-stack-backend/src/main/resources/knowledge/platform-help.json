@@ -1,1 +1,211 @@
-[]
+[
+  {
+    "sourceId": "help-web-entry",
+    "title": "辰栈网页端与站内入口",
+    "text": "辰栈首页是 /，文章列表在 /article；注册、登录和搜索入口分别是 /register、/login 和 /search。这些都是站内路径，请在辰栈网站内打开。查看文章时，从文章列表中的实际文章链接进入详情页。登录后可进入编辑器 /editor 写文章，或在创作中心的文章管理页 /creation/articlemanage 管理自己的文章。未登录进入编辑器或创作中心时，会提示先登录。",
+    "version": "draft-r1hr1-1",
+    "sourceType": "PLATFORM_HELP",
+    "sourceUrl": "/",
+    "visibility": "NOT_PUBLISHED",
+    "reviewStatus": "CONTENT_APPROVED",
+    "updatedAt": "2026-10-14T05:25:35Z",
+    "keywords": [
+      "辰栈",
+      "网页端",
+      "网站",
+      "入口",
+      "首页"
+    ]
+  },
+  {
+    "sourceId": "help-register",
+    "title": "注册辰栈账号",
+    "text": "打开注册页 /register，填写用户名、邮箱、密码和确认密码。用户名要求 4～20 位英文字母或数字；密码要求 6～20 位，只允许英文字母、数字及 !@#$%^&*._-，两次密码须一致。点击获取验证码，将邮件中收到的六位数字验证码填入表单，再点击立即注册。用户名或邮箱已被使用、验证码不正确时，需根据提示调整后再提交。注册并完成自动登录后会返回首页；如果提示自动登录失败，请到 /login 手动登录。验证码发送提示不代表邮件已经送达，未收到有效验证码时无法完成注册。",
+    "version": "draft-r1hr1-1",
+    "sourceType": "PLATFORM_HELP",
+    "sourceUrl": "/register",
+    "visibility": "NOT_PUBLISHED",
+    "reviewStatus": "CONTENT_APPROVED",
+    "updatedAt": "2026-10-14T05:25:35Z",
+    "keywords": [
+      "注册",
+      "创建账号",
+      "开账号",
+      "邮箱验证码"
+    ]
+  },
+  {
+    "sourceId": "help-login",
+    "title": "用户名或邮箱登录",
+    "text": "打开登录页 /login，输入用户名或邮箱、密码和图片验证码后提交。看不清验证码时可点击图片刷新；登录失败后验证码也会刷新，请重新填写。账号需要处于可用状态，用户端登录适用于普通用户账号，管理账号请使用管理端登录入口。登录成功后返回首页；忘记密码可点击忘记密码进入 /reset。请勿仅依赖记住我选项来判断是否仍已登录；需要登录的操作若提示登录失效，请重新登录。",
+    "version": "draft-r1hr1-1",
+    "sourceType": "PLATFORM_HELP",
+    "sourceUrl": "/login",
+    "visibility": "NOT_PUBLISHED",
+    "reviewStatus": "CONTENT_APPROVED",
+    "updatedAt": "2026-10-14T05:25:35Z",
+    "keywords": [
+      "登录",
+      "邮箱登录",
+      "用户名",
+      "图片验证码"
+    ]
+  },
+  {
+    "sourceId": "help-register-password",
+    "title": "注册密码规则",
+    "text": "注册、忘记密码重置和个人设置修改密码的规则有所不同：\n\n1. 注册页 /register：密码为 6～20 位，只允许英文字母、数字及 !@#$%^&*._-。\n2. 忘记密码重置页 /reset：新密码同样为 6～20 位，允许字符与注册页相同，且不能与旧密码相同。\n3. 个人设置 /setting 中的修改密码：新密码也为 6～20 位，但当前表单只允许英文字母、数字和 @，且不能与旧密码相同。\n\n三种场景都不接受空格、中文或各自规则以外的字符，确认密码须与所填密码一致。注册需要注册邮箱验证码；重置或修改密码需要当前绑定邮箱的密码重置验证码。请按所用页面的规则填写，不要把注册页允许的所有特殊字符都用于设置页。",
+    "version": "draft-r1hr1-1",
+    "sourceType": "PLATFORM_HELP",
+    "sourceUrl": "/register",
+    "visibility": "NOT_PUBLISHED",
+    "reviewStatus": "CONTENT_APPROVED",
+    "updatedAt": "2026-10-14T05:25:35Z",
+    "keywords": [
+      "注册密码",
+      "密码要求",
+      "密码规则",
+      "6至20"
+    ]
+  },
+  {
+    "sourceId": "help-password-reset",
+    "title": "忘记密码与邮箱验证",
+    "text": "在登录页 /login 点击忘记密码，进入 /reset。填写账号当前绑定的邮箱，获取并输入收到的六位数字验证码，验证后再填写新密码和确认密码并提交。新密码须为 6～20 位，只允许英文字母、数字及 !@#$%^&*._-，两次输入须一致，且不能与旧密码相同。重置成功后页面会跳转到登录页，请用新密码登录。发送提示不代表邮件已经送达；没有有效的绑定邮箱验证码，或验证码验证失败时，无法继续完成重置。",
+    "version": "draft-r1hr1-1",
+    "sourceType": "PLATFORM_HELP",
+    "sourceUrl": "/reset",
+    "visibility": "NOT_PUBLISHED",
+    "reviewStatus": "CONTENT_APPROVED",
+    "updatedAt": "2026-10-14T05:25:35Z",
+    "keywords": [
+      "忘记密码",
+      "重置密码",
+      "找回密码",
+      "邮箱验证"
+    ]
+  },
+  {
+    "sourceId": "help-article-publish",
+    "title": "在网页端发布文章",
+    "text": "登录后打开编辑器 /editor，填写文章标题和正文，并按页面设置标签、可见范围等信息，然后点击发布文章。提交成功后会进入文章管理页 /creation/articlemanage。也可以使用保存草稿，稍后继续编辑自己的草稿。发布提交成功不代表文章已经向其他人公开：新文章先进入待审核，其他读者能否看到，还取决于文章是否已发布、是否审核通过以及所选可见范围。请在文章管理中查看实际状态，不要只凭提交成功提示判断文章已公开。",
+    "version": "draft-r1hr1-1",
+    "sourceType": "PLATFORM_HELP",
+    "sourceUrl": "/editor",
+    "visibility": "NOT_PUBLISHED",
+    "reviewStatus": "CONTENT_APPROVED",
+    "updatedAt": "2026-10-14T05:25:35Z",
+    "keywords": [
+      "发文章",
+      "发布文章",
+      "写博客",
+      "编辑器",
+      "草稿"
+    ]
+  },
+  {
+    "sourceId": "help-article-edit",
+    "title": "编辑自己的文章",
+    "text": "登录后进入文章管理页 /creation/articlemanage，找到自己的文章并点击编辑，在编辑器中修改后点击发布文章提交更新，也可以保存为草稿。只能编辑自己创作的文章。已发布文章的标题、正文等内容发生变化，或将草稿重新发布时，文章可能重新进入待审核；尚未审核通过的文章再次发布也需要审核。请在文章管理中查看更新后的实际状态，提交更新或切换可见范围不代表审核已经通过。",
+    "version": "draft-r1hr1-1",
+    "sourceType": "PLATFORM_HELP",
+    "sourceUrl": "/editor",
+    "visibility": "NOT_PUBLISHED",
+    "reviewStatus": "CONTENT_APPROVED",
+    "updatedAt": "2026-10-14T05:25:35Z",
+    "keywords": [
+      "编辑文章",
+      "修改文章",
+      "更新文章",
+      "articleId"
+    ]
+  },
+  {
+    "sourceId": "help-article-manage",
+    "title": "管理自己的文章",
+    "text": "登录后进入创作中心的文章管理页 /creation/articlemanage，可按已发布、审核中、草稿箱、回收站等条件筛选自己的文章。点击编辑可以继续修改。对不在回收站中的文章点击删除，会将其移入回收站；在回收站中点击回收至草稿箱，会将文章改为草稿。彻底删除会先要求确认，请谨慎操作，不要依赖彻底删除后的恢复。只能管理和删除自己的文章，能查看他人的文章不代表能编辑或删除。草稿、回收站和发布状态与审核状态不同，改变状态不能代替审核。",
+    "version": "draft-r1hr1-1",
+    "sourceType": "PLATFORM_HELP",
+    "sourceUrl": "/creation/articlemanage",
+    "visibility": "NOT_PUBLISHED",
+    "reviewStatus": "CONTENT_APPROVED",
+    "updatedAt": "2026-10-14T05:25:35Z",
+    "keywords": [
+      "管理文章",
+      "我的文章",
+      "创作中心",
+      "回收站",
+      "审核"
+    ]
+  },
+  {
+    "sourceId": "help-search",
+    "title": "搜索文章与作者",
+    "text": "打开搜索页 /search，输入关键词并选择搜索模式。未登录时请使用标题搜索；综合、标签、作者等其他模式目前需要登录。默认综合模式在未登录时可能不可用，或提示登录，此时可切换到标题模式，也可以先登录再搜索。标题按文章标题查找，标签按文章标签查找，作者按用户名或昵称查找其文章；综合合并标题和标签的结果，不是正文全文搜索或语义搜索。搜索结果只展示公开、已发布且审核通过的文章，搜索不到不代表文章一定不存在。",
+    "version": "draft-r1hr1-1",
+    "sourceType": "PLATFORM_HELP",
+    "sourceUrl": "/search",
+    "visibility": "NOT_PUBLISHED",
+    "reviewStatus": "CONTENT_APPROVED",
+    "updatedAt": "2026-10-14T05:25:35Z",
+    "keywords": [
+      "搜索",
+      "查找文章",
+      "找文章",
+      "标题",
+      "标签",
+      "作者"
+    ]
+  },
+  {
+    "sourceId": "help-comment",
+    "title": "评论与回复文章",
+    "text": "从文章列表 /article 打开自己能查看的文章，点击详情页的评论气泡按钮，填写内容后点击发送，也可以回复已有评论。发送评论或回复需要先登录，并且仍能查看这篇文章。未登录时只能查看公开、已发布且审核通过文章的评论；查看他人的粉丝可见文章及其评论，还需登录并关注作者，且文章已发布并审核通过。作者可以查看自己尚未删除文章的评论。只能回复同一篇文章中尚未删除且已审核通过的评论。新评论先进入待审核，审核通过后才会对其他读者展示；登录后可以看到自己在有权查看文章下的待审核评论。",
+    "version": "draft-r1hr1-1",
+    "sourceType": "PLATFORM_HELP",
+    "sourceUrl": "/article",
+    "visibility": "NOT_PUBLISHED",
+    "reviewStatus": "CONTENT_APPROVED",
+    "updatedAt": "2026-10-14T05:25:35Z",
+    "keywords": [
+      "评论",
+      "回复",
+      "留言",
+      "审核"
+    ]
+  },
+  {
+    "sourceId": "help-favorite",
+    "title": "收藏文章与收藏夹",
+    "text": "登录后，在自己能查看的文章详情页点击星形收藏按钮，打开收藏到对话框，选择自己的收藏夹并点击收藏。已有收藏可点击取消收藏；没有合适的收藏夹时，可使用新增收藏夹创建后再选择。添加、取消或修改收藏夹时，只能操作自己的收藏夹。个人主页的收藏选项可查看收藏夹；他人只能查看公开收藏夹，私密收藏夹内容仅其主人可看。收藏不会改变文章本身的查看范围，收藏夹公开也不代表其中每篇文章都公开；只有当前账号可以查看的文章才会显示在收藏夹内容中，作者查看自己未删除文章的规则仍适用。",
+    "version": "draft-r1hr1-1",
+    "sourceType": "PLATFORM_HELP",
+    "sourceUrl": "/article",
+    "visibility": "NOT_PUBLISHED",
+    "reviewStatus": "CONTENT_APPROVED",
+    "updatedAt": "2026-10-14T05:25:35Z",
+    "keywords": [
+      "收藏",
+      "收藏夹",
+      "保存文章"
+    ]
+  },
+  {
+    "sourceId": "help-profile",
+    "title": "个人主页与个人设置",
+    "text": "从实际用户链接进入个人主页，可查看页面提供的文章、专栏和收藏等内容，具体内容仍受各自的查看范围限制。修改资料时，请先登录自己的账号，再打开个人设置 /setting，编辑昵称、性别或简介，点击对应的保存更改。昵称要求 4～20 个字符，简介最多 200 个字符；保存成功后页面会提示修改成功。只能修改本人的资料，能打开设置页面不代表未登录也能保存。如果提示未登录或登录失效，请先登录再操作。本篇仅介绍基本资料修改。",
+    "version": "draft-r1hr1-1",
+    "sourceType": "PLATFORM_HELP",
+    "sourceUrl": "/setting",
+    "visibility": "NOT_PUBLISHED",
+    "reviewStatus": "CONTENT_APPROVED",
+    "updatedAt": "2026-10-14T05:25:35Z",
+    "keywords": [
+      "个人中心",
+      "个人主页",
+      "个人设置",
+      "昵称",
+      "简介"
+    ]
+  }
+]
