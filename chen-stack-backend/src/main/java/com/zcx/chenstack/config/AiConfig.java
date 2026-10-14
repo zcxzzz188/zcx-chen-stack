@@ -11,6 +11,9 @@ import org.springframework.ai.openai.api.OpenAiApi;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.retry.support.RetryTemplate;
+
+import java.util.Map;
 
 /**
  * AI 配置类
@@ -31,12 +34,18 @@ public class AiConfig {
     @Value("${spring.ai.openai.chat.options.temperature}")
     private Double temperature;
 
+    @Value("${spring.ai.openai.chat.options.max-tokens}")
+    private Integer maxTokens;
+
     /**
      * 配置 OpenAI Chat 模型（使用 DeepSeek API）
      * 使用自定义配置连接 DeepSeek API
      */
     @Bean
     public OpenAiChatModel openAiChatModel() {
+        if (maxTokens == null || maxTokens < 1 || maxTokens > 393216) {
+            throw new IllegalArgumentException("spring.ai.openai.chat.options.max-tokens 必须为 1 到 393216 的整数");
+        }
         // 创建 OpenAI API 客户端，指向 DeepSeek API 地址
         OpenAiApi openAiApi = OpenAiApi.builder()
                 .baseUrl(baseUrl)
@@ -47,11 +56,15 @@ public class AiConfig {
         OpenAiChatOptions options = new OpenAiChatOptions();
         options.setModel(model);
         options.setTemperature(temperature);
+        options.setMaxTokens(maxTokens);
+        options.setExtraBody(Map.of("thinking", Map.of("type", "disabled")));
 
         // 创建并返回 OpenAI Chat 模型
         return OpenAiChatModel.builder()
                 .openAiApi(openAiApi)
                 .defaultOptions(options)
+                // 失败由调用方处理，避免自动重发产生重复计费请求。
+                .retryTemplate(RetryTemplate.builder().maxAttempts(1).build())
                 .build();
     }
 

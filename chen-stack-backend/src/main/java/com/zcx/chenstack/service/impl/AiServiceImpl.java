@@ -91,7 +91,7 @@ public class AiServiceImpl implements AiService {
                         Flux<String> answer = customerServiceChatClient.prompt().system(system).user(message)
                                 .templateRenderer(new org.springframework.ai.template.NoOpTemplateRenderer())
                                 .advisors(a -> a.param(CONVERSATION_ID, conversationMemoryId(userId, chatId)))
-                                .stream().content().switchIfEmpty(Flux.error(new BlogException("回答未完成，请稍后重试。")))
+                                .stream().content().transform(AiServiceImpl::requireStreamContent)
                                 .timeout(java.time.Duration.ofSeconds(ragKnowledgeService.chatTimeoutSeconds()));
                         return com.zcx.chenstack.rag.RagAnswerLinks.sanitize(answer)
                                 .startWith("模型正文（非来源认证）：\n")
@@ -158,7 +158,8 @@ public class AiServiceImpl implements AiService {
             ChatResponse response = openAiChatModel.call(prompt);
 
             // 提取生成的摘要
-            String summary = response.getResult().getOutput().getText().trim();
+            String summary = requireContent(response == null || response.getResult() == null
+                    || response.getResult().getOutput() == null ? null : response.getResult().getOutput().getText()).trim();
 
             // 强制确保摘要不超过 180 字（双重保险）
             if (summary.length() > 180) {
@@ -225,6 +226,7 @@ public class AiServiceImpl implements AiService {
                     .advisors(a -> a.param(CONVERSATION_ID, conversationMemoryId(userId, chatId)))
                     .stream()
                     .content()
+                    .transform(AiServiceImpl::requireStreamContent)
                     .doOnError(error -> log.error("用户 [ID: {}] 智能客服会话异常 [chatId: {}]", userId, chatId, error))
                     .onErrorMap(error -> new BlogException("抱歉，客服系统暂时无法响应，请稍后再试。"));
 
@@ -240,6 +242,24 @@ public class AiServiceImpl implements AiService {
 
     static String conversationMemoryId(Integer userId, String chatId) {
         return userId + ":" + chatId;
+    }
+
+    private static String requireContent(String content) {
+        if (StrUtil.isBlank(content)) {
+            throw new BlogException("模型未返回有效正文，请稍后重试。");
+        }
+        return content;
+    }
+
+    private static Flux<String> requireStreamContent(Flux<String> content) {
+        return Flux.defer(() -> {
+            java.util.concurrent.atomic.AtomicBoolean hasContent = new java.util.concurrent.atomic.AtomicBoolean();
+            return content.doOnNext(text -> {
+                        if (StrUtil.isNotBlank(text)) hasContent.set(true);
+                    })
+                    .concatWith(Flux.defer(() -> hasContent.get() ? Flux.empty()
+                            : Flux.error(new BlogException("回答未完成，请稍后重试。"))));
+        });
     }
 
     @Override
@@ -270,7 +290,7 @@ public class AiServiceImpl implements AiService {
 
             String prompt = AiPromptConstants.generateTitleSuggestionsPrompt(plainText);
 
-            String result = writingAssistantChatClient.prompt(prompt).call().content();
+            String result = requireContent(writingAssistantChatClient.prompt(prompt).call().content());
 
             // 6. 解析返回的标题列表
             List<String> titles = Arrays.stream(result.split("\n"))
@@ -332,7 +352,7 @@ public class AiServiceImpl implements AiService {
             String prompt = AiPromptConstants.recommendTagsPrompt(title, plainText, availableTagNames);
 
             // 8. 调用 AI 生成推荐
-            String result = writingAssistantChatClient.prompt(prompt).call().content();
+            String result = requireContent(writingAssistantChatClient.prompt(prompt).call().content());
 
             // 9. 解析返回的标签列表，并过滤掉不在数据库中的标签
             List<String> recommendedTags = Arrays.stream(result.split("\n"))
@@ -376,7 +396,7 @@ public class AiServiceImpl implements AiService {
 
             String prompt = AiPromptConstants.generateCommentReplySuggestionsPrompt(articleTitle, commentContent);
 
-            String result = writingAssistantChatClient.prompt(prompt).call().content();
+            String result = requireContent(writingAssistantChatClient.prompt(prompt).call().content());
 
             // 4. 解析返回的回复列表
             List<String> replies = Arrays.stream(result.split("\n"))
