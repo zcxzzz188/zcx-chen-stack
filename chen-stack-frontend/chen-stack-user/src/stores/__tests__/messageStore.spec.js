@@ -9,6 +9,7 @@ describe('messageStore', () => {
   })
 
   afterEach(() => {
+    vi.clearAllTimers()
     vi.useRealTimers()
   })
 

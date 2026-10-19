@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { mount } from '@vue/test-utils'
-import EmptyState from '../EmptyState.vue'
+import EmptyState from '../Loading/EmptyState.vue'
 
 describe('EmptyState', () => {
   it('应渲染组件', () => {
@@ -49,16 +49,16 @@ describe('EmptyState', () => {
     expect(wrapper.props('description')).toBe('自定义描述文字')
   })
 
-  it('应接受图片大小', () => {
+  it('应显示文章类型的默认描述', () => {
     const wrapper = mount(EmptyState, {
-      props: { imageSize: 150 },
+      props: { type: 'article' },
     })
-    expect(wrapper.props('imageSize')).toBe(150)
+    expect(wrapper.text()).toContain('暂无文章')
   })
 
-  it('应使用默认 imageSize 为 100', () => {
+  it('默认自定义类型不显示描述', () => {
     const wrapper = mount(EmptyState)
-    expect(wrapper.props('imageSize')).toBe(100)
+    expect(wrapper.find('.empty-description').text()).toBe('')
   })
 
   it('应使用默认描述为空字符串', () => {

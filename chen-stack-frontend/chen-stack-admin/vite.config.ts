@@ -117,7 +117,7 @@ export default defineConfig({
     environment: 'jsdom',
     globals: true,
     css: true,
-    setupFiles: ['./src/tests/setup.js'],
+    server: { deps: { inline: ['element-plus'] } },
   },
 
   // Git 暂存区检查配置

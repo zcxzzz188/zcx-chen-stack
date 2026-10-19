@@ -1,4 +1,6 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
+
+vi.mock('element-plus', () => ({ ElMessage: { error: vi.fn() } }))
 
 describe('Router Configuration Tests', () => {
   let router
@@ -21,7 +23,8 @@ describe('Router Configuration Tests', () => {
     expect(routeNames).toContain('Home')
     expect(routeNames).toContain('Article')
     expect(routeNames).toContain('Search')
-    expect(routeNames).toContain('Album')
+    expect(routeNames).toContain('About')
+    expect(routeNames).toContain('Contact')
     expect(routeNames).toContain('UserHomepage')
     expect(routeNames).toContain('ArticleDetail')
     expect(routeNames).toContain('Setting')

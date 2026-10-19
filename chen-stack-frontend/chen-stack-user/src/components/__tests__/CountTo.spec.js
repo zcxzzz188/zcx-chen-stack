@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
-import CountTo from '../CountTo.vue'
+import CountTo from '../Common/CountTo.vue'
 
 // Mock formatCompactNumber
 vi.mock('@/utils/formatNumber', () => ({
