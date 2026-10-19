@@ -52,6 +52,12 @@ services:
       CHEN_RAG_EMBEDDING_API_KEY: ${CHEN_RAG_EMBEDDING_API_KEY:-}
       CHEN_RAG_EMBEDDING_BASE_URL: ${CHEN_RAG_EMBEDDING_BASE_URL:-https://ws-oy47ndolze5z0j6p.cn-beijing.maas.aliyuncs.com/compatible-mode/v1}
       CHEN_RAG_EMBEDDING_MODEL: ${CHEN_RAG_EMBEDDING_MODEL:-text-embedding-v4}
+      # 独立Qdrant服务由部署方配置可达地址；不自动新增容器、网络或索引。
+      CHEN_RAG_QDRANT_HOST: ${CHEN_RAG_QDRANT_HOST:-127.0.0.1}
+      CHEN_RAG_QDRANT_GRPC_PORT: ${CHEN_RAG_QDRANT_GRPC_PORT:-6334}
+      CHEN_RAG_QDRANT_TLS: ${CHEN_RAG_QDRANT_TLS:-false}
+      CHEN_RAG_QDRANT_API_KEY: ${CHEN_RAG_QDRANT_API_KEY:-}
+      CHEN_RAG_QDRANT_COLLECTION: ${CHEN_RAG_QDRANT_COLLECTION:-chen_platform_help_v1}
 
       # 邮件配置
       MAIL_USERNAME: ${MAIL_USERNAME}
