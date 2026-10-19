@@ -46,7 +46,11 @@ node_modules/
 /.mcp.json
 /.golutra/
 .gstack/
-/chen-stack-backend/src/test/
+# R1R1正式核心回归；其他任务测试继续忽略。
+/chen-stack-backend/src/test/**
+!/chen-stack-backend/src/test/**/
+!/chen-stack-backend/src/test/java/com/zcx/chenstack/rag/RagEvidenceGuardTest.java
+!/chen-stack-backend/src/test/java/com/zcx/chenstack/service/impl/RagEvidenceResponseTest.java
 /chen-stack-frontend/chen-stack-user/test-results/
 /chen-stack-frontend/chen-stack-user/tests/
 
