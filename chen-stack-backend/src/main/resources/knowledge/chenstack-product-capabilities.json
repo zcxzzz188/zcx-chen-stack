@@ -1907,7 +1907,7 @@
           "全部已读按钮实际只标记当前分类，不是所有分类"
         ],
         "rules": [],
-        "guide": "辰栈查看站内通知：登录后点顶部铃铛进入“消息中心”，切换系统通知、互动通知等分类，点击通知查看关联内容；铃铛数字表示未读数。可标记单条已读，点“全部已读”只处理当前分类，其他分类仍需分别处理。删除通知需确认，刷新可重新获取列表。旁边的对话气泡是用户间私信入口，与通知不同。邮件通知开关在“个人设置”的“账号设置”，关闭邮件不会删除站内通知。小辰没有读取私人通知内容的工具。"
+        "guide": "辰栈查看站内通知：登录后点顶部铃铛进入“消息中心”，切换系统通知、互动通知等分类，点击通知查看关联内容；铃铛数字表示未读数。可标记单条已读，点“全部已读”只处理当前分类中已加载的未读通知；更多通知需继续加载后处理，其他分类仍需分别处理。删除通知需确认，刷新可重新获取列表。旁边的对话气泡是用户间私信入口，与通知不同。邮件通知开关在“个人设置”的“账号设置”，关闭邮件不会删除站内通知。小辰没有读取私人通知内容的工具。"
       },
       "verification": {
         "source": "REUSED_SOURCE_AUDIT_WITH_CURRENT_FILE_HASHES",
@@ -2014,8 +2014,8 @@
       "knowledge": {
         "file": "platform-help.json",
         "sourceId": "help-notifications",
-        "version": "knowledge-draft-4r1",
-        "textSha256": "0957cf9d638cc70f724bb2317a908d24a2a8898a2ee246eb505845c5acca9fcd",
+        "version": "knowledge-draft-4r1-g2r1",
+        "textSha256": "bacc926e517fb9ec28883a56fabce5abfdf383d7952ace3c2bdc524ed6eb842a",
         "visibility": "NOT_PUBLISHED",
         "reviewStatus": "CONTENT_REVIEW_REQUIRED"
       }
@@ -2061,7 +2061,7 @@
           "仅辅助编辑，不能将建议直接解释为已发布或审核通过"
         ],
         "rules": [],
-        "guide": "辰栈AI功能：有智能客服“小辰”。登录后在文章编辑器填写正文后可按页面可用状态使用“AI 生成标题”，在“文章摘要”处使用“AI提取摘要”（正文提取后的纯文本至少100个字符）；“AI 推荐标签”可依据标题或正文。建议需自己确认和使用，不会自动发布文章。评论中的“智能回复”仅在回复他人评论时可用，选中建议后填入输入框，仍需自己点“发送”。这些功能受账号配额与输入条件限制，是否可用以页面提示为准，小辰不能查询实时剩余额度。"
+        "guide": "辰栈AI功能：有智能客服“小辰”。登录后在文章编辑器填写正文后可按页面可用状态使用“AI 生成标题”，在“文章摘要”处使用“AI提取摘要”（正文提取后的纯文本至少100个字符）；“AI 推荐标签”可依据标题或正文。建议需自己确认和使用，不会自动发布文章。评论中的“智能回复”在回复已有评论、且文章标题和目标评论内容可用时显示；选中建议后填入输入框，仍需自己点“发送”。这些功能受账号配额与输入条件限制，是否可用以页面提示为准，小辰不能查询实时剩余额度。"
       },
       "verification": {
         "source": "REUSED_SOURCE_AUDIT_WITH_CURRENT_FILE_HASHES",
@@ -2225,8 +2225,8 @@
       "knowledge": {
         "file": "platform-help.json",
         "sourceId": "help-ai-features",
-        "version": "api-coverage-draft-1",
-        "textSha256": "341a455f879a19fc6605232ae022e0341a8b360ddb4fd2aa698963eb5317661e",
+        "version": "api-coverage-draft-1-g2r1",
+        "textSha256": "a2704e1dece8ce573ad02ccb894386d018c9fcec77a4f3d687231251032545e1",
         "visibility": "NOT_PUBLISHED",
         "reviewStatus": "CONTENT_REVIEW_REQUIRED"
       }
@@ -2411,7 +2411,7 @@
         "scope": "本次定向复核当前源码、行级来源和既有隔离安全测试；页面观察与操作证据沿用原批次，未重新执行UI、真实Provider或真人验收。源码哈希更新不改变主题整体状态；后台主题继续排除在用户端小辰之外。"
       },
       "knownLimits": [
-        "后端核对确认saveArticleColumnRelations缺专栏归属/审核服务端校验；本轮仅记录内部问题，不把前端候选列表当安全保证；草稿清空关联依据ArticleServiceImpl.java:939-943"
+        "当前服务端已校验文章和专栏真实归属、未删除及WAIT/PASS状态，并使用行锁；已提交ColumnSecurityTest的12项单元断言及既有隔离22项HTTP/4项SQL证据支持相关边界。整主题、并发故障、Chat独立审查和真人验收仍未完成，不能把前端候选列表当作安全保证。草稿不保留专栏关联。"
       ],
       "sourceEvidence": [
         "chen-stack-backend/src/main/java/com/zcx/chenstack/service/impl/ColumnServiceImpl.java:196-215",
@@ -3700,7 +3700,7 @@
           "从一个收藏夹取消后，若其他收藏夹仍收藏该文章，文章仍显示已收藏"
         ],
         "rules": [],
-        "guide": "想保存读过的文章：登录后在文章详情点收藏，在“收藏到”对话框选择自己的收藏夹并点“收藏”；没有合适的夹子可“新增收藏夹”，填写1至20个字符的收藏夹名，选择公开设置。头像→“个人主页”→“收藏”可查看收藏夹，自己的收藏夹可编辑名称和公开状态。同一文章可放入多个收藏夹，在对应夹子点“取消收藏”只移除那一处，其他夹子仍收藏时文章仍显示已收藏。公开收藏夹不改变文章阅读权限。当前收藏夹管理没有删除收藏夹入口，不要把取消收藏当作删除夹子。"
+        "guide": "想保存读过的文章：登录后在文章详情点收藏，在“收藏到”对话框选择自己的收藏夹并点“收藏”；没有合适的夹子可“新增收藏夹”，填写1至20个字符的收藏夹名，选择公开设置。头像→“个人主页”→“收藏”可查看收藏夹，自己的收藏夹可编辑名称和公开状态。同一文章可放入多个收藏夹，在文章详情的“收藏到”对话框中，对相应收藏夹点“取消收藏”只移除该处关联，其他夹子仍收藏时文章仍显示已收藏。公开收藏夹不改变文章阅读权限。当前收藏夹管理没有删除收藏夹入口，不要把取消收藏当作删除夹子。"
       },
       "verification": {
         "source": "REUSED_SOURCE_AUDIT_WITH_CURRENT_FILE_HASHES",
@@ -3914,8 +3914,8 @@
       "knowledge": {
         "file": "platform-help.json",
         "sourceId": "help-favorite-manage",
-        "version": "knowledge-draft-4",
-        "textSha256": "f5f58e6ca8160255efc2d21810d49fbf746e5d2e899b4404f0838c9e6a6880e1",
+        "version": "knowledge-draft-4-g2r1",
+        "textSha256": "51f1eb85b30f68e42184cf1be4eb4e155ccad0715236e77622367fa23e1fbb85",
         "visibility": "NOT_PUBLISHED",
         "reviewStatus": "CONTENT_REVIEW_REQUIRED"
       }
@@ -3971,21 +3971,32 @@
             "status": "OBSERVED"
           }
         ],
-        "scope": "页面或请求出现不等于整项功能验收；仅明确列出的操作具有本轮证据。"
+        "scope": "保留既有页面观察；本轮增加历史列表权限撤销的源码修复和离线定向回归，不代表MySQL/HTTP、整主题或真人验收。"
       },
-      "knownLimits": [],
+      "knownLimits": [
+        "历史列表点击文章仍有错误路由404问题，未在本轮修复。",
+        "本轮发现历史查询会返回权限已撤销文章的当前元数据；已在Mapper分页前按当前本人/公开/有效粉丝权限过滤。新增离线MyBatis和内存关系数据回归，未运行MySQL/HTTP或真人验收。"
+      ],
       "sourceEvidence": [
         "router/index.js:149-152",
         "router/index.js:51-54",
         "views/User/Homepage/components/HistoryList.vue:164-182",
         "views/User/Homepage/components/HistoryList.vue:225",
-        "views/User/Homepage/index.vue:33-34"
+        "views/User/Homepage/index.vue:33-34",
+        "chen-stack-backend/src/main/resources/mapper/HistoryMapper.xml",
+        "chen-stack-backend/src/main/java/com/zcx/chenstack/service/impl/HistoryServiceImpl.java",
+        "chen-stack-backend/src/main/java/com/zcx/chenstack/service/impl/ArticleAccessServiceImpl.java",
+        "chen-stack-backend/src/test/java/com/zcx/chenstack/service/impl/HistoryVisibilityTest.java"
       ],
       "sourceHashes": {
         "chen-stack-backend/src/main/java/com/zcx/chenstack/controller/HistoryController.java": "ecf968a9a98dc033bab5e8552bfa3925db567bd206dc0df0251eeb9cc5a34881",
         "chen-stack-frontend/chen-stack-user/src/views/User/Homepage/index.vue": "7a916ae341ebfc8f8f4dace1de284075fe121638e97a39fabe6a5a09ca073fe8",
         "chen-stack-frontend/chen-stack-user/src/router/index.js": "8e1d9d189417f87b01103f4e998405734c5e54b9f727c1fa083e6a0d4432d6bf",
-        "chen-stack-frontend/chen-stack-user/src/views/User/Homepage/components/HistoryList.vue": "380d3578efcae17975a2ed0dfd565d254d0ee11cbbea890ad8aa2a6e995e4f1e"
+        "chen-stack-frontend/chen-stack-user/src/views/User/Homepage/components/HistoryList.vue": "380d3578efcae17975a2ed0dfd565d254d0ee11cbbea890ad8aa2a6e995e4f1e",
+        "chen-stack-backend/src/main/resources/mapper/HistoryMapper.xml": "c7303f3348c6ef88fc3fa61ebb7e347c9c17bb891e8be3ad8fa018ce8c1a4f52",
+        "chen-stack-backend/src/main/java/com/zcx/chenstack/service/impl/HistoryServiceImpl.java": "8b3bbf579226a41e7ab128101875b5fb49b8cd5083495388ccbdcf3486e19ba8",
+        "chen-stack-backend/src/main/java/com/zcx/chenstack/service/impl/ArticleAccessServiceImpl.java": "cc55d2abd4bcd946bc6c9cdeaea88c8f528aa7fc89ab0ec4eeef6d00f7eaf186",
+        "chen-stack-backend/src/test/java/com/zcx/chenstack/service/impl/HistoryVisibilityTest.java": "2ad773a23d08074b88876df905e3dedfd4e6e3ee8ea10a2edd9abcccabd999e5"
       },
       "businessCalls": [
         {
@@ -4310,7 +4321,7 @@
           "私信邮件说明为收到第一条未读私信时通知；关闭邮件偏好不等于关闭站内消息"
         ],
         "rules": [],
-        "guide": "登录后点头像→“个人设置”→“账号设置”，分别切换“私信邮件通知”“评论邮件通知”“系统邮件通知”开关。切换开关即自动提交保存，页面没有另一个需要点击的保存按钮；成功提示“设置已更新”，失败时开关回到原状态。三个开关分别控制，不要为关闭私信邮件提醒去关闭站内聊天。设置只影响自己的邮件偏好，关闭邮件通知不会删除站内通知，也不会关闭用户间私信，更不能绕过消息审核。私信邮件提示针对收到第一条未读私信；不要理解为每条消息都保证发邮件。设置成功不能证明邮件已发送或送达。"
+        "guide": "登录后点头像→“个人设置”→“账号设置”，分别切换“私信邮件通知”“评论邮件通知”“系统邮件通知”开关。切换开关即自动提交保存，页面没有另一个需要点击的保存按钮；成功时提示已开启或已关闭对应的邮件通知，失败时开关回到原状态。三个开关分别控制，不要为关闭私信邮件提醒去关闭站内聊天。设置只影响自己的邮件偏好，关闭邮件通知不会删除站内通知，也不会关闭用户间私信，更不能绕过消息审核。私信邮件提示针对收到第一条未读私信；不要理解为每条消息都保证发邮件。设置成功不能证明邮件已发送或送达。"
       },
       "verification": {
         "source": "REUSED_SOURCE_AUDIT_WITH_CURRENT_FILE_HASHES",
@@ -4450,8 +4461,8 @@
       "knowledge": {
         "file": "platform-help.json",
         "sourceId": "help-email-settings",
-        "version": "product-facts-draft-2",
-        "textSha256": "31ae4a101c9253c8ab701d2d820c1ce42e2858f15d8dd01fe6988f2bea18872f",
+        "version": "product-facts-draft-2-g2r1",
+        "textSha256": "2733c1000839ee5c795d599811b6e1ab3ea4f913181eed129a569331a402f87d",
         "visibility": "NOT_PUBLISHED",
         "reviewStatus": "CONTENT_REVIEW_REQUIRED"
       }
@@ -4913,7 +4924,7 @@
         ],
         "results": [],
         "rules": [],
-        "guide": "登录后点顶部“创作中心”进入创作概览，可查看自己的创作数据，并从文章、专栏、评论卡片进入对应管理页。左侧“创作”打开新文章编辑器，“管理”下有“文章管理”“专栏管理”“评论管理”。用户创作中心与管理端审核后台不同，普通用户在这里管理自己的作品，不能审核他人的内容。页面数据加载失败时先确认登录状态，再按页面提示重试；不要把统计数字当成所有文章都已公开。"
+        "guide": "登录后点顶部“创作中心”进入创作概览，可查看自己的创作数据，并从文章、专栏、评论卡片进入对应管理页。左侧“创作”打开新文章编辑器，“管理”下有“文章管理”“专栏管理”“评论管理”。用户创作中心与管理端审核后台不同，普通用户在这里管理自己的作品，不能审核他人的内容。页面数据未显示时，可确认登录状态后刷新页面；不要把统计数字当成所有文章都已公开。"
       },
       "verification": {
         "source": "REUSED_SOURCE_AUDIT_WITH_CURRENT_FILE_HASHES",
@@ -5030,8 +5041,8 @@
       "knowledge": {
         "file": "platform-help.json",
         "sourceId": "help-creator-dashboard",
-        "version": "knowledge-draft-4",
-        "textSha256": "174ef0adb9878f932be5fc2b1362468ae67070fe9609507a0b5d405d5fdb8de8",
+        "version": "knowledge-draft-4-g2r1",
+        "textSha256": "ad236901c6c71efc18a57429862d19a713a509a5d4fb2f1f93cca17ec572a435",
         "visibility": "NOT_PUBLISHED",
         "reviewStatus": "CONTENT_REVIEW_REQUIRED"
       }
@@ -5560,7 +5571,7 @@
           "文章/评论/专栏审核结果可触发对应作者通知",
           "不应承诺审核完成时限"
         ],
-        "guide": "具有相应后台权限的账户，可从管理端文章管理→文章审核、评论管理→评论审核、专栏管理→专栏审核、图片管理→图片审核进入。按页面提供的审核状态、用户、关键词或时间筛选，必要时先点“查看”核对内容。文章和专栏列表的“审核”按钮会直接提交审核通过，不先弹出确认框；“拒绝”提交拒绝状态，也不能假定一定存在填写拒绝原因的弹窗。批量操作应先核对勾选对象并按当前页面提示确认。审核是否成功要同时查看实际提示、列表更新和内容状态，不能只因按钮被点击就认定成功。审核通知在站内消息中心查看；是否发送或送达邮件还取决于通知设置和邮件服务。不同内容类型和批量操作应分别核对实际页面提示，不能将一种审核流程套用到另一种。普通用户不能自行审核，小辰不能代审或授予后台权限。"
+        "guide": "具有相应后台权限的账户，可从管理端文章管理→文章审核、评论管理→评论审核、专栏管理→专栏审核、图片管理→图片审核进入。按页面提供的审核状态、用户、关键词或时间筛选，必要时先点“查看”核对内容。文章和专栏列表的“审核”按钮会直接提交审核通过，不先弹出确认框；“拒绝”提交拒绝状态，也不能假定一定存在填写拒绝原因的弹窗。批量操作应先核对勾选对象并按当前页面提示确认。审核是否成功要同时查看实际提示、列表更新和内容状态，不能只因按钮被点击就认定成功。文章、评论和专栏的审核结果可触发站内通知；是否发送或送达邮件取决于通知设置和邮件服务。图片审核目前不应承诺另有站内或邮件通知。不同内容类型和批量操作应分别核对实际页面提示，不能将一种审核流程套用到另一种。普通用户不能自行审核，小辰不能代审或授予后台权限。"
       },
       "verification": {
         "source": "CURRENT_SOURCE_RECHECK_WITH_PRIOR_UI_EVIDENCE",
@@ -5831,8 +5842,8 @@
       "knowledge": {
         "file": "platform-help.json",
         "sourceId": "help-admin-review",
-        "version": "product-facts-draft-1",
-        "textSha256": "1e61470a534d1a59d5456d0369c1e2b5ea77f140ccb2dfc5b4fd51326ab2680a",
+        "version": "product-facts-draft-1-g2r1",
+        "textSha256": "22d3489035a5cf863984480a9a874df62a340b110bcc7c01ab87dd5f57b2e6b5",
         "visibility": "NOT_PUBLISHED",
         "reviewStatus": "CONTENT_REVIEW_REQUIRED"
       }
@@ -8609,7 +8620,7 @@
           "注册成功尝试自动登录，失败提示手动登录；重置成功跳转登录页；登录失败会刷新图片验证码"
         ],
         "rules": [],
-        "guide": "退出登录：用户端点击右上角头像，在菜单中选择“退出登录”，按提示确认；创作中心和编辑器也有相应退出入口，退出后进入登录页。管理端可从头像菜单退出。当前退出会清除这个浏览器保存的登录信息，不代表其他浏览器或设备同时退出，也不能当作已在所有设备撤销登录。后续需要登录的操作请重新登录，不能仅凭页面仍开着判断登录有效。离开有未保存内容的编辑器前先保存需要保留的内容。"
+        "guide": "退出登录：用户端点击右上角头像，在菜单中选择“退出登录”，按提示确认；创作中心和编辑器也有相应退出入口，退出后进入登录页。当前退出会清除这个浏览器保存的登录信息，不代表其他浏览器或设备同时退出，也不能当作已在所有设备撤销登录。后续需要登录的操作请重新登录，不能仅凭页面仍开着判断登录有效。离开有未保存内容的编辑器前先保存需要保留的内容。"
       },
       "verification": {
         "source": "REUSED_SOURCE_AUDIT_WITH_CURRENT_FILE_HASHES",
@@ -8642,8 +8653,8 @@
       "knowledge": {
         "file": "platform-help.json",
         "sourceId": "help-session-logout",
-        "version": "api-coverage-draft-1",
-        "textSha256": "a14c685a8a60b61259107e20f5ab79c1f2c55e6723782c3ca2791dbeefce8698",
+        "version": "api-coverage-draft-1-g2r1",
+        "textSha256": "724a919f7ddcea3ff9b3466a5f4fc70fc996299f1a3e6e6dc733eebcf60b6639",
         "visibility": "NOT_PUBLISHED",
         "reviewStatus": "CONTENT_REVIEW_REQUIRED"
       }
@@ -9061,7 +9072,7 @@
           "普通用户角色不能分配后台菜单",
           "后台路由随当前用户菜单生成，不承诺所有账户都能看到全部菜单"
         ],
-        "guide": "具有相应权限的管理员，可在管理端“系统管理→菜单管理”按菜单名查询，使用页面提供的新增、编辑、删除管理获准的自定义菜单，按实际表单填写信息。系统菜单受到保护，不能删除、禁用或改变其路由和结构，也不能让自定义菜单占用系统路径。给菜单分配角色时，使用菜单行的“分配角色”；给角色配置菜单也可走角色管理的专用“分配菜单”。普通用户角色不能获得后台菜单，超级管理员须保留完整系统菜单；菜单授权不等于新增或修改权限定义。"
+        "guide": "具有相应权限的管理员，可在管理端“系统管理→菜单管理”按菜单名查询，使用页面提供的新增、编辑、删除管理获准的自定义菜单，按实际表单填写信息。系统管理菜单（/system及其子路径）受到保护，不能删除、禁用或改变其路由和结构，也不能让自定义菜单占用这些系统管理路径。给菜单分配角色时，使用菜单行的“分配角色”；给角色配置菜单也可走角色管理的专用“分配菜单”。普通用户角色不能获得后台菜单，超级管理员须保留完整系统菜单；菜单授权不等于新增或修改权限定义。"
       },
       "verification": {
         "source": "REUSED_SOURCE_AUDIT_WITH_CURRENT_FILE_HASHES",
@@ -9295,8 +9306,8 @@
       "knowledge": {
         "file": "platform-help.json",
         "sourceId": "help-admin-menu",
-        "version": "api-coverage-draft-1",
-        "textSha256": "60307e421bf785fb46e3684f5f98ddf72de638a50531dd811592c062a26d0e08",
+        "version": "api-coverage-draft-1-g2r1",
+        "textSha256": "14eeb1c1bef06273c0d90a70269a187f646361933cd5fc0ab0d181427c10e1d0",
         "visibility": "NOT_PUBLISHED",
         "reviewStatus": "CONTENT_REVIEW_REQUIRED"
       }
@@ -9344,7 +9355,7 @@
           "普通用户角色不能分配后台菜单",
           "后台路由随当前用户菜单生成，不承诺所有账户都能看到全部菜单"
         ],
-        "guide": "具有相应用户角色管理权限的管理员，进入管理端“系统管理→用户管理”，找到目标用户点“分配角色”。“用户分配角色”弹窗使用单选项，选项显示内置标识admin、content_admin、user；内容管理员对应content_admin，普通用户对应user。选定允许的角色后点“确认分配”。每个用户只能保留一个内置角色，不能叠加两个角色；普通角色分配中的admin选项被禁用，不能通过这里升降超级管理员。当前没有可用的超级管理员转让操作入口，也不能新建自定义角色。角色管理的“分配菜单”用于角色可见菜单，权限概览是只读查询；不能把这三件事混为同一种授权。小辰只能解释步骤，不能代为改变任何角色或权限。"
+        "guide": "具有相应用户角色管理权限的管理员，进入管理端“系统管理→用户管理”，找到目标用户点“分配角色”。“用户分配角色”弹窗使用单选项，选项显示内置标识admin、content_admin、user；内容管理员对应content_admin，普通用户对应user。选定允许的角色后点“确认分配”。每个用户只能保留一个内置角色，不能叠加两个角色；普通角色分配中的admin选项被禁用，不能通过这里升降超级管理员。当前没有可用的超级管理员转让操作入口，也不能新建自定义角色。角色管理的“分配菜单”用于角色可见菜单，权限概览是只读查询；不能把这三件事混为同一种授权。用户端小辰不提供后台导航或操作指引，也不能代为改变任何角色或权限。"
       },
       "verification": {
         "source": "REUSED_SOURCE_AUDIT_WITH_CURRENT_FILE_HASHES",
@@ -9456,8 +9467,8 @@
       "knowledge": {
         "file": "platform-help.json",
         "sourceId": "help-admin-user-roles",
-        "version": "product-facts-draft-2",
-        "textSha256": "847ee171a837b62e63b2a1dc9b3cf0fb8ea415cd6ac5569f349bc5f0187b01c7",
+        "version": "product-facts-draft-2-g2r1",
+        "textSha256": "81115e966a1e65fe4629da4d019ecec3b9fd0923f3ecdc41f6a28b5aeee0d8d3",
         "visibility": "NOT_PUBLISHED",
         "reviewStatus": "CONTENT_REVIEW_REQUIRED"
       }
@@ -9504,7 +9515,7 @@
           "文章/评论/专栏审核结果可触发对应作者通知",
           "不应承诺审核完成时限"
         ],
-        "guide": "有对应图片管理权限的后台账户，可进入获准的图片审核页，按页面条件查找并查看目标图片。单条可以通过、驳回或删除；需要批量处理时先勾选图片，再使用批量通过、驳回或删除。审核操作会同步关联图片状态，头像通过后才更新公开头像；不能把上传成功解释为审核已通过。删除涉及实际文件及其关联使用，请先核对对象，谨慎确认。当前没有通过这里修改图片展示状态的操作入口；权限不足或目标已不存在时，应重新核对列表状态。"
+        "guide": "有对应图片管理权限的后台账户，可进入获准的图片审核页，按页面条件查找并查看目标图片。单条可以通过、驳回或删除；需要批量处理时先勾选图片，再使用批量通过、驳回或删除。审核会更新图片记录及关联私信图片消息的审核状态；头像通过后才更新公开头像，不代表所在文章或专栏已整体审核通过，也不能把上传成功解释为审核已通过。删除涉及实际文件及其关联使用，请先核对对象，谨慎确认。当前没有通过这里修改图片展示状态的操作入口；权限不足或目标已不存在时，应重新核对列表状态。"
       },
       "verification": {
         "source": "CURRENT_SOURCE_RECHECK_WITH_PRIOR_UI_EVIDENCE",
@@ -9641,8 +9652,8 @@
       "knowledge": {
         "file": "platform-help.json",
         "sourceId": "help-admin-photos",
-        "version": "api-coverage-draft-1",
-        "textSha256": "849e0cc4730f50a7e761435e8d2b1380d5051b6f0a9cef309a105407e4ee3162",
+        "version": "api-coverage-draft-1-g2r1",
+        "textSha256": "3e274675eb9c55bb70ec5e710288705b713da088ad75e6d1e9f3a68f9c0a6ca0",
         "visibility": "NOT_PUBLISHED",
         "reviewStatus": "CONTENT_REVIEW_REQUIRED"
       }
@@ -9751,11 +9762,15 @@
         "help-column-articles",
         "help-column-view"
       ],
-      "finding": "复用上轮已记录的专栏归属/文章元数据过滤风险；本轮未修复或声称安全验收。",
+      "finding": "9a1aff4已包含专栏归属/状态校验及公开文章元数据过滤修复；旧的“本轮未修复”说明已过时。源码与隔离自动化证据不等于整主题或真人安全验收。",
       "evidence": [
-        "ColumnServiceImpl",
-        "ArticleServiceImpl"
-      ]
+        "chen-stack-backend/src/main/java/com/zcx/chenstack/service/impl/ArticleServiceImpl.java:1076-1118",
+        "chen-stack-backend/src/main/java/com/zcx/chenstack/service/impl/ColumnServiceImpl.java",
+        "chen-stack-backend/src/test/java/com/zcx/chenstack/service/impl/ColumnSecurityTest.java",
+        "LOCAL_HISTORICAL_ISOLATED_HTTP_22_AND_SQL_4_CHECKS"
+      ],
+      "implementationStatus": "FIXED_IN_COMMITTED_SOURCE",
+      "acceptanceStatus": "CHAT_REVIEW_AND_MANUAL_PENDING"
     }
   ],
   "maintenance": {

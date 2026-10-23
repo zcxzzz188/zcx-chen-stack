@@ -23,6 +23,14 @@
                  AND u.is_deleted = 0
         WHERE h.user_id = #{userId}
           AND h.is_deleted = 0
+          AND a.visible_range IN (0, 1, 2)
+          AND (a.user_id = #{userId}
+               OR a.visible_range = 0
+               OR (a.visible_range = 2 AND EXISTS (
+                   SELECT 1 FROM follow f
+                   WHERE f.follower_id = #{userId}
+                     AND f.followed_id = a.user_id
+               )))
         ORDER BY h.view_time DESC
     </select>
 
