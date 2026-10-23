@@ -6,14 +6,22 @@ import java.util.List;
 
 /** 过滤URL和保留来源标记；普通模型文本不具备来源认证，状态仅属于本次订阅。 */
 public final class RagAnswerLinks {
-    private static final List<String> PREFIXES = List.of("https://", "http://", "ftp://", "www.", "javascript:", "data:", "mailto:", "/");
-    private static final List<String> SOURCE_MARKERS = List.of(KnowledgeEvidence.SOURCE_MARKER, "已核实来源(服务端)");
+    private static final List<String> PREFIXES = List.of("https://", "http://", "ftp://", "www.", "javascript:", "data:", "mailto:");
+    private static final List<String> SOURCE_MARKERS = List.of("已核实来源（服务端）", "已核实来源(服务端)", "参考来源");
     private final StringBuilder pending = new StringBuilder();
     private boolean inLink;
+    private char previousInput;
+
+    private static boolean asciiWord(char value) {
+        return value >= 'a' && value <= 'z' || value >= 'A' && value <= 'Z'
+                || value >= '0' && value <= '9' || value == '_';
+    }
 
     private String accept(String chunk) {
         StringBuilder output = new StringBuilder();
         for (char c : chunk.toCharArray()) {
+            char preceding = previousInput;
+            previousInput = c;
             if (inLink) {
                 if (Character.isWhitespace(c) || "，。；！？」）>)]}".indexOf(c) >= 0) {
                     inLink = false;
@@ -24,11 +32,16 @@ public final class RagAnswerLinks {
             pending.append(c);
             while (!pending.isEmpty()) {
                 String current = pending.toString().toLowerCase(java.util.Locale.ROOT);
+                // 普通分隔符、英文缩写和算式保留；相对路径需等到下一字符后再判断。
+                if (current.equals("/") && !asciiWord(preceding)) break;
+                if (current.length() > 1 && current.charAt(0) == '/' && asciiWord(current.charAt(1))) {
+                    pending.setLength(0); inLink = true; output.append("（请通过页面入口操作）"); break;
+                }
                 if (SOURCE_MARKERS.contains(current)) {
-                    pending.setLength(0); output.append("[未经核实的模型来源声明]"); break;
+                    pending.setLength(0); break;
                 }
                 if (PREFIXES.contains(current)) {
-                    pending.setLength(0); inLink = true; output.append("[链接以文末来源为准]"); break;
+                    pending.setLength(0); inLink = true; output.append("（请通过页面入口操作）"); break;
                 }
                 if (PREFIXES.stream().anyMatch(p -> p.startsWith(current)) || SOURCE_MARKERS.stream().anyMatch(p -> p.startsWith(current))) break;
                 output.append(pending.charAt(0)); pending.deleteCharAt(0);

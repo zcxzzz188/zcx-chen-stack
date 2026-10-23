@@ -24,18 +24,24 @@ public class RagProperties {
     private int qdrantTimeoutSeconds = 5;
     private String collection = "chen_platform_help_v1";
     private int topK = 4;
+    private int chunkCandidateLimit = 32;
     private double similarityThreshold = 0.65;
-    private int contextTokenBudget = 2400;
+    private int contextTokenBudget = 6000;
     private int chatTimeoutSeconds = 60;
 
+    /** topK兼容既有配置；产品语义是来源数，独立于chunk候选数。 */
+    public int getSourceTopK() { return topK; }
+    public void setSourceTopK(int sourceTopK) { topK = sourceTopK; }
+
     public void validate() {
-        if (dimensions != 1024 || topK < 1 || topK > 10 || contextTokenBudget < 256
+        if (dimensions != 1024 || topK < 1 || topK > 10 || chunkCandidateLimit < topK
+                || chunkCandidateLimit > 64 || contextTokenBudget < 256
                 || contextTokenBudget > 8000 || maxEmbeddingInputChars < 400 || maxEmbeddingInputChars > 1000
                 || maxEmbeddingRequestsPerDay < 1 || maxEmbeddingRequestsPerDay > 100000
                 || embeddingTimeoutSeconds < 1 || embeddingTimeoutSeconds > 60
                 || qdrantTimeoutSeconds < 1 || qdrantTimeoutSeconds > 30
                 || chatTimeoutSeconds < 1 || chatTimeoutSeconds > 120
-                || !Double.isFinite(similarityThreshold) || similarityThreshold < 0 || similarityThreshold > 1
+                || !Double.isFinite(similarityThreshold) || similarityThreshold < 0.65 || similarityThreshold > 1
                 || collection == null || !collection.matches("chen_[a-z0-9_]{1,90}")
                 || embeddingModel == null || embeddingModel.isBlank()) {
             throw new IllegalArgumentException("RAG配置无效：需要1024维向量及受限检索预算");

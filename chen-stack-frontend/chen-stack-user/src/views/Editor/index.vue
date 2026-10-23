@@ -1,7 +1,9 @@
 <template>
   <div class="editor-container">
     <EditorHeader></EditorHeader>
-    <div ref="divRef" class="editor">
+    <el-alert v-if="loadError" :title="loadError" type="error" :closable="false" show-icon />
+    <p v-else-if="!editorReady" role="status">正在校验并加载文章…</p>
+    <div v-show="editorReady" ref="divRef" class="editor" :inert="isSavingDraft || isPublishing ? true : undefined" :aria-busy="isSavingDraft || isPublishing">
       <div class="aie-container">
         <div class="aie-container-header"></div>
         <div class="editor-content-wrapper">
@@ -338,16 +340,15 @@
       </div>
       <div class="right">
         <el-button
-          v-if="!isDraft"
           :loading="isSavingDraft"
-          :disabled="isPublishing"
+          :disabled="isPublishing || !editorReady"
           @click="handleSaveDraft"
           >保存草稿</el-button
         >
         <el-button
           type="primary"
           :loading="isPublishing"
-          :disabled="isSavingDraft"
+          :disabled="isSavingDraft || !editorReady"
           @click="handleClickPublish"
           >发布文章</el-button
         >
@@ -427,7 +428,7 @@
 
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { useRoute, useRouter, onBeforeRouteUpdate, onBeforeRouteLeave } from 'vue-router'
 import EditorHeader from '@/components/Creation/EditorHeader.vue'
 import { AiEditor } from 'aieditor'
 import 'aieditor/dist/style.css'
@@ -438,7 +439,9 @@ import { getTagList } from '@/api/tag'
 import { addColumn, getColumnList } from '@/api/column'
 import { uploadArticlePhoto } from '@/api/photo'
 import { ArrowUp, Close, Search } from '@element-plus/icons-vue'
-import { addArticle, getArticleDetail, saveDraft, updateArticle } from '@/api/article'
+import { addArticle, saveDraft, updateArticle } from '@/api/article'
+import { getEditableArticle, getEditableArticleDetail } from '@/api/ai'
+import { useUserStore } from '@/stores/userStore'
 import {
   extractSummary as extractSummaryApi,
   getAiQuota,
@@ -452,6 +455,7 @@ const { isDark } = storeToRefs(darkStore)
 // 获取路由实例
 const route = useRoute()
 const router = useRouter()
+const userStore = useUserStore()
 
 // 监听页面刷新事件，弹出确认框
 const handleBeforeUnload = (e) => {
@@ -523,7 +527,7 @@ const countWords = () => {
 }
 
 // 文章数据
-const article = ref({
+const emptyArticle = () => ({
   tag: '',
   title: '',
   description: '',
@@ -534,6 +538,7 @@ const article = ref({
   columnIds: [],
   reprintUrl: '', // 转载链接
 })
+const article = ref(emptyArticle())
 
 // 当前选择的专栏
 const columns = ref([])
@@ -548,16 +553,45 @@ const isDraft = ref(false)
 const isPublishing = ref(false)
 // 保存草稿状态管理
 const isSavingDraft = ref(false)
+const editorReady = ref(false)
+const loadError = ref('')
+let loadGeneration = 0
+let editorMounted = true
+let savedSnapshot = ''
+const articleSnapshot = () => JSON.stringify([article.value, tags.value, columns.value])
+const isCurrentTarget = (generation, articleId, userId) => editorMounted && generation === loadGeneration
+  && articleId === route.query.articleId && userId === userStore.user?.id
+const clearArticle = () => {
+  editorReady.value = false
+  article.value = emptyArticle()
+  tags.value = []
+  columns.value = []
+  isDraft.value = false
+  aiEditor?.setContent('')
+  directoryItems.value = []
+  wordCount.value = 0
+  isModified.value = false
+}
 
 // 根据文章ID获取文章详情并回显数据
 const loadArticleDetail = async () => {
+  const generation = ++loadGeneration
+  const articleId = route.query.articleId
+  const userId = userStore.user?.id
+  clearArticle()
+  loadError.value = ''
   try {
-    // 从路由参数中获取articleId
-    const articleId = route.query.articleId
-    if (articleId && !isNaN(articleId)) {
-      // 调用获取文章详情接口
-      const response = await getArticleDetail(articleId)
+    if (!userId) {
+      if (userStore.user === null) loadError.value = '请先登录后编辑文章'
+      return
+    }
+    if (articleId != null) {
+      if (!/^[1-9]\d{0,9}$/.test(String(articleId))) throw new Error('文章参数无效')
+      const response = await getEditableArticleDetail(articleId)
+      if (!isCurrentTarget(generation, articleId, userId)) return
       const articleData = response.data
+      if (!articleData || articleData.id !== Number(articleId) || articleData.userId !== userId
+          || ![0, 1].includes(articleData.editStatus)) throw new Error('文章不可编辑或不存在')
 
       // 填充文章基本信息
       if (articleData) {
@@ -607,9 +641,49 @@ const loadArticleDetail = async () => {
         ElMessage.success('文章内容加载成功')
       }
     }
+    if (!isCurrentTarget(generation, articleId, userId)) return
+    aiEditor?.setContent(article.value.content)
+    savedSnapshot = articleSnapshot()
+    isModified.value = false
+    editorReady.value = true
   } catch (error) {
-    // 静默处理
-    ElMessage.error('加载文章详情失败，请重试')
+    if (!isCurrentTarget(generation, articleId, userId)) return
+    clearArticle()
+    loadError.value = '文章不存在、已不可编辑或登录已失效，请重新查询或登录。'
+    ElMessage.error(loadError.value)
+  }
+}
+
+watch(() => [route.query.articleId, userStore.user?.id], loadArticleDetail)
+const confirmLeave = async () => {
+  if (isPublishing.value || isSavingDraft.value) return false
+  if (!isModified.value) return true
+  try {
+    await ElMessageBox.confirm('当前内容尚未保存，确定离开吗？', '离开编辑器', { type: 'warning', confirmButtonText: '离开', cancelButtonText: '继续编辑' })
+    return true
+  } catch { return false }
+}
+onBeforeRouteUpdate((to, from) => to.query.articleId === from.query.articleId || confirmLeave())
+onBeforeRouteLeave(confirmLeave)
+
+const verifySaveTarget = async () => {
+  if (!editorReady.value || !userStore.user?.id) return false
+  const generation = loadGeneration
+  const articleId = route.query.articleId
+  const userId = userStore.user.id
+  try {
+    if (articleId != null) {
+      if (article.value.id !== Number(articleId)) return false
+      await getEditableArticle(articleId)
+    }
+    return editorReady.value && isCurrentTarget(generation, articleId, userId)
+  } catch {
+    if (isCurrentTarget(generation, articleId, userId)) {
+      clearArticle()
+      loadError.value = '文章已不可编辑或登录已失效，请重新查询。'
+      ElMessage.error(loadError.value)
+    }
+    return false
   }
 }
 
@@ -618,8 +692,8 @@ onMounted(async () => {
   // 加载用户文章数据
   await loadArticleDetail()
 
-  // 获取AI配额
-  await fetchAiQuota()
+  // 配额查询不阻塞正文编辑。
+  void fetchAiQuota()
 
   // 初始化对话框宽度
   updateDialogWidth()
@@ -630,6 +704,8 @@ onMounted(async () => {
   // 监听窗口大小变化，更新对话框宽度
   window.addEventListener('resize', updateDialogWidth)
 
+  await nextTick()
+  if (!editorMounted) return
   if (divRef.value) {
     aiEditor = new AiEditor({
       element: divRef.value,
@@ -703,12 +779,13 @@ onMounted(async () => {
         'attachment',
         'ai',
       ],
-      onSave: (editor) => {
-        ElMessage.success('文档保存成功！')
+      onSave: () => {
+        void handleSaveDraft()
         return true
       },
       // 监听编辑器内容变化，更新article.content、目录和字数统计（使用防抖处理）
       onChange: () => {
+        if (aiEditor && editorReady.value) article.value.content = aiEditor.getHtml()
         updateDirectoryDebounced()
         countWords()
         return true
@@ -819,6 +896,8 @@ const scrollToHeading = (id) => {
 
 // 主onUnmounted钩子 - 合并所有清理逻辑
 onUnmounted(() => {
+  editorMounted = false
+  loadGeneration += 1
   // 销毁编辑器实例
   if (aiEditor) {
     aiEditor.destroy()
@@ -835,30 +914,6 @@ onUnmounted(() => {
 
 // 标记内容是否已修改(阻止刷新页面)
 const isModified = ref(false)
-
-// 监听article变化，更新isModified标志和本地存储
-watch(
-  () => [article.value.title, article.value.content],
-  ([newTitle, newContent]) => {
-    // 检查标题是否有实际内容
-    const hasTitle = newTitle && newTitle.trim().length > 0
-
-    // 检查内容是否有实际文本（移除HTML标签后）
-    let hasContent = false
-    if (newContent) {
-      // 创建临时元素解析HTML
-      const tempDiv = document.createElement('div')
-      tempDiv.innerHTML = newContent
-      // 获取纯文本并检查是否有实际内容
-      const textContent = tempDiv.textContent || tempDiv.innerText || ''
-      hasContent = textContent.trim().length > 0
-    }
-
-    // 更新isModified标志
-    isModified.value = hasTitle || hasContent
-  },
-  { deep: true, immediate: true },
-)
 
 // 所有标签 - 后端返回 Map<String, List<Tag>>
 const allTags = ref({})
@@ -1435,8 +1490,11 @@ const deleteColumn = (column) => {
 
 // 发布文章
 const handleClickPublish = async () => {
+  const generation = loadGeneration
+  const targetId = route.query.articleId
+  const userId = userStore.user?.id
   // 防止重复点击
-  if (isPublishing.value) {
+  if (isPublishing.value || isSavingDraft.value || !editorReady.value) {
     return
   }
 
@@ -1448,6 +1506,7 @@ const handleClickPublish = async () => {
 
   try {
     isPublishing.value = true
+    if (!await verifySaveTarget()) return
 
     // 确保在发布前获取最新的编辑器内容
     if (aiEditor) {
@@ -1455,7 +1514,8 @@ const handleClickPublish = async () => {
     }
 
     // 校验文章内容
-    if (!article.value.content || article.value.content.trim() === '') {
+    const body = new DOMParser().parseFromString(article.value.content || '', 'text/html').body
+    if (!body.textContent.trim() && !body.querySelector('img')) {
       ElMessage.warning('请输入文章内容')
       return
     }
@@ -1478,10 +1538,12 @@ const handleClickPublish = async () => {
       await addArticle(article.value)
       ElMessage.success('文章发布成功!')
     }
+    if (!isCurrentTarget(generation, targetId, userId)) return
 
     // 标记内容未修改，避免刷新提示
     isModified.value = false
 
+    isPublishing.value = false
     router.push('/creation/articlemanage')
   } catch (error) {
     const articleId = route.query.articleId
@@ -1497,8 +1559,11 @@ const handleClickPublish = async () => {
 
 // 保存草稿
 const handleSaveDraft = async () => {
+  const generation = loadGeneration
+  const targetId = route.query.articleId
+  const userId = userStore.user?.id
   // 防止重复点击
-  if (isSavingDraft.value) {
+  if (isSavingDraft.value || isPublishing.value || !editorReady.value) {
     return
   }
 
@@ -1510,6 +1575,12 @@ const handleSaveDraft = async () => {
 
   try {
     isSavingDraft.value = true
+    if (targetId && !isDraft.value) {
+      try {
+        await ElMessageBox.confirm('保存为草稿后，这篇文章将不再公开展示，是否继续？', '保存草稿', { type: 'warning', confirmButtonText: '保存草稿', cancelButtonText: '取消' })
+      } catch { return }
+    }
+    if (!await verifySaveTarget()) return
 
     // 确保在保存前获取最新的编辑器内容
     if (aiEditor) {
@@ -1520,15 +1591,22 @@ const handleSaveDraft = async () => {
     article.value.tag = tags.value.join(',')
 
     const response = await saveDraft(article.value)
+    if (!isCurrentTarget(generation, targetId, userId)) return
 
     // 保存草稿成功后，更新文章ID和路由参数
     if (response.data && response.data.id) {
       article.value.id = response.data.id
+      savedSnapshot = articleSnapshot()
+      isModified.value = false
+      isSavingDraft.value = false
       // 更新路由参数，确保后续发布时能正确识别为更新操作
       router.replace({
         query: { ...route.query, articleId: response.data.id },
       })
     }
+    isDraft.value = true
+    savedSnapshot = articleSnapshot()
+    isModified.value = false
 
     ElMessage.success('草稿保存成功!')
   } catch (error) {
@@ -1538,6 +1616,9 @@ const handleSaveDraft = async () => {
     isSavingDraft.value = false
   }
 }
+watch([article, tags, columns], () => {
+  isModified.value = editorReady.value && articleSnapshot() !== savedSnapshot
+}, { deep: true, flush: 'sync' })
 </script>
 
 <style lang="scss" scoped>
@@ -1557,7 +1638,7 @@ const handleSaveDraft = async () => {
     padding: 0;
     // 编辑器头部
     .aie-container-header {
-      position: fixed;
+      position: sticky;
       z-index: 999;
       top: 48px;
       display: flex;
@@ -1576,7 +1657,7 @@ const handleSaveDraft = async () => {
     // 编辑器内容包装器
     .editor-content-wrapper {
       display: flex;
-      padding-top: 68px;
+      padding-top: 24px;
       padding-bottom: 48px;
       background: var(--el-border-color-lighter);
       min-height: calc(100vh - 48px);
@@ -1729,7 +1810,7 @@ const handleSaveDraft = async () => {
           }
 
           @media screen and (max-width: 768px) {
-            margin-top: 60px;
+            margin-top: 0;
           }
         }
         // 文章正文区域样式
@@ -2212,6 +2293,7 @@ const handleSaveDraft = async () => {
     .left {
       font-size: 12px;
       padding: 5px;
+      white-space: nowrap;
     }
     .center {
       margin-right: 5px;
@@ -2231,7 +2313,7 @@ const handleSaveDraft = async () => {
       .aie-container {
         .editor-content-wrapper {
           max-width: 100%;
-          padding-top: 0; // 间隙
+          padding-top: 12px;
           .aie-directory {
             display: none; // 隐藏目录
           }
@@ -2240,7 +2322,7 @@ const handleSaveDraft = async () => {
             box-sizing: border-box;
             width: 100%; // 编辑文章区域
             min-height: calc(100vh - 68px);
-            margin-top: 100px;
+            margin-top: 0;
             padding: 0 15px;
           }
         }
@@ -2258,7 +2340,7 @@ const handleSaveDraft = async () => {
             box-sizing: border-box !important;
             width: 100% !important;
             min-height: calc(100vh - 68px);
-            margin-top: 120px;
+            margin-top: 0;
             padding: 0 10px;
           }
         }

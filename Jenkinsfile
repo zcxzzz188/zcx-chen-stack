@@ -144,7 +144,7 @@ pipeline {
                 dir('chen-stack-backend') {
                     sh '''
                         echo "使用 Maven 构建后端..."
-                        mvn -s ../script/prod/jenkins/maven-settings.xml -B -ntp clean package -DskipTests
+                        mvn -s ../script/prod/jenkins/maven-settings.xml -B -ntp clean package
 
                         # 检查构建产物
                         if [ ! -f target/*.jar ]; then
@@ -176,7 +176,9 @@ pipeline {
                         export PATH="/var/jenkins_home/tools/jenkins.plugins.nodejs.tools.NodeJSInstallation/NodeJS-20/bin:$PATH"
 
                         echo "安装依赖..."
-                        npm install
+                        npm ci
+
+                        npm run test:run
 
                         echo "构建前端..."
                         npm run build
@@ -211,7 +213,9 @@ pipeline {
                         export PATH="/var/jenkins_home/tools/jenkins.plugins.nodejs.tools.NodeJSInstallation/NodeJS-20/bin:$PATH"
 
                         echo "安装依赖..."
-                        npm install
+                        npm ci
+
+                        npm run test:run
 
                         echo "构建前端..."
                         npm run build

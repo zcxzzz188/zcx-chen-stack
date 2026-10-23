@@ -13,9 +13,6 @@ logs
 job
 .codex/
 
-# 测试相关（排除测试资源文件，但保留测试代码）
-**/src/test/resources/**
-
 # 环境变量
 .env
 
@@ -46,11 +43,7 @@ node_modules/
 /.mcp.json
 /.golutra/
 .gstack/
-# R1R1正式核心回归；其他任务测试继续忽略。
-/chen-stack-backend/src/test/**
-!/chen-stack-backend/src/test/**/
-!/chen-stack-backend/src/test/java/com/zcx/chenstack/rag/RagEvidenceGuardTest.java
-!/chen-stack-backend/src/test/java/com/zcx/chenstack/service/impl/RagEvidenceResponseTest.java
+# 正式后端测试及资源进入工程；临时实验继续放在 /.work/。
 /chen-stack-frontend/chen-stack-user/test-results/
 /chen-stack-frontend/chen-stack-user/tests/
 

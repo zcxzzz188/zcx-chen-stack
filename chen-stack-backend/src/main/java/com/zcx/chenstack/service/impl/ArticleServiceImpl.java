@@ -4,6 +4,7 @@ import cn.hutool.core.bean.BeanUtil;
 import cn.hutool.core.date.DateUtil;
 import cn.hutool.core.util.ObjectUtil;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.zcx.chenstack.config.ChenStackConfig;
@@ -211,29 +212,7 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
             return articleVo;
         }).toList();
 
-        // 添加专栏信息
-        if (!articleVoList.isEmpty()) {
-            List<Integer> articleIds = articleVoList.stream().map(ArticleVo::getId).collect(Collectors.toList());
-            List<ArticleColumn> articleColumns = articleColumnMapper.selectList(
-                    new LambdaQueryWrapper<ArticleColumn>().in(ArticleColumn::getArticleId, articleIds));
-            if (ObjectUtil.isNotEmpty(articleColumns)) {
-                List<Integer> columnIds = articleColumns.stream().map(ArticleColumn::getColumnId)
-                        .distinct().collect(Collectors.toList());
-                List<Column> columns = columnMapper.selectBatchIds(columnIds);
-                Map<Integer, ColumnVo> columnIdToColumnMap = columns.stream()
-                        .collect(Collectors.toMap(Column::getId,
-                                column -> BeanUtil.copyProperties(column, ColumnVo.class)));
-
-                // 为每个文章设置专栏信息
-                Map<Integer, List<ColumnVo>> articleIdToColumnsMap = articleColumns.stream()
-                        .collect(Collectors.groupingBy(
-                                ArticleColumn::getArticleId,
-                                Collectors.mapping(ac -> columnIdToColumnMap.get(ac.getColumnId()),
-                                        Collectors.toList())));
-                articleVoList.forEach(articleVo -> articleVo
-                        .setColumns(articleIdToColumnsMap.getOrDefault(articleVo.getId(), new ArrayList<>())));
-            }
-        }
+        fillArticleColumns(articleVoList);
 
         return PageUtils.<ArticleVo>buildPageVo(page, articleVoList);
     }
@@ -414,8 +393,8 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
         if (ObjectUtil.isNotEmpty(articleColumns)) {
             List<Integer> columnIds = articleColumns.stream().map(ArticleColumn::getColumnId)
                     .collect(Collectors.toList());
-            List<Column> columns = columnMapper.selectBatchIds(columnIds);
-            articleVo.setColumns(filterVisibleColumns(columns, isOwner));
+            List<Column> columns = loadArticleColumns(columnIds);
+            articleVo.setColumns(filterVisibleColumns(columns, article.getUserId()));
         }
 
         Boolean isLiked = likeService.isLiked(LikeTypeEnum.ARTICLE.getCode(), articleId);
@@ -516,39 +495,57 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
         }
         List<Integer> columnIds = articleColumns.stream().map(ArticleColumn::getColumnId)
                 .distinct().collect(Collectors.toList());
-        List<Column> columns = columnMapper.selectBatchIds(columnIds);
-        Map<Integer, ColumnVo> columnIdToColumnMap = columns.stream()
-                .collect(Collectors.toMap(Column::getId,
-                        column -> BeanUtil.copyProperties(column, ColumnVo.class)));
-        Map<Integer, List<ColumnVo>> articleIdToColumnsMap = articleColumns.stream()
+        List<Column> columns = loadArticleColumns(columnIds);
+        Map<Integer, Column> columnIdToColumnMap = columns.stream()
+                .collect(Collectors.toMap(Column::getId, column -> column));
+        Map<Integer, List<Column>> articleIdToColumnsMap = articleColumns.stream()
                 .collect(Collectors.groupingBy(
                         ArticleColumn::getArticleId,
                         Collectors.mapping(ac -> columnIdToColumnMap.get(ac.getColumnId()),
                                 Collectors.toList())));
         articleVoList.forEach(articleVo -> articleVo
-                .setColumns(articleIdToColumnsMap.getOrDefault(articleVo.getId(), new ArrayList<>())));
+                .setColumns(filterVisibleColumns(
+                        articleIdToColumnsMap.getOrDefault(articleVo.getId(), List.of()), articleVo.getUserId())));
     }
 
     /**
      * 过滤文章详情可见的专栏：
-     * 作者本人可见审核通过和待审核专栏，其他人仅可见审核通过专栏。
+     * 只返回文章作者的专栏，非本人仅可见公开且审核通过的专栏。
      */
-    private List<ColumnVo> filterVisibleColumns(List<Column> columns, boolean isOwner) {
+    private List<ColumnVo> filterVisibleColumns(List<Column> columns, Integer articleOwnerId) {
         if (ObjectUtil.isEmpty(columns)) {
             return new ArrayList<>();
         }
+        boolean isOwner = Objects.equals(SecurityUtils.getUserId(), articleOwnerId);
         return columns.stream()
                 .filter(Objects::nonNull)
+                .filter(column -> Objects.equals(column.getUserId(), articleOwnerId)
+                        && Objects.equals(column.getIsDeleted(), 0))
                 .filter(column -> {
                     Integer examineStatus = column.getExamineStatus();
                     if (isOwner) {
                         return Objects.equals(examineStatus, ExamineStatusEnum.PASS.getCode())
                                 || Objects.equals(examineStatus, ExamineStatusEnum.WAIT.getCode());
                     }
-                    return Objects.equals(examineStatus, ExamineStatusEnum.PASS.getCode());
+                    return Objects.equals(examineStatus, ExamineStatusEnum.PASS.getCode())
+                            && Objects.equals(column.getShowStatus(), ShowStatusEnum.PUBLIC.getCode());
                 })
                 .map(column -> BeanUtil.copyProperties(column, ColumnVo.class))
                 .collect(Collectors.toList());
+    }
+
+    private List<Column> loadArticleColumns(List<Integer> columnIds) {
+        List<Column> columns = columnMapper.selectBatchIds(columnIds);
+        List<Integer> publicIds = columns.stream()
+                .filter(column -> !Objects.equals(column.getUserId(), SecurityUtils.getUserId()))
+                .map(Column::getId).toList();
+        if (!publicIds.isEmpty()) {
+            Map<Integer, Integer> counts = columnMapper.selectPublicArticleCounts(publicIds).stream()
+                    .collect(Collectors.toMap(Column::getId, Column::getArticleCount));
+            columns.stream().filter(column -> counts.containsKey(column.getId()))
+                    .forEach(column -> column.setArticleCount(counts.get(column.getId())));
+        }
+        return columns;
     }
 
     // 异步增加阅读量
@@ -928,6 +925,12 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
         if (!Objects.equals(userArticle.getUserId(), currentUserId)) {
             throw new BlogException(BlogConstants.CannotHandleOthersArticle);
         }
+        if (!Objects.equals(userArticle.getIsDeleted(), 0)
+                || (Objects.equals(userArticle.getEditStatus(), EditStatusEnum.RECYCLE.getCode())
+                && (articleDto.getTitle() != null || articleDto.getContent() != null
+                || articleDto.getDescription() != null || articleDto.getTag() != null || articleDto.getCoverUrl() != null))) {
+            throw new BlogException("文章已不可编辑，请重新查询");
+        }
 
         // 如果是创作中心删除文章, 会携带 editStatus 参数
         if (ObjectUtil.isNotEmpty(articleDto.getEditStatus())) {
@@ -949,7 +952,9 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
         articleDto.setContent(article.getContent());
         articleDto.setDescription(article.getDescription());
 
-        if (articleMapper.updateById(article) < 1) {
+        if (articleMapper.update(article, new LambdaUpdateWrapper<Article>()
+                .eq(Article::getId, userArticle.getId()).eq(Article::getUserId, currentUserId)
+                .eq(Article::getIsDeleted, 0).eq(Article::getEditStatus, userArticle.getEditStatus())) < 1) {
             throw new BlogException(BlogConstants.UpdateArticleError);
         }
         if (shouldReAudit) {
@@ -1074,10 +1079,23 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
             return;
         }
 
+        Integer currentUserId = SecurityUtils.getUserId();
+        Article article = articleMapper.selectById(articleId);
+        if (currentUserId == null || currentUserId <= 0 || article == null
+                || !Objects.equals(article.getUserId(), currentUserId)
+                || !Objects.equals(article.getIsDeleted(), 0)) {
+            throw new BlogException(BlogConstants.CannotHandleOthersArticle);
+        }
+
         normalizedColumnIds.forEach(columnId -> {
-            Column column = columnMapper.selectById(columnId);
-            if (column == null) {
-                return;
+            // 与文章事务共用行锁，防止校验后专栏被转移、删除或变更审核状态。
+            Column column = columnMapper.selectOne(new LambdaQueryWrapper<Column>()
+                    .eq(Column::getId, columnId).last("FOR UPDATE"));
+            if (column == null || !Objects.equals(column.getUserId(), currentUserId)
+                    || !Objects.equals(column.getIsDeleted(), 0)
+                    || (!Objects.equals(column.getExamineStatus(), ExamineStatusEnum.PASS.getCode())
+                    && !Objects.equals(column.getExamineStatus(), ExamineStatusEnum.WAIT.getCode()))) {
+                throw new BlogException(BlogConstants.NotFoundColumn);
             }
 
             ArticleColumn maxSortColumn = articleColumnMapper

@@ -1,5 +1,6 @@
 import request from '@/utils/Request'
 import { GetJwt, SetJwt } from '@/utils/Auth'
+import { sameJwtAccount } from '@/utils/JwtSession'
 
 const configuredCustomerServiceTimeout = Number(import.meta.env.VITE_AI_CHAT_TIMEOUT_MS)
 export const CUSTOMER_SERVICE_TIMEOUT_MS =
@@ -85,20 +86,20 @@ export function getAiQuota() {
 }
 
 // 智能客服聊天（流式返回）
-export function customerServiceChat(message, chatId, signal) {
+export function customerServiceChat(message, chatId, signal, mode = 'chat', structured = false) {
   const mockResponse = localCustomerServiceMock(message, signal)
   if (mockResponse) return Promise.resolve(mockResponse)
 
   // 使用GetJwt()获取token，与Request.js中的认证方式保持一致
   const token = GetJwt() || ''
   const backendServer = import.meta.env.VITE_BACKEND_SERVER || 'http://localhost:5000'
-  return fetch(`${backendServer}/ai/customer-service`, {
+  return fetch(`${backendServer}/ai/customer-service${structured ? '/events' : ''}`, {
     method: 'POST',
     headers: {
       Authorization: token,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ message, chatId }),
+    body: JSON.stringify({ message, chatId, mode }),
     signal,
   }).then(async (response) => {
     const refreshedToken = response.headers.get('X-Refresh-Token')
@@ -107,10 +108,43 @@ export function customerServiceChat(message, chatId, signal) {
     }
     if (!response.ok || response.headers?.get?.('content-type')?.toLowerCase().includes('json')) {
       try { await response.body?.cancel() } catch {}
-      throw new Error('客服暂时无法响应，请稍后重试')
+      throw new Error(response.status === 401 ? '请先登录后再与小辰聊天' : '客服暂时无法响应，请稍后重试')
     }
     return response
   })
+}
+
+export function customerServiceEvents(message, chatId, signal) {
+  return customerServiceChat(message, chatId, signal, 'chat', true)
+}
+
+export function listEditableArticles(page = 1, pageSize = 5) {
+  const params = new URLSearchParams({ page, pageSize })
+  return customerServiceGet(`/articles?${params}`)
+}
+
+export function getEditableArticle(articleId) {
+  if (!/^\d{1,10}$/.test(String(articleId)) || Number(articleId) <= 0) return Promise.reject(new Error('文章参数无效'))
+  return customerServiceGet(`/articles/${articleId}`)
+}
+
+export function getEditableArticleDetail(articleId) {
+  if (!/^[1-9]\d{0,9}$/.test(String(articleId))) return Promise.reject(new Error('文章参数无效'))
+  return customerServiceGet(`/articles/${articleId}/detail`)
+}
+
+async function customerServiceGet(path) {
+  const token = GetJwt()
+  if (!token) throw new Error('请先登录')
+  const backendServer = import.meta.env.VITE_BACKEND_SERVER || 'http://localhost:5000'
+  const response = await fetch(`${backendServer}/ai/customer-service${path}`, { headers: { Authorization: token } })
+  const data = await response.json()
+  // 账号切换后的旧响应不得写回 Token 或作为新账号的文章依据。
+  if (!sameJwtAccount(token, GetJwt())) throw new Error('登录状态已变化，请重新查询')
+  const refreshedToken = response.headers.get('X-Refresh-Token')
+  if (refreshedToken && GetJwt() === token) SetJwt(refreshedToken)
+  if (!response.ok || data.code !== 200) throw new Error('文章不可编辑或查询失败，请重新登录或重试')
+  return data
 }
 
 // 生成文章标题建议

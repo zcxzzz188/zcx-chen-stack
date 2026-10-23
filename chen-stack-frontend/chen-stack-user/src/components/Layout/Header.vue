@@ -166,7 +166,7 @@ const handleLoginClick = () => {
 
 // 获取未读消息数
 const fetchUnreadCount = async () => {
-  if (user.value) {
+  if (user.value?.id && GetJwt()) {
     try {
       const res = await getUnreadCount()
       messageStore.totalUnreadCount = res.data || 0
@@ -178,7 +178,7 @@ const fetchUnreadCount = async () => {
 
 // 获取未读通知数量
 const fetchNotificationUnreadCount = async () => {
-  if (user.value) {
+  if (user.value?.id && GetJwt()) {
     try {
       const res = await getUnreadNotificationCount()
       const data = res.data
@@ -192,7 +192,7 @@ const fetchNotificationUnreadCount = async () => {
 
 // 合并获取未读消息和通知数量，并行请求
 const fetchAllUnreadCounts = async () => {
-  if (!user.value) return
+  if (!user.value?.id || !GetJwt()) return
   try {
     const [unreadRes, notificationRes] = await Promise.all([
       getUnreadCount(),
@@ -235,7 +235,7 @@ const handleNewNotification = (data) => {
 
 // 初始化 WebSocket 连接
 const initWebSocket = () => {
-  if (!user.value) {
+  if (!user.value?.id || !GetJwt()) {
     return
   }
 
@@ -342,7 +342,7 @@ const handleScroll = () => {
 watch(
   () => user.value,
   (newUser) => {
-    if (newUser) {
+    if (newUser?.id && GetJwt()) {
       // 用户已登录，立即初始化 WebSocket，使用合并的请求
       fetchAllUnreadCounts()
       initWebSocket()
@@ -371,9 +371,11 @@ const handleNotificationRead = () => {
 onMounted(() => {
   window.addEventListener('scroll', handleScroll)
   window.addEventListener('notification-read', handleNotificationRead)
-  // 如果 pinia 有 userid 再获取用户信息（添加错误处理，避免 info() 失败时覆盖已有数据）
-  if (user.value) {
+  // 只在有登录凭据时恢复身份，空对象不代表已登录。
+  if (GetJwt()) {
     getUserInfo().catch(() => {})
+  } else {
+    userStore.clearUser()
   }
 })
 

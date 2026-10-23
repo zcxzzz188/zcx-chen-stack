@@ -199,7 +199,7 @@
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-surefire-plugin</artifactId>
                 <configuration>
-                    <!-- 单元测试默认启用，如需跳过可使用 -DskipTests=false -->
+                    <!-- 单元测试默认启用，如需跳过可使用 -DskipTests=true -->
                     <skipTests>false</skipTests>
                     <!-- 测试报告输出到 target/surefire-reports -->
                     <reportsDirectory>${project.build.directory}/surefire-reports</reportsDirectory>

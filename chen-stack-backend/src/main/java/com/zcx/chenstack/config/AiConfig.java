@@ -2,7 +2,6 @@ package com.zcx.chenstack.config;
 
 import com.zcx.chenstack.domain.constants.AiPromptConstants;
 import org.springframework.ai.chat.client.ChatClient;
-import org.springframework.ai.chat.client.advisor.MessageChatMemoryAdvisor;
 import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.ai.chat.memory.MessageWindowChatMemory;
 import org.springframework.ai.openai.OpenAiChatModel;
@@ -37,6 +36,9 @@ public class AiConfig {
     @Value("${spring.ai.openai.chat.options.max-tokens}")
     private Integer maxTokens;
 
+    @Value("${spring.ai.openai.chat.completions-path:/chat/completions}")
+    private String completionsPath;
+
     /**
      * 配置 OpenAI Chat 模型（使用 DeepSeek API）
      * 使用自定义配置连接 DeepSeek API
@@ -49,6 +51,7 @@ public class AiConfig {
         // 创建 OpenAI API 客户端，指向 DeepSeek API 地址
         OpenAiApi openAiApi = OpenAiApi.builder()
                 .baseUrl(baseUrl)
+                .completionsPath(completionsPath)
                 .apiKey(apiKey)
                 .build();
 
@@ -76,19 +79,6 @@ public class AiConfig {
     public ChatMemory chatMemory() {
         // M5 的 Advisor 每次读取最近 100 条消息，避免使用新版默认的 20 条窗口。
         return MessageWindowChatMemory.builder().maxMessages(100).build();
-    }
-
-    /**
-     * 配置智能客服专用的 ChatClient
-     * 支持会话记忆，可以记住用户的上下文对话
-     */
-    @Bean
-    public ChatClient customerServiceChatClient(OpenAiChatModel openAiChatModel, ChatMemory chatMemory) {
-        return ChatClient.builder(openAiChatModel)
-                .defaultSystem(AiPromptConstants.CUSTOMER_SERVICE_SYSTEM_PROMPT)
-                .defaultAdvisors(
-                        MessageChatMemoryAdvisor.builder(chatMemory).build())
-                .build();
     }
 
     /**

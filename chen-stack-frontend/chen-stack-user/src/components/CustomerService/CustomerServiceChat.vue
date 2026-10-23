@@ -133,11 +133,12 @@
           </div>
           <div class="message-content">
             <div class="message-sender" v-if="msg.role === 'ai'">小辰</div>
-            <div class="message-bubble">
+            <div v-if="msg.content.trim()" class="message-bubble">
               <div v-if="msg.role === 'ai'" class="bubble-text markdown-text" v-html="markdown.render(msg.content)"></div>
               <span v-else class="bubble-text">{{ msg.content }}</span>
             </div>
-            <div v-if="msg.incomplete" class="message-time incomplete-indicator">回答未完成，已保留部分内容</div>
+            <CustomerServiceCards v-for="(event, eventIndex) in msg.events || []" :key="eventIndex" :event="event" @navigate="dialogVisible = false" />
+            <div v-if="msg.incomplete" class="message-time incomplete-indicator">回答未完成</div>
             <div class="message-time">{{ msg.time }}</div>
           </div>
         </div>
@@ -254,12 +255,17 @@
 
 <script setup>
 import { ref, nextTick, watch, computed, onMounted, onUnmounted } from 'vue'
-import { customerServiceChat, CUSTOMER_SERVICE_TIMEOUT_MS } from '@/api/ai'
+import { customerServiceEvents, CUSTOMER_SERVICE_TIMEOUT_MS } from '@/api/ai'
 import { useUserStore } from '@/stores/userStore'
+import CustomerServiceCards from './CustomerServiceCards.vue'
+import { createCustomerServiceDecoder } from './customerServiceProtocol'
+import { GetJwt } from '@/utils/Auth'
+import { sameJwtAccount } from '@/utils/JwtSession'
 import MarkdownIt from 'markdown-it'
 
 const userStore = useUserStore()
 const markdown = new MarkdownIt({ html: false, breaks: true })
+markdown.disable(['link', 'image', 'autolink'])
 let requestGeneration = 0
 
 // 响应式对话框宽度
@@ -339,7 +345,7 @@ watch(
 
 // 快捷问题 - 常见问题列表
 const quickQuestions = ref([
-  '总结这个项目',
+  '怎么登录辰栈？',
   '如何发布文章？',
   '如何创建专栏？',
   '如何修改个人资料？',
@@ -353,7 +359,7 @@ const quickQuestions = ref([
   '文章可以设置哪些可见性？',
   '如何上传图片？',
   '如何删除或编辑已发布的文章？',
-  '如何提高文章的阅读量？',
+  '辰栈有哪些 AI 功能？',
   '文章为什么没有通过审核？',
 ])
 
@@ -381,10 +387,25 @@ const scrollToBottom = () => {
   })
 }
 
+const markIncomplete = (message, fallback) => {
+  message.events = []
+  message.incomplete = true
+  if (!message.content.trim()) message.content = fallback
+}
+
 // 发送消息
 const sendMessage = async () => {
   const message = inputMessage.value.trim()
   if (!message || isSending.value) return
+
+  if (!GetJwt()) {
+    messageList.value.push({ role: 'user', content: message, time: formatTime() })
+    messageList.value.push({ role: 'ai', content: '你好，我是小辰。请先登录，我就可以为你查询本人文章并提供操作帮助。', time: formatTime(),
+      events: [{ type: 'NAVIGATION_ACTION', text: '去登录', action: 'OPEN_LOGIN', supportStatus: 'SUPPORTED' }] })
+    inputMessage.value = ''
+    scrollToBottom()
+    return
+  }
 
   // 添加用户消息到列表
   messageList.value.push({
@@ -399,14 +420,15 @@ const sendMessage = async () => {
   const controller = new AbortController()
   const currentGeneration = ++requestGeneration
   const requestUserId = userStore.user?.id ?? null
+  const requestToken = GetJwt()
   const isCurrentRequest = () =>
     requestGeneration === currentGeneration &&
     chatAbortController.value === controller &&
-    (userStore.user?.id ?? null) === requestUserId
+    (userStore.user?.id ?? null) === requestUserId && sameJwtAccount(requestToken, GetJwt())
   chatAbortController.value = controller
   let timedOut = false
   const timeoutId = window.setTimeout(() => {
-    if (isCurrentRequest()) {
+    if (requestGeneration === currentGeneration && chatAbortController.value === controller) {
       timedOut = true
       controller.abort(new DOMException('客服响应超时', 'TimeoutError'))
     }
@@ -417,14 +439,14 @@ const sendMessage = async () => {
 
   try {
     // 调用流式 API
-    const response = await customerServiceChat(message, chatId.value, controller.signal)
+    const response = await customerServiceEvents(message, chatId.value, controller.signal)
     if (!isCurrentRequest()) return
 
     if (!response.ok) {
-      throw new Error('网络请求失败')
+      throw new Error(response.status === 401 ? '请先登录后再与小辰聊天' : '发送消息失败，请稍后重试')
     }
     if (response.headers?.get?.('content-type')?.toLowerCase().includes('json')) {
-      throw new Error('客服错误响应')
+      throw new Error('小辰暂时无法回答，请稍后重试')
     }
 
     if (!response.body) throw new Error('响应流不可用')
@@ -435,15 +457,27 @@ const sendMessage = async () => {
     aiMessage = {
       role: 'ai',
       content: '',
+      events: [],
       time: formatTime(),
     }
 
     // 添加 AI 消息占位
     messageList.value.push(aiMessage)
+    aiMessage = messageList.value[messageList.value.length - 1]
     isAiTyping.value = false
 
     // 获取消息在列表中的索引，确保引用正确
     const messageIndex = messageList.value.length - 1
+    const structured = response.headers?.get?.('content-type')?.includes('text/event-stream')
+    const protocol = structured ? createCustomerServiceDecoder(event => {
+      const target = messageList.value[messageIndex]
+      if (event.type === 'TEXT') target.content += event.text || ''
+      else if (event.type === 'KNOWLEDGE_STATUS') target.supportStatus = event.supportStatus
+      else if (event.type === 'ERROR_STATE') {
+        markIncomplete(target, '这次回答未完成，请稍后重试。')
+        if (event.action === 'RETRY_ARTICLES') target.events.push(event)
+      } else if (event.type !== 'DONE') target.events.push(event)
+    }) : null
     scrollToBottom()
 
     // 读取流式响应
@@ -458,29 +492,34 @@ const sendMessage = async () => {
       const chunk = decoder.decode(value, { stream: true })
 
       // 直接修改列表中的消息内容，触发 Vue 响应式更新
-      messageList.value[messageIndex].content += chunk
+      if (protocol) protocol.push(chunk)
+      else messageList.value[messageIndex].content += chunk
 
       // 使用 nextTick 确保 DOM 更新后再滚动
       await nextTick()
       if (!isCurrentRequest()) return
       scrollToBottom()
     }
-    messageList.value[messageIndex].content += decoder.decode()
-    if (!messageList.value[messageIndex].content.trim()) throw new Error('响应内容为空')
+    if (protocol) {
+      protocol.push(decoder.decode())
+      protocol.finish()
+    } else messageList.value[messageIndex].content += decoder.decode()
+    if (!messageList.value[messageIndex].content.trim() && !messageList.value[messageIndex].events.length) throw new Error('响应内容为空')
   } catch (error) {
     if (!isCurrentRequest()) return
     if (timedOut || error.name === 'TimeoutError') {
       ElMessage.error('客服响应超时，请稍后重试')
     } else if (error.name !== 'AbortError') {
-      ElMessage.error('发送消息失败，请稍后重试')
+      ElMessage.error(error.message === '请先登录后再与小辰聊天' ? error.message : '发送消息失败，请稍后重试')
     }
-    if (aiMessage) {
-      const failedMessageIndex = messageList.value.indexOf(aiMessage)
-      if (failedMessageIndex !== -1) {
-        if (aiMessage.content.trim()) aiMessage.incomplete = true
-        else messageList.value.splice(failedMessageIndex, 1)
-      }
+    if (error.message === '请先登录后再与小辰聊天') {
+      messageList.value.push({ role: 'ai', content: '登录已失效，请重新登录后继续。', time: formatTime(),
+        events: [{ type: 'NAVIGATION_ACTION', text: '去登录', action: 'OPEN_LOGIN' }] })
     }
+    if (aiMessage) markIncomplete(aiMessage, timedOut ? '客服响应超时，请稍后再试。' : '这次回答未完成，请稍后重试。')
+    else if (error.message !== '请先登录后再与小辰聊天') messageList.value.push({
+      role: 'ai', content: '这次回答未完成，请稍后重试。', events: [], incomplete: true, time: formatTime(),
+    })
   } finally {
     window.clearTimeout(timeoutId)
     if (reader) {
@@ -495,6 +534,8 @@ const sendMessage = async () => {
       chatAbortController.value = null
       isSending.value = false
       isAiTyping.value = false
+    } else if (requestGeneration === currentGeneration && !sameJwtAccount(requestToken, GetJwt())) {
+      resetChatContext()
     }
   }
 }
@@ -503,8 +544,7 @@ const stopGeneration = () => {
   if (!chatAbortController.value) return
   const lastMessage = messageList.value[messageList.value.length - 1]
   if (lastMessage?.role === 'ai') {
-    if (lastMessage.content.trim()) lastMessage.incomplete = true
-    else messageList.value.pop()
+    markIncomplete(lastMessage, '已停止生成。')
   }
   requestGeneration += 1
   chatAbortController.value.abort()
@@ -650,20 +690,9 @@ watch(dialogVisible, (newVal) => {
 .chat-container {
   display: flex;
   flex-direction: column;
-  height: 650px;
+  flex: 1;
+  min-height: 0;
   background: transparent;
-
-  // 手机端高度调整
-  @media (max-width: 768px) {
-    height: calc(100vh - 12vh);
-    min-height: 400px;
-    max-height: calc(100vh - 12vh);
-  }
-
-  // 平板端高度
-  @media (min-width: 769px) and (max-width: 992px) {
-    height: 600px;
-  }
 
   // 消息列表
   .message-list {
@@ -681,7 +710,12 @@ watch(dialogVisible, (newVal) => {
 
   // 欢迎消息
   .welcome-message {
-    flex-shrink: 0; // 防止被压缩
+    flex-shrink: 1;
+    min-height: 0;
+    overflow-y: auto;
+    @media (max-height: 600px) {
+      display: none;
+    }
     text-align: center;
     padding: 50px 30px 40px 30px;
     display: flex;
@@ -1036,6 +1070,9 @@ watch(dialogVisible, (newVal) => {
 
   // 快捷问题
   .quick-questions {
+    @media (max-height: 600px) {
+      display: none;
+    }
     flex-shrink: 0;
     padding: 20px;
     background: var(--el-fill-color-lighter);
@@ -1145,46 +1182,51 @@ watch(dialogVisible, (newVal) => {
 }
 
 // 对话框响应式样式
-::v-deep(.customer-service-dialog) {
+:global(.customer-service-dialog) {
+  display: flex;
+  flex-direction: column;
+  height: min(780px, calc(100dvh - 64px));
+  max-height: calc(100dvh - 64px);
+  margin: 32px auto;
   border-radius: 16px;
   overflow: hidden;
   box-shadow: 0 20px 60px var(--shadow);
 
-  .el-dialog__header {
-    padding: 16px 20px;
-    border-bottom: 1px solid var(--el-border-color-light);
-    background: var(--el-fill-color-lighter);
-  }
-
-  .el-dialog__body {
-    padding: 0;
-    background: transparent;
-  }
-
-  .el-dialog__footer {
-    padding: 0;
-    border-top: 1px solid var(--el-border-color-light);
-    background: var(--el-fill-color-light);
-  }
-
   // 手机端样式
   @media (max-width: 768px) {
-    .el-dialog {
-      margin: 0 auto;
-      margin-top: 8vh !important;
-      margin-bottom: 100px !important;
-      max-width: calc(100vw - 32px) !important;
-      width: calc(100vw - 32px) !important;
-      max-height: calc(100vh - 8vh - 100px) !important;
-      border-radius: 16px 16px 0 0;
-    }
+    margin: 16px auto;
+    height: calc(100dvh - 32px);
+    max-height: calc(100dvh - 32px);
+    max-width: calc(100vw - 32px);
+    border-radius: 16px;
   }
 
   // 平板端样式
   @media (min-width: 769px) and (max-width: 992px) {
-    .el-dialog {
-      margin: 5vh auto;
-    }
+    margin: 32px auto;
   }
+}
+
+:global(.customer-service-dialog .el-dialog__header) {
+  flex-shrink: 0;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--el-border-color-light);
+  background: var(--el-fill-color-lighter);
+}
+
+:global(.customer-service-dialog .el-dialog__body) {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  padding: 0;
+  background: transparent;
+}
+
+:global(.customer-service-dialog .el-dialog__footer) {
+  padding: 0;
+  border-top: 1px solid var(--el-border-color-light);
+  background: var(--el-fill-color-light);
 }
 </style>

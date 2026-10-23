@@ -7,4 +7,7 @@ import java.util.List;
 public record KnowledgeDocument(String sourceId, String title, String text, String version,
                                 String sourceType, String sourceUrl, String visibility,
                                 String reviewStatus, Instant updatedAt, List<String> keywords) {
+    public KnowledgeDocument {
+        keywords = keywords == null ? null : List.copyOf(keywords);
+    }
 }

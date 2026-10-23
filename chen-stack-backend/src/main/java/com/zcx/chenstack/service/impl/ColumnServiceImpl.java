@@ -18,8 +18,10 @@ import com.zcx.chenstack.domain.entity.ArticleColumn;
 import com.zcx.chenstack.domain.entity.Column;
 import com.zcx.chenstack.domain.entity.SysUser;
 import com.zcx.chenstack.domain.enums.ExamineStatusEnum;
+import com.zcx.chenstack.domain.enums.EditStatusEnum;
 import com.zcx.chenstack.domain.enums.ShowStatusEnum;
 import com.zcx.chenstack.domain.enums.StatusEnum;
+import com.zcx.chenstack.domain.enums.VisibleRangeEnum;
 import com.zcx.chenstack.domain.result.AuditResult;
 import com.zcx.chenstack.domain.vo.*;
 import com.zcx.chenstack.exception.BlogException;
@@ -201,11 +203,15 @@ public class ColumnServiceImpl extends ServiceImpl<ColumnMapper, Column> impleme
             queryWrapper.eq(Column::getUserId, userId)
                     .in(Column::getExamineStatus, ExamineStatusEnum.PASS.getCode(), ExamineStatusEnum.WAIT.getCode());
         } else {
-            queryWrapper.eq(Column::getExamineStatus, ExamineStatusEnum.PASS.getCode()); // 未登录或非正常用户只返回审核通过的专栏
+            queryWrapper.eq(Column::getExamineStatus, ExamineStatusEnum.PASS.getCode())
+                    .eq(Column::getShowStatus, ShowStatusEnum.PUBLIC.getCode());
         }
 
         List<Column> columns = columnMapper.selectList(queryWrapper);
         List<ColumnVo> columnVoList = BeanUtil.copyToList(columns, ColumnVo.class);
+        if (!canViewOwnPendingColumns) {
+            fillPublicArticleCounts(columnVoList);
+        }
         return columnVoList;
     }
 
@@ -229,6 +235,9 @@ public class ColumnServiceImpl extends ServiceImpl<ColumnMapper, Column> impleme
 
         List<Column> columns = columnMapper.selectPage(page, qw).getRecords();
         List<ColumnVo> columnVoList = BeanUtil.copyToList(columns, ColumnVo.class);
+        if (!canViewOwnPendingColumns) {
+            fillPublicArticleCounts(columnVoList);
+        }
         return new PageVo<>(columnVoList, page.getTotal());
     }
 
@@ -237,7 +246,7 @@ public class ColumnServiceImpl extends ServiceImpl<ColumnMapper, Column> impleme
     public ColumnDetailVo getColumnDetail(Integer columnId) {
         // 1. 获取专栏基本信息
         Column column = columnMapper.selectById(columnId);
-        if (column == null) {
+        if (column == null || !Objects.equals(column.getIsDeleted(), 0)) {
             throw new BlogException(BlogConstants.NotFoundColumn);
         }
 
@@ -248,7 +257,8 @@ public class ColumnServiceImpl extends ServiceImpl<ColumnMapper, Column> impleme
         // 如果是自己的专栏，可以访问
         if (currentUserId != null && currentUserId.equals(column.getUserId())) {
             canAccess = true;
-        } else if (ExamineStatusEnum.PASS.getCode().equals(column.getExamineStatus()) && column.getShowStatus() == 0) {
+        } else if (ExamineStatusEnum.PASS.getCode().equals(column.getExamineStatus())
+                && ShowStatusEnum.PUBLIC.getCode().equals(column.getShowStatus())) {
             // 如果是审核通过且公开的专栏，可以访问
             canAccess = true;
         }
@@ -259,6 +269,7 @@ public class ColumnServiceImpl extends ServiceImpl<ColumnMapper, Column> impleme
 
         // 3. 构建专栏详情基本信息
         ColumnDetailVo columnDetailVo = BeanUtil.copyProperties(column, ColumnDetailVo.class);
+        columnDetailVo.setArticles(List.of());
 
         // 4. 获取专栏内的文章列表（从文章专栏关联表查询）
         List<ArticleColumn> articleColumns = articleColumnMapper.selectList(
@@ -275,11 +286,15 @@ public class ColumnServiceImpl extends ServiceImpl<ColumnMapper, Column> impleme
 
             // 构建文章查询条件
             LambdaQueryWrapper<Article> articleQueryWrapper = new LambdaQueryWrapper<Article>()
-                    .in(Article::getId, articleIds);
+                    .in(Article::getId, articleIds)
+                    .eq(Article::getUserId, column.getUserId())
+                    .eq(Article::getIsDeleted, 0);
 
             // 如果不是专栏作者，只能看到审核通过的文章
             if (currentUserId == null || !currentUserId.equals(column.getUserId())) {
-                articleQueryWrapper.eq(Article::getExamineStatus, ExamineStatusEnum.PASS.getCode());
+                articleQueryWrapper.eq(Article::getExamineStatus, ExamineStatusEnum.PASS.getCode())
+                        .eq(Article::getEditStatus, EditStatusEnum.PUBLISHED.getCode())
+                        .eq(Article::getVisibleRange, VisibleRangeEnum.ALL.getCode());
             }
 
             List<Article> articles = articleMapper.selectList(articleQueryWrapper);
@@ -306,6 +321,10 @@ public class ColumnServiceImpl extends ServiceImpl<ColumnMapper, Column> impleme
             columnDetailVo.setArticles(columnArticles);
         }
 
+        if (!Objects.equals(currentUserId, column.getUserId())) {
+            columnDetailVo.setArticleCount(columnDetailVo.getArticles().size());
+        }
+
         return columnDetailVo;
     }
 
@@ -327,12 +346,26 @@ public class ColumnServiceImpl extends ServiceImpl<ColumnMapper, Column> impleme
 
         List<Column> columns = columnMapper.selectPage(page, qw).getRecords();
         List<ColumnVo> columnVoList = BeanUtil.copyToList(columns, ColumnVo.class);
+        fillPublicArticleCounts(columnVoList);
         return new PageVo<>(columnVoList, page.getTotal());
+    }
+
+    private void fillPublicArticleCounts(List<ColumnVo> columns) {
+        if (columns.isEmpty()) {
+            return;
+        }
+        Map<Integer, Integer> counts = columnMapper.selectPublicArticleCounts(
+                        columns.stream().map(ColumnVo::getId).toList()).stream()
+                .collect(Collectors.toMap(Column::getId, Column::getArticleCount));
+        columns.forEach(column -> column.setArticleCount(counts.getOrDefault(column.getId(), 0)));
     }
 
     @Override
     public void addColumn(ColumnDto columnDto) {
         Integer userId = SecurityUtils.getUserId();
+        if (userId == null || userId <= 0) {
+            throw new BlogException(BlogConstants.LoginRequired);
+        }
         String normalizedName = normalizeColumnName(columnDto.getName());
         columnDto.setName(normalizedName);
         validateColumnNameUnique(userId, normalizedName, null);
@@ -344,9 +377,7 @@ public class ColumnServiceImpl extends ServiceImpl<ColumnMapper, Column> impleme
                 .last("limit 1"));
         Integer maxSort = (column != null) ? column.getSort() : 0;
         columnDto.setSort(maxSort + 1);
-        if (userId != 0) {
-            columnDto.setUserId(userId);
-        }
+        columnDto.setUserId(userId);
         Column newColumn = BeanUtil.copyProperties(columnDto, Column.class);
         newColumn.setExamineStatus(ExamineStatusEnum.WAIT.getCode());
         columnMapper.insert(newColumn);
@@ -358,6 +389,9 @@ public class ColumnServiceImpl extends ServiceImpl<ColumnMapper, Column> impleme
     @Override
     public void updateColumn(ColumnDto columnDto) {
         Column column = columnMapper.selectById(columnDto.getId());
+        if (column == null) {
+            throw new BlogException(BlogConstants.NotFoundColumn);
+        }
         if (!column.getUserId().equals(SecurityUtils.getUserId())) {
             throw new BlogException(BlogConstants.CannotHandleOthersColumn);
         }
@@ -367,6 +401,7 @@ public class ColumnServiceImpl extends ServiceImpl<ColumnMapper, Column> impleme
             validateColumnNameUnique(column.getUserId(), normalizedName, column.getId());
         }
         Column updateColumn = BeanUtil.copyProperties(columnDto, Column.class);
+        updateColumn.setUserId(column.getUserId());
 
         // 处理排序冲突：如果修改了排序，需要调整其他专栏的排序值
         Integer oldSort = column.getSort();

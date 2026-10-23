@@ -5,6 +5,7 @@ import axios from 'axios'
 import router from '@/router/index.js'
 // 获取token
 import { GetJwt, SetJwt } from '@/utils/Auth.js'
+import { sameJwtAccount } from '@/utils/JwtSession'
 // 引入ElMessage
 import { ElMessage } from 'element-plus'
 // 引入userStore
@@ -25,9 +26,9 @@ const request = axios.create({
 // 登录过期处理锁，防止多个请求同时 401 时弹出多个弹窗
 let isHandlingAuthError = false
 
-const saveRefreshedToken = (headers) => {
+const saveRefreshedToken = (headers, sentToken) => {
   const refreshedToken = headers?.['x-refresh-token']
-  if (refreshedToken && String(refreshedToken).trim()) {
+  if (refreshedToken && String(refreshedToken).trim() && GetJwt() === (sentToken || null)) {
     SetJwt(refreshedToken)
   }
 }
@@ -49,7 +50,10 @@ request.interceptors.request.use(
 // 配置响应拦截器
 request.interceptors.response.use(
   (response) => {
-    saveRefreshedToken(response.headers)
+    if (!sameJwtAccount(response.config.headers?.Authorization || null, GetJwt())) {
+      return Promise.reject(new Error('登录状态已变化，请重试'))
+    }
+    saveRefreshedToken(response.headers, response.config.headers?.Authorization)
     let { code, msg } = response.data
     if (code == 200) {
       if (msg) {
@@ -63,7 +67,10 @@ request.interceptors.response.use(
     return Promise.reject(response.data)
   },
   (error) => {
-    saveRefreshedToken(error.response?.headers)
+    if (error.config && !sameJwtAccount(error.config.headers?.Authorization || null, GetJwt())) {
+      return Promise.reject(new Error('登录状态已变化，请重试'))
+    }
+    saveRefreshedToken(error.response?.headers, error.config?.headers?.Authorization)
     if (error.response) {
       let { status, data } = error.response
       if (status === 401) {

@@ -46,7 +46,7 @@
             <label class="form-label">验证码</label>
             <div class="check-code-wrapper">
               <el-input v-model="loginForm.checkCode" placeholder="请输入验证码" size="large" class="check-code-input" @keyup.enter="handleLogin" />
-              <img :src="checkCodeInfo.checkCodeBase64" class="check-code-image" title="点击刷新验证码" @click="refreshCheckCode" />
+              <img :src="checkCodeInfo.checkCodeBase64" class="check-code-image" title="点击刷新验证码" @click="refreshCheckCode()" />
             </div>
           </el-form-item>
 

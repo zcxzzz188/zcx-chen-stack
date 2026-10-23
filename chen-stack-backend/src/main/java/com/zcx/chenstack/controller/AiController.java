@@ -8,10 +8,14 @@ import com.zcx.chenstack.domain.result.Result;
 import com.zcx.chenstack.exception.BlogException;
 import com.zcx.chenstack.service.AiService;
 import com.zcx.chenstack.service.AiUsageService;
+import com.zcx.chenstack.service.CustomerServiceOrchestrator;
+import com.zcx.chenstack.service.EditableArticleService;
+import com.zcx.chenstack.domain.vo.CustomerServiceEvent;
 import com.zcx.chenstack.utils.SecurityUtils;
 import jakarta.annotation.Resource;
 import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.http.codec.ServerSentEvent;
 import reactor.core.publisher.Flux;
 
 import java.util.List;
@@ -26,6 +30,47 @@ public class AiController {
 
     @Resource
     private AiUsageService aiUsageService;
+
+    @Resource
+    private CustomerServiceOrchestrator customerServiceOrchestrator;
+
+    @Resource
+    private EditableArticleService editableArticleService;
+
+    @RateLimit(value = 30, period = 60, message = "客服请求过于频繁，请稍后再试")
+    @PostMapping(value = "/customer-service/events", produces = "text/event-stream;charset=UTF-8")
+    public Flux<ServerSentEvent<CustomerServiceEvent>> customerServiceEvents(@Valid @RequestBody AiChatRequestDto request) {
+        Integer userId = requireCustomerServiceUser();
+        return customerServiceOrchestrator.chat(request.getMessage(), request.getChatId(), userId)
+                .map(event -> ServerSentEvent.builder(event).event("customer-service").build());
+    }
+
+    @RateLimit
+    @GetMapping("/customer-service/articles")
+    public Result<CustomerServiceEvent> editableArticles(@RequestParam(defaultValue = "1") int page,
+                                                        @RequestParam(defaultValue = "5") int pageSize) {
+        return Result.success(editableArticleService.listForUser(requireCustomerServiceUser(), page, pageSize));
+    }
+
+    @RateLimit
+    @GetMapping("/customer-service/articles/{articleId}")
+    public Result<CustomerServiceEvent.EditableArticle> editableArticle(@PathVariable Integer articleId) {
+        return Result.success(editableArticleService.requireEditable(requireCustomerServiceUser(), articleId));
+    }
+
+    @RateLimit
+    @GetMapping("/customer-service/articles/{articleId}/detail")
+    public Result<com.zcx.chenstack.domain.vo.ArticleVo> editableArticleDetail(@PathVariable Integer articleId) {
+        return Result.success(editableArticleService.loadForUser(requireCustomerServiceUser(), articleId));
+    }
+
+    private static Integer requireCustomerServiceUser() {
+        Integer userId = SecurityUtils.getUserId();
+        if (SecurityUtils.getLoginUser() == null || userId == null || userId <= 0) {
+            throw new BlogException(BlogConstants.LoginRequired);
+        }
+        return userId;
+    }
 
     /**
      * 提取文章摘要
@@ -74,9 +119,6 @@ public class AiController {
         // 检查用户是否登录
         if (SecurityUtils.getLoginUser() == null) {
             throw new BlogException(BlogConstants.LoginRequired);
-        }
-        if ("chat".equals(request.getMode())) {
-            return aiService.customerServiceChat(request.getMessage(), request.getChatId());
         }
         return aiService.customerServiceChat(request.getMessage(), request.getChatId(), request.getMode());
     }

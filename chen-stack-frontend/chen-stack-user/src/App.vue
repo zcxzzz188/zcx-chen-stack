@@ -13,15 +13,12 @@
 </template>
 
 <script setup>
-import { ref, nextTick } from 'vue'
+import { ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { ElMessageBox } from 'element-plus'
 import CustomerServiceFloatButton from '@/components/CustomerService/CustomerServiceFloatButton.vue'
 import CustomerServiceChat from '@/components/CustomerService/CustomerServiceChat.vue'
-import { useUserStore } from '@/stores/userStore'
 
 const router = useRouter()
-const userStore = useUserStore()
 const customerServiceChatRef = ref(null)
 
 // 首屏加载动画：等 Vue Router 完成初始路由解析（包括所有懒加载 chunk 下载）后再移除
@@ -39,18 +36,6 @@ router.isReady().then(() => {
 
 // 处理客服按钮点击
 const handleCustomerServiceClick = () => {
-  if (!userStore.isLoggedIn) {
-    ElMessageBox.confirm('智能客服需要登录后才能使用，是否前往登录？', '提示', {
-      confirmButtonText: '前往登录',
-      cancelButtonText: '取消',
-      type: 'warning',
-    })
-      .then(() => {
-        router.push('/login')
-      })
-      .catch(() => {})
-    return
-  }
   customerServiceChatRef.value?.open()
 }
 </script>

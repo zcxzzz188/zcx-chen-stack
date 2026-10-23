@@ -1,5 +1,5 @@
 <template>
-  <div class="pc-menu" @select="handleSelect">
+  <div class="pc-menu">
     <a class="logo" href="/"><el-text size="large" class="logo-text">辰栈</el-text></a>
     <a href="/creation"
       ><el-text class="creation-center"

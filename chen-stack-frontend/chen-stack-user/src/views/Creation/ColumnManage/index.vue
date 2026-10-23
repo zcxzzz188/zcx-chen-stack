@@ -267,7 +267,7 @@
             type="textarea"
             :rows="4"
             placeholder="请输入专栏描述（可选）"
-            maxlength="200"
+            maxlength="100"
             show-word-limit
             resize="none"
           />
@@ -383,7 +383,7 @@
             type="textarea"
             :rows="4"
             placeholder="请输入专栏描述（可选）"
-            maxlength="200"
+            maxlength="100"
             show-word-limit
             resize="none"
           />
@@ -736,9 +736,9 @@ const editForm = ref({
 const editFormRules = {
   name: [
     { required: true, message: '请输入专栏名称', trigger: 'blur' },
-    { min: 1, max: 50, message: '专栏名称长度应在1-50个字符', trigger: 'blur' },
+    { min: 1, max: 30, message: '专栏名称长度应在1-30个字符', trigger: 'blur' },
   ],
-  description: [{ max: 200, message: '专栏描述不能超过200个字符', trigger: 'blur' }],
+  description: [{ max: 100, message: '专栏描述不能超过100个字符', trigger: 'blur' }],
   showStatus: [{ required: true, message: '请选择展示状态', trigger: 'change' }],
   sort: [
     { required: true, message: '请输入排序值', trigger: 'blur' },
@@ -763,9 +763,9 @@ const createForm = ref({
 const createFormRules = {
   name: [
     { required: true, message: '请输入专栏名称', trigger: 'blur' },
-    { min: 1, max: 50, message: '专栏名称长度应在1-50个字符', trigger: 'blur' },
+    { min: 1, max: 30, message: '专栏名称长度应在1-30个字符', trigger: 'blur' },
   ],
-  description: [{ max: 200, message: '专栏描述不能超过200个字符', trigger: 'blur' }],
+  description: [{ max: 100, message: '专栏描述不能超过100个字符', trigger: 'blur' }],
   showStatus: [{ required: true, message: '请选择展示状态', trigger: 'change' }],
 }
 

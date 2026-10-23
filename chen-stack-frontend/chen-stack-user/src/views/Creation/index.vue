@@ -9,7 +9,6 @@
           class="pc-menu"
           :default-active="activeIndex"
           router
-          @select="handleSelect"
           :default-openeds="['/creation/manage']"
         >
           <div class="create">

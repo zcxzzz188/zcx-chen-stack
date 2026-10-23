@@ -412,7 +412,7 @@ Linux 或 macOS：
 
 ```bash
 cd chen-stack-backend
-mvn -DskipTests package
+mvn package
 cd ..
 ```
 
@@ -420,7 +420,7 @@ Windows CMD：
 
 ```cmd
 cd chen-stack-backend
-mvn.cmd -DskipTests package
+mvn.cmd package
 cd ..
 ```
 
@@ -436,7 +436,8 @@ Linux 或 macOS：
 
 ```bash
 cd chen-stack-frontend/chen-stack-user
-npm install
+npm ci
+npm run test:run
 npm run build
 cd ../..
 ```
@@ -445,7 +446,8 @@ Windows CMD：
 
 ```cmd
 cd chen-stack-frontend\chen-stack-user
-npm install
+npm ci
+npm run test:run
 npm run build
 cd ..\..
 ```
@@ -456,7 +458,8 @@ Linux 或 macOS：
 
 ```bash
 cd chen-stack-frontend/chen-stack-admin
-npm install
+npm ci
+npm run test:run
 npm run build
 cd ../..
 ```
@@ -465,7 +468,8 @@ Windows CMD：
 
 ```cmd
 cd chen-stack-frontend\chen-stack-admin
-npm install
+npm ci
+npm run test:run
 npm run build
 cd ..\..
 ```

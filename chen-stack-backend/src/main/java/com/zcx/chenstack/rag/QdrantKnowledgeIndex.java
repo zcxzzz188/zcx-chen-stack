@@ -104,13 +104,42 @@ public class QdrantKnowledgeIndex implements AutoCloseable {
     }
 
     public List<Document> search(String query) {
+        return search(query, properties.getChunkCandidateLimit(), properties.getSimilarityThreshold());
+    }
+
+    /** 仅按权威目录给出的chunk UUID读取；来源授权与完整性由服务层再次核验。 */
+    public List<Document> readChunks(List<String> chunkIds) {
+        if (chunkIds == null || chunkIds.isEmpty() || chunkIds.size() > 64) {
+            throw new RagFailure(RagFailure.Code.INDEX_MISMATCH);
+        }
+        List<Points.PointId> ids = chunkIds.stream().map(UUID::fromString).map(uuid -> id(uuid)).toList();
+        verify(false);
+        try {
+            return client.retrieveAsync(properties.getCollection(), ids, true, false, null)
+                    .get(properties.getQdrantTimeoutSeconds(), TimeUnit.SECONDS).stream().map(point -> {
+                        Map<String, Object> metadata = new HashMap<>();
+                        point.getPayloadMap().forEach((key, value) -> {
+                            if (value.getKindCase() == JsonWithInt.Value.KindCase.STRING_VALUE) metadata.put(key, value.getStringValue());
+                        });
+                        String text = (String) metadata.remove("doc_content");
+                        return new Document(point.getId().getUuid(), text == null ? "" : text, metadata);
+                    }).toList();
+        } catch (InterruptedException failure) {
+            Thread.currentThread().interrupt();
+            throw new RagFailure(RagFailure.Code.QDRANT_UNAVAILABLE);
+        } catch (Exception failure) {
+            throw new RagFailure(RagFailure.Code.QDRANT_UNAVAILABLE);
+        }
+    }
+
+    private List<Document> search(String query, int topK, double threshold) {
         verify(false);
         FilterExpressionBuilder filters = new FilterExpressionBuilder();
         Filter.Expression filter = filters.and(filters.eq("visibility", "PUBLIC"),
                 filters.and(filters.eq("review_status", "DOCUMENT_REVIEWED"), filters.eq("embedding_signature", signature))).build();
         try {
-            return store.similaritySearch(SearchRequest.builder().query(query).topK(properties.getTopK())
-                    .similarityThreshold(properties.getSimilarityThreshold()).filterExpression(filter).build());
+            return store.similaritySearch(SearchRequest.builder().query(query).topK(topK)
+                    .similarityThreshold(threshold).filterExpression(filter).build());
         } catch (RagFailure failure) { throw failure; }
         catch (Exception failure) { throw new RagFailure(RagFailure.Code.QDRANT_UNAVAILABLE); }
     }

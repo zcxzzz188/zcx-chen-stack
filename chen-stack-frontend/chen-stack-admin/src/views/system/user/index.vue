@@ -154,7 +154,7 @@
     </template>
   </ManagementCard>
 
-  <!-- 新增/编辑权限对话框 -->
+  <!-- 编辑用户对话框 -->
   <el-dialog v-model="dialogVisible" :title="dialogTitle" :before-close="handleDialogClose">
     <el-form ref="userFormRef" :model="userForm" :rules="rules" class="editForm">
       <el-form-item prop="username" label="用户名称">
@@ -410,7 +410,7 @@ const total = ref(0)
 // 对话框可见性
 const dialogVisible = ref(false)
 // 对话框标题
-const dialogTitle = ref('新增权限')
+const dialogTitle = ref('编辑用户')
 
 // 表单引用
 const userFormRef = ref(null)
@@ -596,20 +596,16 @@ const handleSubmit = () => {
       return
     }
     try {
-      if (userForm.value.id) {
-        // 编辑用户
-        await updateUser(userForm.value)
-        ElMessage.success('编辑用户成功')
-      } else {
-        // 新增用户
-        await addUser(userForm.value)
-        ElMessage.success('新增用户成功')
-        getUsers()
+      if (!userForm.value.id) {
+        ElMessage.error('请选择有效用户后编辑')
+        return
       }
+      await updateUser(userForm.value)
+      ElMessage.success('编辑用户成功')
       dialogVisible.value = false
       getUsers()
     } catch (error) {
-      ElMessage.error(userForm.value.id ? '编辑用户失败' : '新增用户失败')
+      ElMessage.error('编辑用户失败')
       handleDialogClose()
     }
   })

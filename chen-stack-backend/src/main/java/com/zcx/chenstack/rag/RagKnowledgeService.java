@@ -5,12 +5,13 @@ import org.springframework.ai.document.Document;
 
 import java.nio.charset.StandardCharsets;
 import java.util.*;
+import java.util.stream.Collectors;
 
 /** 可独立测试的公开知识处理链路；没有后台自动索引或数据库扫描。 */
 @lombok.extern.slf4j.Slf4j
 public class RagKnowledgeService implements AutoCloseable {
     private final RagProperties properties;
-    private final KnowledgeCatalog catalog;
+    private final CatalogLifecycle lifecycle;
     private final QdrantKnowledgeIndex index;
     private final GuardedEmbeddingModel embedding;
     private volatile String lastOperation = "NOT_CHECKED";
@@ -19,10 +20,16 @@ public class RagKnowledgeService implements AutoCloseable {
 
     public RagKnowledgeService(RagProperties properties, KnowledgeCatalog catalog,
                                QdrantKnowledgeIndex index, GuardedEmbeddingModel embedding) {
-        this.properties = properties; this.catalog = catalog; this.index = index; this.embedding = embedding;
+        this(properties, catalog.lifecycle(), index, embedding);
+    }
+
+    public RagKnowledgeService(RagProperties properties, CatalogLifecycle lifecycle,
+                               QdrantKnowledgeIndex index, GuardedEmbeddingModel embedding) {
+        this.properties = properties; this.lifecycle = lifecycle; this.index = index; this.embedding = embedding;
     }
 
     public void requireReady() {
+        lifecycle.snapshot();
         if (!properties.isEnabled()) throw new RagFailure(RagFailure.Code.DISABLED);
         if (index == null) throw new RagFailure(RagFailure.Code.MISSING_KEY);
         properties.validate();
@@ -31,6 +38,7 @@ public class RagKnowledgeService implements AutoCloseable {
     /** 只能由明确的本地索引操作调用；默认应用启动没有调用入口。 */
     public synchronized void syncReviewed(boolean createIfAbsent) {
         requireReady();
+        KnowledgeCatalog catalog = lifecycle.snapshot();
         lastSyncAt = java.time.Instant.now().toString();
         try {
             index.verify(createIfAbsent);
@@ -39,22 +47,26 @@ public class RagKnowledgeService implements AutoCloseable {
             index.upsert(current);
             // 所有新块写入成功后，局部清理同一来源旧块，避免占用TopK；失败不得报告同步成功。
             index.deleteObsoleteChunks(current);
+            catalog.requireCurrent();
             lastSync = "SUCCESS";
             lastOperation = "READY";
         } catch (RagFailure failure) {
             lastSync = failure.code().name(); lastOperation = lastSync;
             log.warn("RAG索引同步失败，状态={}", lastSync);
             throw failure;
+        } catch (RuntimeException failure) {
+            lastSync = "CATALOG_OR_SYNC_INVALIDATED"; lastOperation = lastSync;
+            throw failure;
         }
     }
 
-    /** 仅清理已在当前权威目录撤销的索引副本；资源目录更新须重新加载所有实例。 */
+    /** 仅清理已在权威生命周期撤销的索引副本；删除失败不恢复来源授权。 */
     public synchronized void deleteSource(String sourceId) {
         requireReady();
         if (sourceId == null || !sourceId.matches("[a-z0-9_-]{1,80}")) throw new IllegalArgumentException("来源ID无效");
         lastSyncAt = java.time.Instant.now().toString();
         try {
-            KnowledgeDocument source = catalog.source(sourceId);
+            KnowledgeDocument source = lifecycle.snapshot().source(sourceId);
             if (source != null && "PUBLIC".equals(source.visibility()) && "DOCUMENT_REVIEWED".equals(source.reviewStatus())) {
                 throw new RagFailure(RagFailure.Code.SOURCE_STILL_APPROVED);
             }
@@ -69,6 +81,7 @@ public class RagKnowledgeService implements AutoCloseable {
 
     public KnowledgeEvidence retrieve(String query) {
         requireReady();
+        KnowledgeCatalog catalog = lifecycle.snapshot();
         if (query == null || query.isBlank() || query.length() > properties.getMaxEmbeddingInputChars()) {
             throw new RagFailure(RagFailure.Code.EMBEDDING_UNAVAILABLE);
         }
@@ -76,23 +89,28 @@ public class RagKnowledgeService implements AutoCloseable {
         try {
             List<Document> candidates = index.search(query);
             Map<String, Document> verified = new LinkedHashMap<>();
-            for (Document candidate : candidates) {
+            Map<String, Double> scores = new HashMap<>();
+            for (Document candidate : candidates.stream().limit(properties.getChunkCandidateLimit()).toList()) {
+                if (candidate == null || candidate.getScore() == null || !Double.isFinite(candidate.getScore())
+                        || candidate.getScore() < properties.getSimilarityThreshold() || candidate.getScore() > 1) continue;
                 Document chunk = catalog.verified(candidate);
-                if (chunk != null) verified.putIfAbsent(chunk.getId(), chunk);
-            }
-            // 轻量关键词只重排向量候选，不在故障、删除或无命中时绕过索引。
-            List<Document> ordered = verified.values().stream()
-                    .sorted(Comparator.comparingInt((Document d) -> catalog.keywordScore(d, query)).reversed()).toList();
-            List<Document> accepted = new ArrayList<>();
-            for (Document doc : ordered) {
-                if (accepted.size() == properties.getTopK()) break;
-                accepted.add(doc);
-                // UTF-8字节数作为保守Token上界，预算包含证据JSON的结构开销。
-                if (new KnowledgeEvidence(accepted, catalog).context().getBytes(StandardCharsets.UTF_8).length > properties.getContextTokenBudget()) {
-                    accepted.removeLast();
+                if (chunk != null) {
+                    verified.putIfAbsent(chunk.getId(), chunk);
+                    scores.merge(chunk.getId(), candidate.getScore(), Math::max);
                 }
             }
+            // 以真实语义相似度排序，词面命中数不能把低相关资料顶到操作说明之前。
+            List<String> ordered = verified.values().stream()
+                    .sorted(Comparator.comparingDouble((Document d) -> scores.get(d.getId())).reversed())
+                    .map(doc -> (String) doc.getMetadata().get("source_id"))
+                    .filter(Objects::nonNull).distinct().toList();
+            // 任一chunk命中即选用该来源，但整篇释放：长文档不会因topK按chunk截断而只剩半条规则。
+            List<Document> accepted = acceptWholeSources(catalog, ordered);
+            log.info("xiaochen retrieval candidates={} verified={} sources={} accepted_chunks={} accepted_sources={}",
+                    candidates.size(), verified.size(), ordered.size(), accepted.size(),
+                    accepted.stream().map(d -> d.getMetadata().get("source_id")).distinct().toList());
             lastOperation = accepted.isEmpty() ? "NO_HIT" : "READY";
+            catalog.requireCurrent();
             return new KnowledgeEvidence(List.copyOf(accepted), catalog);
         } catch (RagFailure failure) {
             lastOperation = Thread.currentThread().isInterrupted() ? "CANCELLED" : failure.code().name();
@@ -100,14 +118,85 @@ public class RagKnowledgeService implements AutoCloseable {
         }
     }
 
+    /** 目录只用于选择主题；正文仍须通过物理索引、版本与来源校验。 */
+    public KnowledgeCatalog reviewedCatalog() {
+        requireReady();
+        KnowledgeCatalog catalog = lifecycle.snapshot();
+        catalog.requireCurrent();
+        return catalog;
+    }
+
+    /** 主题定位只接受唯一的已审校公开标题，正文仍须存在于当前物理索引。 */
+    public KnowledgeEvidence retrieveByTitle(String title) {
+        requireReady();
+        KnowledgeCatalog catalog = lifecycle.snapshot();
+        if (title == null || title.isBlank() || title.length() > 80) return new KnowledgeEvidence(List.of(), catalog);
+        List<String> matches = catalog.sourceIds().stream().filter(id -> {
+            KnowledgeDocument source = catalog.source(id);
+            return "PUBLIC".equals(source.visibility()) && "DOCUMENT_REVIEWED".equals(source.reviewStatus())
+                    && title.equals(source.title());
+        }).toList();
+        if (matches.size() != 1) return new KnowledgeEvidence(List.of(), catalog);
+        String sourceId = matches.getFirst();
+        Set<String> expected = catalog.chunks().stream()
+                .filter(chunk -> sourceId.equals(chunk.getMetadata().get("source_id")))
+                .map(Document::getId).collect(Collectors.toSet());
+        try {
+            List<Document> indexed = index.readChunks(List.copyOf(expected));
+            Set<String> verified = new HashSet<>();
+            for (Document candidate : indexed) {
+                Document chunk = catalog.verified(candidate);
+                if (chunk == null || !expected.contains(chunk.getId()) || !verified.add(chunk.getId())) {
+                    throw new RagFailure(RagFailure.Code.INDEX_MISMATCH);
+                }
+            }
+            if (!verified.equals(expected)) throw new RagFailure(RagFailure.Code.INDEX_MISMATCH);
+            List<Document> accepted = acceptWholeSources(catalog, matches);
+            catalog.requireCurrent();
+            lastOperation = accepted.isEmpty() ? "NO_HIT" : "READY";
+            log.info("xiaochen topic_read source={} indexed_chunks={} accepted_chunks={}", sourceId, indexed.size(), accepted.size());
+            return new KnowledgeEvidence(accepted, catalog);
+        } catch (RagFailure failure) {
+            lastOperation = failure.code().name();
+            throw failure;
+        }
+    }
+
+    /**
+     * 以来源为单位整篇接受检索结果：命中的任一chunk即视为该来源被检索到。
+     * 分块只影响定位，不影响授权；一个来源的全部chunk来自同一已审校文档，不可截断。
+     * 预算按整篇来源计算，超预算的来源整体排除，避免释放缺少条件的半边规则。
+     */
+    private List<Document> acceptWholeSources(KnowledgeCatalog catalog, List<String> orderedSourceIds) {
+        Map<String, List<Document>> chunksBySource = catalog.chunks().stream()
+                .collect(Collectors.groupingBy(doc -> (String) doc.getMetadata().get("source_id"),
+                        LinkedHashMap::new, Collectors.toList()));
+        List<Document> accepted = new ArrayList<>();
+        int acceptedSources = 0;
+        for (String sourceId : orderedSourceIds) {
+            if (acceptedSources == properties.getSourceTopK()) break;
+            List<Document> chunks = chunksBySource.get(sourceId);
+            if (chunks == null || chunks.isEmpty()) continue;
+            List<Document> next = new ArrayList<>(accepted);
+            next.addAll(chunks);
+            // UTF-8字节数作为保守Token上界，预算包含证据JSON的结构开销。
+            if (new KnowledgeEvidence(next, catalog).context().getBytes(StandardCharsets.UTF_8).length
+                    > properties.getContextTokenBudget()) continue;
+            accepted = next;
+            acceptedSources++;
+        }
+        return List.copyOf(accepted);
+    }
+
     /** 状态不触发联网探测或计费；NOT_CHECKED不伪装为健康。 */
     public Map<String, Object> diagnostics() {
-        return Map.of("enabled", properties.isEnabled(), "defaultMode", "chat", "supportedModes", List.of("chat", "rag"),
+        return Map.of("enabled", properties.isEnabled(), "defaultMode", "auto", "supportedModes", List.of("chat", "rag"),
                 "ragAvailability", !properties.isEnabled() ? "DISABLED" : index == null ? "MISSING_KEY" : "CONFIGURED",
-                "lastOperation", lastOperation, "lastSync", lastSync, "lastSyncAt", lastSyncAt, "reviewedChunks", catalog.chunks().size(),
+                "lastOperation", lastOperation, "lastSync", lastSync, "lastSyncAt", lastSyncAt, "reviewedChunks", lifecycle.snapshot().chunks().size(),
                 "embedding", embedding == null ? Map.of("requests", 0L, "inputChars", 0L, "failures", 0L, "reportedTokens", 0L) : embedding.counters());
     }
 
     public int chatTimeoutSeconds() { return properties.getChatTimeoutSeconds(); }
+    public int contextByteBudget() { return properties.getContextTokenBudget(); }
     @Override public void close() { if (index != null) index.close(); }
 }

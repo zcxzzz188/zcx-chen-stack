@@ -8,6 +8,7 @@ import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.time.Duration;
@@ -25,7 +26,15 @@ import java.util.concurrent.TimeUnit;
 @Slf4j
 public class AiUsageServiceImpl implements AiUsageService {
 
-    private static final int DAILY_LIMIT = 50;
+    private int dailyLimit = 50;
+
+    @Value("${chen-stack.ai.daily-limit:50}")
+    void configureDailyLimit(int dailyLimit) {
+        if (dailyLimit < 1) {
+            throw new IllegalArgumentException("chen-stack.ai.daily-limit must be positive");
+        }
+        this.dailyLimit = dailyLimit;
+    }
     private static final DefaultRedisScript<Long> RESERVE_DAILY_USAGE = new DefaultRedisScript<>("""
             local current = redis.call('GET', KEYS[1])
             if current and tonumber(current) >= tonumber(ARGV[1]) then
@@ -57,7 +66,7 @@ public class AiUsageServiceImpl implements AiUsageService {
         Long reserved = stringRedisTemplate.execute(
                 RESERVE_DAILY_USAGE,
                 List.of(key),
-                String.valueOf(DAILY_LIMIT),
+                String.valueOf(getDailyLimit(userId)),
                 String.valueOf(getSecondsUntilMidnight()));
         return Long.valueOf(1L).equals(reserved);
     }
@@ -127,12 +136,12 @@ public class AiUsageServiceImpl implements AiUsageService {
 
     @Override
     public int getDailyLimit() {
-        return DAILY_LIMIT;
+        return dailyLimit;
     }
 
     @Override
     public int getDailyLimit(Integer userId) {
-        return DAILY_LIMIT;
+        return dailyLimit;
     }
 
     /**

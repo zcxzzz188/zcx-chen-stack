@@ -72,7 +72,8 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
     @Override
     protected boolean shouldNotFilter(HttpServletRequest request) {
         return request.getDispatcherType() == DispatcherType.ASYNC
-                && !request.getRequestURI().endsWith("/ai/customer-service");
+                && !request.getRequestURI().endsWith("/ai/customer-service")
+                && !request.getRequestURI().endsWith("/ai/customer-service/events");
     }
 
     @Override

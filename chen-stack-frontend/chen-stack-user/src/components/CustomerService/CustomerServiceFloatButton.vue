@@ -58,8 +58,16 @@ const buttonStart = {
   bottom: 0,
 }
 
-// 边缘距离
-const EDGE_DISTANCE = 24
+// 窗口缩小或缩放后也要保证客服入口留在可见区域。
+const constrainPosition = () => {
+  buttonPosition.value = {
+    right: Math.max(0, Math.min(window.innerWidth - 60, buttonPosition.value.right)),
+    bottom: Math.max(0, Math.min(window.innerHeight - 60, buttonPosition.value.bottom)),
+  }
+}
+
+onMounted(() => window.addEventListener('resize', constrainPosition))
+onUnmounted(() => window.removeEventListener('resize', constrainPosition))
 
 // 处理鼠标按下
 const handleMouseDown = (e) => {
@@ -83,21 +91,11 @@ const handleMouseMove = (e) => {
   const deltaX = dragStart.x - e.clientX
   const deltaY = dragStart.y - e.clientY
 
-  // 计算新位置
-  let newRight = buttonStart.right + deltaX
-  let newBottom = buttonStart.bottom + deltaY
-
-  // 边界限制
-  const maxRight = window.innerWidth - 60
-  const maxBottom = window.innerHeight - 60
-
-  newRight = Math.max(-buttonStart.right + 60, Math.min(maxRight, newRight))
-  newBottom = Math.max(-buttonStart.bottom + 60, Math.min(maxBottom, newBottom))
-
   buttonPosition.value = {
-    right: newRight,
-    bottom: newBottom,
+    right: buttonStart.right + deltaX,
+    bottom: buttonStart.bottom + deltaY,
   }
+  constrainPosition()
 }
 
 // 处理触摸开始
