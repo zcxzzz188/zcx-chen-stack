@@ -107,3 +107,6 @@ replay_pid*
 # 保留示例环境配置
 !**/.env.example
 !**/env.example
+
+# 本地 RAG TLS 运行时材料（证书/信任库，禁止提交）
+/script/dev/rag-tls/

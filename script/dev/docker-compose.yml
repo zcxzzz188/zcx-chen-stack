@@ -11,7 +11,7 @@ services:
       MYSQL_PASSWORD: ${MYSQL_PASSWORD:-root}
       TZ: Asia/Shanghai
     ports:
-      - "${MYSQL_PORT:-3306}:3306"
+      - "127.0.0.1:${MYSQL_PORT:-3306}:3306"
     volumes:
       - mysql_data:/var/lib/mysql
       - ../../sql/chen_stack.sql:/docker-entrypoint-initdb.d/init.sql
@@ -30,7 +30,7 @@ services:
     container_name: chen-stack-redis
     restart: unless-stopped
     ports:
-      - "${REDIS_PORT:-6379}:6379"
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
     volumes:
       - redis_data:/data
     command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD:-chenstack123}", "--user", "default", "off", "--user", "${REDIS_USERNAME:-chenstack}", "on", "+@all", "~*", "&*", ">${REDIS_PASSWORD:-chenstack123}"]
@@ -64,8 +64,8 @@ services:
       # 强制跳过身份验证初始化
       MINIO_SKIP_CLIENT: "true"
     ports:
-      - "${MINIO_API_PORT:-9000}:9000"
-      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+      - "127.0.0.1:${MINIO_API_PORT:-9000}:9000"
+      - "127.0.0.1:${MINIO_CONSOLE_PORT:-9001}:9001"
     volumes:
       - minio_data:/data
     # 启动MinIO服务
@@ -88,8 +88,8 @@ services:
       RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER:-guest}
       RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS:-guest}
     ports:
-      - "${RABBITMQ_PORT:-5672}:5672"
-      - "${RABBITMQ_MANAGEMENT_PORT:-15672}:15672"
+      - "127.0.0.1:${RABBITMQ_PORT:-5672}:5672"
+      - "127.0.0.1:${RABBITMQ_MANAGEMENT_PORT:-15672}:15672"
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq
     networks:
@@ -110,7 +110,7 @@ services:
     container_name: chen-stack-backend
     restart: unless-stopped
     ports:
-      - "${BACKEND_PORT:-5000}:5000"
+      - "127.0.0.1:${BACKEND_PORT:-5000}:5000"
     environment:
       # 时区配置
       TZ: Asia/Shanghai
@@ -157,12 +157,13 @@ services:
       CHEN_RAG_EMBEDDING_API_KEY: ${CHEN_RAG_EMBEDDING_API_KEY:-}
       CHEN_RAG_EMBEDDING_BASE_URL: ${CHEN_RAG_EMBEDDING_BASE_URL:-https://ws-oy47ndolze5z0j6p.cn-beijing.maas.aliyuncs.com/compatible-mode/v1}
       CHEN_RAG_EMBEDDING_MODEL: ${CHEN_RAG_EMBEDDING_MODEL:-text-embedding-v4}
-      # 独立Qdrant服务由部署方配置可达地址；不自动新增容器、网络或索引。
-      CHEN_RAG_QDRANT_HOST: ${CHEN_RAG_QDRANT_HOST:-127.0.0.1}
+      # 正式RAG目标：独立Qdrant容器，gRPC TLS + 独立API Key；RAG与发布开关仍保持关闭。
+      CHEN_RAG_QDRANT_HOST: ${CHEN_RAG_QDRANT_HOST:-chen-qdrant-release}
       CHEN_RAG_QDRANT_GRPC_PORT: ${CHEN_RAG_QDRANT_GRPC_PORT:-6334}
-      CHEN_RAG_QDRANT_TLS: ${CHEN_RAG_QDRANT_TLS:-false}
+      CHEN_RAG_QDRANT_TLS: ${CHEN_RAG_QDRANT_TLS:-true}
       CHEN_RAG_QDRANT_API_KEY: ${CHEN_RAG_QDRANT_API_KEY:-}
-      CHEN_RAG_QDRANT_COLLECTION: ${CHEN_RAG_QDRANT_COLLECTION:-chen_platform_help_v1}
+      CHEN_RAG_QDRANT_COLLECTION: ${CHEN_RAG_QDRANT_COLLECTION:-chen_platform_help_release_v1}
+      CHEN_RAG_RELEASE_ENABLED: ${CHEN_RAG_RELEASE_ENABLED:-false}
 
       # 邮件配置
       MAIL_USERNAME: ${MAIL_USERNAME:-your-email@qq.com}
@@ -183,6 +184,12 @@ services:
       CHEN_STACK_COLUMN_AUTO_AUDIT: ${CHEN_STACK_COLUMN_AUTO_AUDIT:-false}
       CHEN_STACK_COMMENT_AUTO_AUDIT: ${CHEN_STACK_COMMENT_AUTO_AUDIT:-false}
       CHEN_STACK_RATE_LIMIT_ENABLED: ${CHEN_STACK_RATE_LIMIT_ENABLED:-true}
+    volumes:
+      # 本地信任库：系统默认CA + 独立Qdrant CA（只读，来源目录已被 .gitignore 忽略）
+      - type: bind
+        source: ./rag-tls/qdrant-truststore.p12
+        target: /opt/java/openjdk/lib/security/cacerts
+        read_only: true
     depends_on:
       mysql:
         condition: service_healthy
@@ -204,7 +211,7 @@ services:
     container_name: chen-stack-admin
     restart: unless-stopped
     ports:
-      - "${ADMIN_PORT:-8000}:80"
+      - "127.0.0.1:${ADMIN_PORT:-8000}:80"
     depends_on:
       - backend
     networks:
@@ -219,7 +226,7 @@ services:
     container_name: chen-stack-user
     restart: unless-stopped
     ports:
-      - "${USER_PORT:-7000}:80"
+      - "127.0.0.1:${USER_PORT:-7000}:80"
     depends_on:
       - backend
     networks:
