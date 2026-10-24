@@ -30,7 +30,15 @@ public class RagConfig {
 
     @Bean
     public KnowledgeCatalog knowledgeCatalog(ObjectMapper mapper, RagProperties properties,
-                                              javax.sql.DataSource dataSource) throws java.io.IOException {
+            javax.sql.DataSource dataSource,
+            org.springframework.beans.factory.ObjectProvider<RagPublicationConfiguration.Prepared> publication) throws java.io.IOException {
+        var approved = publication.getIfAvailable();
+        if (approved != null) {
+            try (var input = new ClassPathResource("knowledge/platform-help.json").getInputStream()) {
+                List<KnowledgeDocument> drafts = mapper.readValue(input, new TypeReference<List<KnowledgeDocument>>() {});
+                return RagPublicationExecutor.openOrInitialize(dataSource, drafts, approved.manifest(), approved.grant(), approved.approvalHash());
+            }
+        }
         if (properties.isEnabled()) {
             JdbcCatalogStore store = JdbcCatalogStore.open(dataSource);
             try { return KnowledgeCatalog.restore(store); }

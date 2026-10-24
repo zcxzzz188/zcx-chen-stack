@@ -17,6 +17,7 @@ public class RagKnowledgeService implements AutoCloseable {
     private volatile String lastOperation = "NOT_CHECKED";
     private volatile String lastSync = "NOT_RUN";
     private volatile String lastSyncAt = "";
+    private volatile KnowledgeCatalog publicationVerified;
 
     public RagKnowledgeService(RagProperties properties, KnowledgeCatalog catalog,
                                QdrantKnowledgeIndex index, GuardedEmbeddingModel embedding) {
@@ -35,7 +36,39 @@ public class RagKnowledgeService implements AutoCloseable {
         properties.validate();
     }
 
-    /** 只能由明确的本地索引操作调用；默认应用启动没有调用入口。 */
+    private void requireReadable() {
+        requireReady();
+        if (lifecycle.durable() && publicationVerified != lifecycle.snapshot()) throw new RagFailure(RagFailure.Code.RECOVERY_REQUIRED);
+    }
+
+    void blockPublication() { publicationVerified = null; }
+    boolean publicationReady() { return !lifecycle.durable() || publicationVerified == lifecycle.snapshot(); }
+    void confirmPublication(KnowledgeCatalog catalog) { catalog.requireCurrent(); publicationVerified = catalog; }
+    void publicationBudget(Runnable reservation) {
+        requireReady();
+        embedding.publicationReservation(reservation);
+    }
+    String embeddingSignature() { requireReady(); return index.embeddingSignature(); }
+    void preparePublicationTarget(boolean create, String releaseOwner) {
+        requireReady();
+        index.verify(create, releaseOwner);
+    }
+    void verifyPublicationIndex() {
+        requireReady();
+        KnowledgeCatalog catalog = lifecycle.snapshot();
+        List<Document> expected = catalog.chunks();
+        for (int start = 0; start < expected.size(); start += 64) {
+            List<String> ids = expected.subList(start, Math.min(start + 64, expected.size())).stream().map(Document::getId).toList();
+            List<Document> found = index.readChunks(ids);
+            if (found.size() != ids.size() || found.stream().anyMatch(chunk -> catalog.verified(chunk) == null)
+                    || !new HashSet<>(ids).equals(found.stream().map(Document::getId).collect(Collectors.toSet()))) {
+                throw new RagFailure(RagFailure.Code.INDEX_MISMATCH);
+            }
+        }
+        catalog.requireCurrent();
+    }
+
+    /** 由受控发布执行器显式调用；默认启动不执行索引同步。 */
     public synchronized void syncReviewed(boolean createIfAbsent) {
         requireReady();
         KnowledgeCatalog catalog = lifecycle.snapshot();
@@ -80,7 +113,7 @@ public class RagKnowledgeService implements AutoCloseable {
     }
 
     public KnowledgeEvidence retrieve(String query) {
-        requireReady();
+        requireReadable();
         KnowledgeCatalog catalog = lifecycle.snapshot();
         if (query == null || query.isBlank() || query.length() > properties.getMaxEmbeddingInputChars()) {
             throw new RagFailure(RagFailure.Code.EMBEDDING_UNAVAILABLE);
@@ -120,7 +153,7 @@ public class RagKnowledgeService implements AutoCloseable {
 
     /** 目录只用于选择主题；正文仍须通过物理索引、版本与来源校验。 */
     public KnowledgeCatalog reviewedCatalog() {
-        requireReady();
+        requireReadable();
         KnowledgeCatalog catalog = lifecycle.snapshot();
         catalog.requireCurrent();
         return catalog;
@@ -128,7 +161,7 @@ public class RagKnowledgeService implements AutoCloseable {
 
     /** 主题定位只接受唯一的已审校公开标题，正文仍须存在于当前物理索引。 */
     public KnowledgeEvidence retrieveByTitle(String title) {
-        requireReady();
+        requireReadable();
         KnowledgeCatalog catalog = lifecycle.snapshot();
         if (title == null || title.isBlank() || title.length() > 80) return new KnowledgeEvidence(List.of(), catalog);
         List<String> matches = catalog.sourceIds().stream().filter(id -> {
@@ -191,7 +224,7 @@ public class RagKnowledgeService implements AutoCloseable {
     /** 状态不触发联网探测或计费；NOT_CHECKED不伪装为健康。 */
     public Map<String, Object> diagnostics() {
         return Map.of("enabled", properties.isEnabled(), "defaultMode", "auto", "supportedModes", List.of("chat", "rag"),
-                "ragAvailability", !properties.isEnabled() ? "DISABLED" : index == null ? "MISSING_KEY" : "CONFIGURED",
+                "ragAvailability", !properties.isEnabled() ? "DISABLED" : index == null ? "MISSING_KEY" : !publicationReady() ? "RECOVERY_REQUIRED" : "CONFIGURED",
                 "lastOperation", lastOperation, "lastSync", lastSync, "lastSyncAt", lastSyncAt, "reviewedChunks", lifecycle.snapshot().chunks().size(),
                 "embedding", embedding == null ? Map.of("requests", 0L, "inputChars", 0L, "failures", 0L, "reportedTokens", 0L) : embedding.counters());
     }

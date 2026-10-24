@@ -40,6 +40,11 @@ public class QdrantKnowledgeIndex implements AutoCloseable {
     }
 
     public void verify(boolean createIfAbsent) {
+        verify(createIfAbsent, null);
+    }
+
+    /** An approved release may only adopt a collection carrying its environment binding. */
+    void verify(boolean createIfAbsent, String releaseOwner) {
         try {
             if (!client.collectionExistsAsync(properties.getCollection()).get(properties.getQdrantTimeoutSeconds(), TimeUnit.SECONDS)) {
                 if (!createIfAbsent) throw new RagFailure(RagFailure.Code.INDEX_MISMATCH);
@@ -47,8 +52,10 @@ public class QdrantKnowledgeIndex implements AutoCloseable {
                         .setSize(1024).setDistance(Collections.Distance.Cosine).build())
                         .get(properties.getQdrantTimeoutSeconds(), TimeUnit.SECONDS);
                 float[] control = new float[1024]; control[0] = 1;
-                client.upsertAsync(properties.getCollection(), List.of(Points.PointStruct.newBuilder().setId(id(BINDING_ID))
-                        .setVectors(vectors(control)).putPayload("embedding_signature", JsonWithInt.Value.newBuilder().setStringValue(signature).build()).build()))
+                var binding = Points.PointStruct.newBuilder().setId(id(BINDING_ID))
+                        .setVectors(vectors(control)).putPayload("embedding_signature", JsonWithInt.Value.newBuilder().setStringValue(signature).build());
+                if (releaseOwner != null) binding.putPayload("release_owner", JsonWithInt.Value.newBuilder().setStringValue(releaseOwner).build());
+                client.upsertAsync(properties.getCollection(), List.of(binding.build()))
                         .get(properties.getQdrantTimeoutSeconds(), TimeUnit.SECONDS);
             }
             var vector = client.getCollectionInfoAsync(properties.getCollection()).get(properties.getQdrantTimeoutSeconds(), TimeUnit.SECONDS)
@@ -62,10 +69,21 @@ public class QdrantKnowledgeIndex implements AutoCloseable {
                     .getOrDefault("embedding_signature", JsonWithInt.Value.getDefaultInstance()).getStringValue())) {
                 throw new RagFailure(RagFailure.Code.INDEX_MISMATCH);
             }
+            if (releaseOwner != null && !releaseOwner.equals(marker.getFirst().getPayloadMap()
+                    .getOrDefault("release_owner", JsonWithInt.Value.getDefaultInstance()).getStringValue())) {
+                throw new IllegalStateException("RELEASE_TARGET_NOT_OWNED");
+            }
         } catch (RagFailure failure) { throw failure; }
         catch (InterruptedException failure) { Thread.currentThread().interrupt(); throw new RagFailure(RagFailure.Code.QDRANT_UNAVAILABLE); }
         catch (Exception failure) { throw new RagFailure(RagFailure.Code.QDRANT_UNAVAILABLE); }
     }
+
+    boolean collectionExists() {
+        try { return client.collectionExistsAsync(properties.getCollection()).get(properties.getQdrantTimeoutSeconds(), TimeUnit.SECONDS); }
+        catch (Exception error) { throw new RagFailure(RagFailure.Code.QDRANT_UNAVAILABLE); }
+    }
+
+    String embeddingSignature() { return signature; }
 
     public void upsert(List<Document> chunks) {
         verify(false);

@@ -8,7 +8,7 @@ import javax.sql.DataSource;
 import java.sql.*;
 import java.util.*;
 
-/** 单后端实例MySQL权威状态；建表和首次导入均由独立受控宿主执行，启动绝不补种。 */
+/** 单后端实例MySQL权威状态；默认不补种，首次导入仅由显式签名 bootstrap 执行。 */
 public final class JdbcCatalogStore implements AutoCloseable {
     private static final ObjectMapper JSON = new ObjectMapper().findAndRegisterModules()
             .configure(SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS, true)
@@ -59,6 +59,10 @@ public final class JdbcCatalogStore implements AutoCloseable {
 
     /** 仅显式初始化空的专用表；不创建表，不覆盖既有状态，不发布来源。 */
     public static void initialize(DataSource source, List<KnowledgeDocument> documents) {
+        initializeApproved(source, documents, null);
+    }
+
+    static void initializeApproved(DataSource source, List<KnowledgeDocument> documents, ReleaseOperation operation) {
         new KnowledgeCatalog(documents);
         try (JdbcCatalogStore store = new JdbcCatalogStore(source)) {
             try (Statement query = store.connection.createStatement();
@@ -74,6 +78,14 @@ public final class JdbcCatalogStore implements AutoCloseable {
                 insert.setString(1, digest(initial)); insert.executeUpdate();
             }
             store.writeRows(initial);
+            if (operation != null) {
+                if (documents.stream().anyMatch(d -> !"NOT_PUBLISHED".equals(d.visibility()) || !"CONTENT_REVIEW_REQUIRED".equals(d.reviewStatus()))) {
+                    throw new IllegalStateException("RELEASE_BOOTSTRAP_REQUIRES_DRAFTS");
+                }
+                store.state = initial;
+                store.insertOperation(operation);
+                store.appendEvent(operation.id(), "BOOTSTRAP", 0, "APPROVED_EMPTY_CATALOG_INITIALIZED");
+            }
             store.connection.commit();
         } catch (Exception error) {
             throw new IllegalStateException("CATALOG_INITIALIZATION_FAILED", error);
@@ -81,6 +93,24 @@ public final class JdbcCatalogStore implements AutoCloseable {
     }
 
     synchronized State recovered() { return state; }
+
+    synchronized String snapshotHash() {
+        try { return digest(state); }
+        catch (Exception error) { throw new IllegalStateException("CATALOG_CHECKSUM_FAILED", error); }
+    }
+
+    /** Bind an index to this endpoint/schema without retaining credentials or connection options. */
+    synchronized String databaseIdentityHash() {
+        requireOwner();
+        try {
+            String jdbc = connection.getMetaData().getURL();
+            if (!jdbc.startsWith("jdbc:mysql://")) throw new IllegalStateException("RELEASE_DATABASE_IDENTITY_INVALID");
+            java.net.URI address = java.net.URI.create(jdbc.substring("jdbc:".length()));
+            if (address.getHost() == null || connection.getCatalog() == null) throw new IllegalStateException("RELEASE_DATABASE_IDENTITY_INVALID");
+            return KnowledgeCatalog.hash("mysql://" + address.getHost().toLowerCase(Locale.ROOT) + ":"
+                    + (address.getPort() < 0 ? 3306 : address.getPort()) + "/" + connection.getCatalog());
+        } catch (Exception error) { throw new IllegalStateException("RELEASE_DATABASE_IDENTITY_UNAVAILABLE"); }
+    }
 
     synchronized void requireOwner() {
         try (PreparedStatement query = connection.prepareStatement("SELECT IS_USED_LOCK(?) = CONNECTION_ID()")) {
@@ -92,6 +122,10 @@ public final class JdbcCatalogStore implements AutoCloseable {
     }
 
     synchronized void commit(String id, String event, KnowledgeCatalog next, long expectedGeneration) {
+        commit(id == null ? List.of() : List.of(id), event, next, expectedGeneration, null);
+    }
+
+    synchronized void commit(List<String> ids, String event, KnowledgeCatalog next, long expectedGeneration, String operationId) {
         try {
             requireOwner();
             State persisted = read();
@@ -100,9 +134,9 @@ public final class JdbcCatalogStore implements AutoCloseable {
             }
             Map<String, Row> rows = new TreeMap<>();
             state.rows().forEach(row -> rows.put(row.document().sourceId(), row));
-            if (!event.equals("UNAVAILABLE")) {
+            for (String id : ids) {
                 Row old = rows.get(id);
-                if (old != null && old.tombstone() && (event.equals("ADD") || event.equals("UPDATE"))) {
+                if (old != null && old.tombstone() && (event.equals("ADD") || event.equals("UPDATE") || event.equals("PUBLISH"))) {
                     throw new IllegalStateException("CATALOG_TOMBSTONE_PERMANENT");
                 }
                 KnowledgeDocument document = next.documents().stream().filter(item -> item.sourceId().equals(id)).findFirst().orElse(null);
@@ -129,12 +163,119 @@ public final class JdbcCatalogStore implements AutoCloseable {
                 update.setLong(1, replacement.generation()); update.setString(2, digest(replacement)); update.setLong(3, expectedGeneration);
                 if (update.executeUpdate() != 1) { throw new SQLException("CATALOG_GENERATION_CONFLICT"); }
             }
+            if (operationId != null) {
+                try (PreparedStatement update = connection.prepareStatement("UPDATE rag_release_operation SET status='CATALOG_APPLIED',applied_generation=?,applied_snapshot_sha256=?,updated_at=CURRENT_TIMESTAMP(6) WHERE operation_id=? AND status='VALIDATED'")) {
+                    update.setLong(1, replacement.generation()); update.setString(2, digest(replacement)); update.setString(3, operationId);
+                    if (update.executeUpdate() != 1) throw new SQLException("RELEASE_STATE_CONFLICT");
+                }
+                appendEvent(operationId, "CATALOG_APPLIED", replacement.generation(), event);
+            }
             connection.commit();
             state = replacement;
         } catch (Exception error) {
             try { connection.rollback(); } catch (SQLException ignored) { /* 提交结果不明，由生命周期统一失败关闭。 */ }
             throw new IllegalStateException("CATALOG_COMMIT_FAILED_CLOSED", error);
         }
+    }
+
+    record ReleaseOperation(String id, String manifestHash, String approvalHash, String environment,
+            String operator, String approver, String type, String status, long expectedGeneration,
+            Long appliedGeneration, String appliedSnapshotHash, String collection, long maxEmbeddingRequests,
+            long embeddingRequests, boolean targetInitialized, String indexAuthority, Long indexEpoch, String error) {}
+
+    synchronized ReleaseOperation operation(String id) {
+        requireOwner();
+        try (PreparedStatement query = connection.prepareStatement("SELECT operation_id,manifest_sha256,approval_sha256,environment,operator_id,approver_id,operation_type,status,expected_generation,applied_generation,applied_snapshot_sha256,target_collection,max_embedding_requests,embedding_requests,target_initialized,index_authority,index_epoch,last_error_code FROM rag_release_operation WHERE operation_id=?")) {
+            query.setString(1, id);
+            try (ResultSet r = query.executeQuery()) {
+                if (!r.next()) return null;
+                return new ReleaseOperation(r.getString(1), r.getString(2), r.getString(3), r.getString(4),
+                        r.getString(5), r.getString(6), r.getString(7), r.getString(8), r.getLong(9),
+                        r.getObject(10) == null ? null : r.getLong(10), r.getString(11), r.getString(12),
+                        r.getLong(13), r.getLong(14), r.getBoolean(15), r.getString(16),
+                        r.getObject(17) == null ? null : r.getLong(17), r.getString(18));
+            }
+        } catch (SQLException error) { throw new IllegalStateException("RELEASE_READ_FAILED", error); }
+    }
+
+    synchronized ReleaseOperation prepareOperation(ReleaseOperation requested) {
+        try {
+            requireOwner();
+            ReleaseOperation previous = operation(requested.id());
+            if (previous != null) {
+                if (!previous.manifestHash().equals(requested.manifestHash()) || !previous.approvalHash().equals(requested.approvalHash())
+                        || !previous.environment().equals(requested.environment()) || !previous.operator().equals(requested.operator())) {
+                    throw new IllegalStateException("RELEASE_APPROVAL_REPLAY");
+                }
+                connection.commit();
+                return previous;
+            }
+            insertOperation(requested);
+            connection.commit();
+            return operation(requested.id());
+        } catch (Exception error) {
+            rollback();
+            throw new IllegalStateException("RELEASE_PREPARE_FAILED_CLOSED", error);
+        }
+    }
+
+    private void insertOperation(ReleaseOperation requested) throws SQLException {
+        try (PreparedStatement insert = connection.prepareStatement("INSERT INTO rag_release_operation(operation_id,manifest_sha256,approval_sha256,environment,operator_id,approver_id,operation_type,status,expected_generation,target_collection,max_embedding_requests,embedding_requests,target_initialized,created_at,updated_at) VALUES(?,?,?,?,?,?,?,'VALIDATED',?,?,?,0,0,CURRENT_TIMESTAMP(6),CURRENT_TIMESTAMP(6))")) {
+            insert.setString(1, requested.id()); insert.setString(2, requested.manifestHash()); insert.setString(3, requested.approvalHash());
+            insert.setString(4, requested.environment()); insert.setString(5, requested.operator()); insert.setString(6, requested.approver());
+            insert.setString(7, requested.type()); insert.setLong(8, requested.expectedGeneration());
+            insert.setString(9, requested.collection()); insert.setLong(10, requested.maxEmbeddingRequests()); insert.executeUpdate();
+        }
+        appendEvent(requested.id(), "VALIDATED", state.generation(), "SIGNATURE_AND_SCOPE_VERIFIED");
+    }
+
+    synchronized void checkpoint(String id, String status, boolean initialized, String authority, Long epoch) {
+        try {
+            requireOwner();
+            State persisted = read();
+            if (persisted.generation() != state.generation() || !digest(persisted).equals(digest(state))) {
+                throw new IllegalStateException("CATALOG_GENERATION_CONFLICT");
+            }
+            try (PreparedStatement update = connection.prepareStatement("UPDATE rag_release_operation SET status=?,target_initialized=?,index_authority=?,index_epoch=?,last_error_code=NULL,updated_at=CURRENT_TIMESTAMP(6) WHERE operation_id=?")) {
+                update.setString(1, status); update.setBoolean(2, initialized); update.setString(3, authority);
+                if (epoch == null) update.setNull(4, Types.BIGINT); else update.setLong(4, epoch);
+                update.setString(5, id);
+                if (update.executeUpdate() != 1) throw new SQLException("RELEASE_STATE_MISSING");
+            }
+            appendEvent(id, status, state.generation(), "INDEX_AUTHORITY_BOUND"); connection.commit();
+        } catch (Exception error) { rollback(); throw new IllegalStateException("RELEASE_CHECKPOINT_FAILED_CLOSED", error); }
+    }
+
+    synchronized void reserveEmbedding(String id) {
+        try {
+            requireOwner();
+            try (PreparedStatement update = connection.prepareStatement("UPDATE rag_release_operation SET embedding_requests=embedding_requests+1,updated_at=CURRENT_TIMESTAMP(6) WHERE operation_id=? AND status='INDEXING' AND embedding_requests<max_embedding_requests")) {
+                update.setString(1, id);
+                if (update.executeUpdate() != 1) throw new IllegalStateException("RELEASE_EMBEDDING_BUDGET_EXHAUSTED");
+            }
+            appendEvent(id, "EMBEDDING_RESERVED", state.generation(), "ATTEMPT_RESERVED_BEFORE_SEND"); connection.commit();
+        } catch (Exception error) { rollback(); throw new IllegalStateException("RELEASE_COST_RESERVATION_FAILED_CLOSED", error); }
+    }
+
+    synchronized void failOperation(String id, String safeCode) {
+        try {
+            requireOwner();
+            State persisted = read();
+            try (PreparedStatement update = connection.prepareStatement("UPDATE rag_release_operation SET status='FAILED',last_error_code=?,updated_at=CURRENT_TIMESTAMP(6) WHERE operation_id=?")) {
+                update.setString(1, safeCode); update.setString(2, id); update.executeUpdate();
+            }
+            appendEvent(id, "FAILED", persisted.generation(), safeCode); connection.commit();
+        } catch (Exception error) { rollback(); throw new IllegalStateException("RELEASE_FAILURE_RECORD_UNCONFIRMED", error); }
+    }
+
+    private void appendEvent(String id, String event, long generation, String code) throws SQLException {
+        try (PreparedStatement insert = connection.prepareStatement("INSERT INTO rag_release_event(operation_id,event_type,generation,details_code,created_at) VALUES(?,?,?,?,CURRENT_TIMESTAMP(6))")) {
+            insert.setString(1, id); insert.setString(2, event); insert.setLong(3, generation); insert.setString(4, code); insert.executeUpdate();
+        }
+    }
+
+    private void rollback() {
+        try { connection.rollback(); } catch (SQLException ignored) { /* Unknown outcome is never reported as success. */ }
     }
 
     private State read() throws Exception {

@@ -14,6 +14,7 @@ public final class CatalogLifecycle implements AutoCloseable {
     private boolean available = true;
     private final JdbcCatalogStore store;
     private final Map<KnowledgeCatalog, Map<Thread, Integer>> releasing = new IdentityHashMap<>();
+    private final java.util.concurrent.atomic.AtomicBoolean publicationRunning = new java.util.concurrent.atomic.AtomicBoolean();
 
     CatalogLifecycle() { this(null); }
 
@@ -25,6 +26,13 @@ public final class CatalogLifecycle implements AutoCloseable {
     }
 
     public String authorityId() { return authorityId; }
+    boolean durable() { return store != null; }
+    boolean beginPublication() { return publicationRunning.compareAndSet(false, true); }
+    void endPublication() { publicationRunning.set(false); }
+    JdbcCatalogStore store() {
+        if (store == null) throw new IllegalStateException("RELEASE_REQUIRES_DURABLE_CATALOG");
+        return store;
+    }
 
     public synchronized KnowledgeCatalog snapshot() {
         if (!available || current == null) throw new Invalidated();
@@ -40,16 +48,51 @@ public final class CatalogLifecycle implements AutoCloseable {
     public long add(KnowledgeDocument source, long expectedEpoch) { return change(source.sourceId(), source, "ADD", expectedEpoch); }
     public long update(KnowledgeDocument source, long expectedEpoch) { return change(source.sourceId(), source, "UPDATE", expectedEpoch); }
     public long revoke(String sourceId, long expectedEpoch) { return change(sourceId, null, "REVOKE", expectedEpoch); }
+    long revokeApproved(String sourceId, long expectedEpoch, String operationId) {
+        return change(sourceId, null, "REVOKE", expectedEpoch, operationId);
+    }
     public long delete(String sourceId, long expectedEpoch) { return change(sourceId, null, "DELETE", expectedEpoch); }
     public long markUnavailable(long expectedEpoch) { return change(null, null, "UNAVAILABLE", expectedEpoch); }
 
+    /** One Catalog transaction for the exact approved set; the operation checkpoint commits with it. */
+    long publish(List<KnowledgeDocument> approved, long expectedEpoch, String operationId) {
+        KnowledgeCatalog previous;
+        KnowledgeCatalog next;
+        synchronized (this) {
+            previous = snapshot();
+            if (previous.epoch() != expectedEpoch) throw new Invalidated();
+            Map<String, KnowledgeDocument> sources = new LinkedHashMap<>();
+            previous.documents().forEach(source -> sources.put(source.sourceId(), source));
+            for (KnowledgeDocument document : approved) {
+                if (!sources.containsKey(document.sourceId()) || sources.get(document.sourceId()).reviewStatus().equals("REVOKED")) {
+                    throw new IllegalStateException("RELEASE_SOURCE_REVOKED_OR_MISSING");
+                }
+                sources.put(document.sourceId(), document);
+            }
+            next = new KnowledgeCatalog(List.copyOf(sources.values()), this, Math.incrementExact(previous.epoch()));
+            try { store().commit(approved.stream().map(KnowledgeDocument::sourceId).toList(), "PUBLISH", next, expectedEpoch, operationId); }
+            catch (RuntimeException failure) { available = false; previous.invalidated.tryEmitEmpty(); throw failure; }
+            current = next;
+        }
+        try { awaitReleased(previous.epoch()); }
+        finally { previous.invalidated.tryEmitEmpty(); }
+        return next.epoch();
+    }
+
     @Override public void close() {
-        try { change(null, null, "UNAVAILABLE", null); }
-        catch (Invalidated alreadyUnavailable) { awaitReleased(Long.MAX_VALUE); }
+        KnowledgeCatalog previous;
+        synchronized (this) { available = false; previous = current; }
+        if (previous != null) previous.invalidated.tryEmitEmpty();
+        // Shutdown invalidates this owner; it must not advance the durable approval generation.
+        try { awaitReleased(Long.MAX_VALUE); }
         finally { if (store != null) store.close(); }
     }
 
     private long change(String id, KnowledgeDocument replacement, String event, Long expectedEpoch) {
+        return change(id, replacement, event, expectedEpoch, null);
+    }
+
+    private long change(String id, KnowledgeDocument replacement, String event, Long expectedEpoch, String operationId) {
         KnowledgeCatalog previous;
         KnowledgeCatalog next;
         RuntimeException commitFailure = null;
@@ -70,7 +113,10 @@ public final class CatalogLifecycle implements AutoCloseable {
             }
             next = new KnowledgeCatalog(List.copyOf(sources.values()), this, Math.incrementExact(previous.epoch()));
             if (store != null) {
-                try { store.commit(id, event, next, previous.epoch()); }
+                try {
+                    if (operationId == null) store.commit(id, event, next, previous.epoch());
+                    else store.commit(List.of(id), event, next, previous.epoch(), operationId);
+                }
                 catch (RuntimeException error) {
                     available = false;
                     commitFailure = error;

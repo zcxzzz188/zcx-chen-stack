@@ -1,0 +1,92 @@
+# Separate candidate project. Never merge this file into the existing production Compose project.
+name: ${CHEN_RELEASE_PROJECT_NAME:?Set a dedicated chen-release-* project name}
+
+services:
+  qdrant:
+    image: qdrant/qdrant:v1.13.6
+    restart: "no"
+    environment:
+      QDRANT__SERVICE__API_KEY: ${CHEN_RAG_QDRANT_API_KEY:?Set an independent Qdrant API key}
+    # Qdrant 6333/6334 are not published. The backend shares this network namespace.
+    ports:
+      - "127.0.0.1:${CHEN_RELEASE_BACKEND_PORT:?Select an unused candidate backend port}:5000"
+    volumes:
+      - qdrant_release_data:/qdrant/storage
+    healthcheck:
+      test: ["CMD", "bash", "-ec", "exec 3<>/dev/tcp/127.0.0.1/6333; printf 'GET /readyz HTTP/1.0\\r\\nHost: localhost\\r\\n\\r\\n' >&3; head -n 1 <&3 | grep '200'"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+  backend:
+    image: ${CHEN_RELEASE_BACKEND_IMAGE:?Set a unique candidate image tag}
+    build:
+      context: ../../chen-stack-backend
+      dockerfile: Dockerfile
+    restart: "no"
+    network_mode: service:qdrant
+    depends_on:
+      qdrant:
+        condition: service_healthy
+    volumes:
+      - type: bind
+        source: ${CHEN_RELEASE_CONTROL_DIRECTORY:?Select the approved manifest and approval directory}
+        target: /release
+        read_only: true
+      - type: bind
+        source: ${CHEN_RELEASE_TRUST_DIRECTORY:?Select the independently controlled trust directory}
+        target: /trust
+        read_only: true
+    environment:
+      TZ: Asia/Shanghai
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-docker,rag}
+      MYSQL_HOST: ${MYSQL_HOST:?Set the approved database hostname reachable from this project}
+      MYSQL_PORT: ${MYSQL_PORT:-3306}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:?Select the approved database}
+      MYSQL_USERNAME: ${MYSQL_USERNAME:?Set the approved database account}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?Supply the database secret outside Git}
+      REDIS_HOST: ${REDIS_HOST:?Set the approved Redis hostname}
+      REDIS_PORT: ${REDIS_PORT:-6379}
+      REDIS_USERNAME: ${REDIS_USERNAME:-}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Supply the Redis secret outside Git}
+      RABBITMQ_HOST: ${RABBITMQ_HOST:?Set the approved RabbitMQ hostname}
+      RABBITMQ_PORT: ${RABBITMQ_PORT:-5672}
+      RABBITMQ_USERNAME: ${RABBITMQ_USERNAME:?Set the RabbitMQ account}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:?Supply the RabbitMQ secret outside Git}
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT:?Set the approved MinIO endpoint}
+      MINIO_PUBLIC_POINT: ${MINIO_PUBLIC_POINT:?Set the approved public object endpoint}
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:?Supply the MinIO account outside Git}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:?Supply the MinIO secret outside Git}
+      SPRING_AI_OPENAI_API_KEY: ${SPRING_AI_OPENAI_API_KEY:?Supply the separate chat API key outside Git}
+      SPRING_AI_OPENAI_BASE_URL: ${SPRING_AI_OPENAI_BASE_URL:-https://api.deepseek.com}
+      SPRING_AI_OPENAI_CHAT_OPTIONS_MODEL: ${SPRING_AI_OPENAI_CHAT_OPTIONS_MODEL:-deepseek-chat}
+      MAIL_USERNAME: ${MAIL_USERNAME:-}
+      MAIL_PASSWORD: ${MAIL_PASSWORD:-}
+      ALIYUN_ACCESS_KEY_ID: ${ALIYUN_ACCESS_KEY_ID:-}
+      ALIYUN_ACCESS_KEY_SECRET: ${ALIYUN_ACCESS_KEY_SECRET:-}
+      CHEN_STACK_JWT_SECRET: ${CHEN_STACK_JWT_SECRET:?Supply a dedicated JWT secret outside Git}
+      CHEN_STACK_RATE_LIMIT_ENABLED: ${CHEN_STACK_RATE_LIMIT_ENABLED:-true}
+      CHEN_STACK_PHOTO_AUTO_AUDIT: ${CHEN_STACK_PHOTO_AUTO_AUDIT:-false}
+      CHEN_STACK_ARTICLE_AUTO_AUDIT: ${CHEN_STACK_ARTICLE_AUTO_AUDIT:-false}
+      CHEN_STACK_COMMENT_AUTO_AUDIT: ${CHEN_STACK_COMMENT_AUTO_AUDIT:-false}
+      CHEN_RAG_ENABLED: ${CHEN_RAG_ENABLED:-false}
+      CHEN_RAG_EMBEDDING_API_KEY: ${CHEN_RAG_EMBEDDING_API_KEY:-}
+      CHEN_RAG_EMBEDDING_BASE_URL: ${CHEN_RAG_EMBEDDING_BASE_URL:-https://ws-oy47ndolze5z0j6p.cn-beijing.maas.aliyuncs.com/compatible-mode/v1}
+      CHEN_RAG_EMBEDDING_MODEL: ${CHEN_RAG_EMBEDDING_MODEL:-text-embedding-v4}
+      CHEN_RAG_QDRANT_HOST: 127.0.0.1
+      CHEN_RAG_QDRANT_GRPC_PORT: 6334
+      CHEN_RAG_QDRANT_TLS: "false"
+      CHEN_RAG_QDRANT_API_KEY: ${CHEN_RAG_QDRANT_API_KEY:?Set an independent Qdrant API key}
+      CHEN_RAG_QDRANT_COLLECTION: ${CHEN_RAG_QDRANT_COLLECTION:?Select an explicit new release collection}
+      CHEN_RAG_RELEASE_ENABLED: ${CHEN_RAG_RELEASE_ENABLED:-false}
+      CHEN_RAG_RELEASE_MANIFEST_PATH: /release/manifest.json
+      CHEN_RAG_RELEASE_APPROVAL_PATH: /release/approval.json
+      CHEN_RAG_RELEASE_PUBLIC_KEY_PATH: /trust/release-public.pem
+      CHEN_RAG_RELEASE_OPERATOR: ${CHEN_RAG_RELEASE_OPERATOR:-}
+      CHEN_RAG_RELEASE_ENVIRONMENT: ${CHEN_RAG_RELEASE_ENVIRONMENT:?Identify the approved target environment}
+      CHEN_RAG_RELEASE_ARTIFACT_PATH: /app/app.jar
+
+volumes:
+  # Project-scoped new volume; no external volume name or production data mount.
+  qdrant_release_data:

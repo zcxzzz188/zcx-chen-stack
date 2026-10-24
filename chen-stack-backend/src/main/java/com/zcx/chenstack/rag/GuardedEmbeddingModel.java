@@ -22,6 +22,9 @@ public final class GuardedEmbeddingModel extends AbstractEmbeddingModel {
     private final AtomicLong reportedTokens = new AtomicLong();
     private LocalDate day = LocalDate.now(ZoneOffset.UTC);
     private int dailyRequests;
+    private volatile Runnable publicationReservation = () -> {};
+
+    void publicationReservation(Runnable reservation) { publicationReservation = reservation; }
 
     public GuardedEmbeddingModel(EmbeddingModel delegate, RagProperties properties) {
         this.delegate = delegate;
@@ -47,6 +50,7 @@ public final class GuardedEmbeddingModel extends AbstractEmbeddingModel {
             throw new RagFailure(RagFailure.Code.EMBEDDING_UNAVAILABLE);
         }
         reserve();
+        publicationReservation.run();
         requests.incrementAndGet();
         inputChars.addAndGet(request.getInstructions().stream().mapToLong(String::length).sum());
         try {
