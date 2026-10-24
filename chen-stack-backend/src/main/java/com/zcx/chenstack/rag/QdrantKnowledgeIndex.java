@@ -85,6 +85,55 @@ public class QdrantKnowledgeIndex implements AutoCloseable {
 
     String embeddingSignature() { return signature; }
 
+    /** 完成检查点绑定实际向量与完整 payload；恢复只读，不重新计算 Embedding。 */
+    String fingerprint(List<Document> expected, String authority, long epoch) {
+        verify(false);
+        try {
+            if (client.countAsync(properties.getCollection(), null, true)
+                    .get(properties.getQdrantTimeoutSeconds(), TimeUnit.SECONDS) != expected.size() + 1L) {
+                throw new RagFailure(RagFailure.Code.INDEX_MISMATCH);
+            }
+            var digest = java.security.MessageDigest.getInstance("SHA-256");
+            var output = new java.io.DataOutputStream(new java.security.DigestOutputStream(java.io.OutputStream.nullOutputStream(), digest));
+            List<Document> ordered = expected.stream().sorted(Comparator.comparing(Document::getId)).toList();
+            for (int start = 0; start < ordered.size(); start += 64) {
+                List<Document> batch = ordered.subList(start, Math.min(start + 64, ordered.size()));
+                List<Points.RetrievedPoint> points = client.retrieveAsync(properties.getCollection(),
+                        batch.stream().map(d -> id(UUID.fromString(d.getId()))).toList(), true, true, null)
+                        .get(properties.getQdrantTimeoutSeconds(), TimeUnit.SECONDS);
+                Map<String, Points.RetrievedPoint> byId = new HashMap<>();
+                for (var point : points) {
+                    if (byId.put(point.getId().getUuid(), point) != null) throw new RagFailure(RagFailure.Code.INDEX_MISMATCH);
+                }
+                if (byId.size() != batch.size()) throw new RagFailure(RagFailure.Code.INDEX_MISMATCH);
+                for (Document document : batch) {
+                    var point = byId.get(document.getId());
+                    if (point == null || !point.getVectors().hasVector()) throw new RagFailure(RagFailure.Code.INDEX_MISMATCH);
+                    Map<String, String> payload = new TreeMap<>();
+                    point.getPayloadMap().forEach((key, value) -> {
+                        if (value.getKindCase() != JsonWithInt.Value.KindCase.STRING_VALUE) throw new RagFailure(RagFailure.Code.INDEX_MISMATCH);
+                        payload.put(key, value.getStringValue());
+                    });
+                    Map<String, String> canonical = new TreeMap<>();
+                    document.getMetadata().forEach((key, value) -> canonical.put(key, value.toString()));
+                    canonical.put("catalog_authority", authority); canonical.put("catalog_epoch", Long.toString(epoch));
+                    canonical.put("embedding_signature", signature); canonical.put("doc_content", document.getText());
+                    if (!canonical.equals(payload)) throw new RagFailure(RagFailure.Code.INDEX_MISMATCH);
+                    output.writeUTF(document.getId());
+                    for (var field : payload.entrySet()) { output.writeUTF(field.getKey()); output.writeUTF(field.getValue()); }
+                    List<Float> vector = point.getVectors().getVector().getDataList();
+                    if (vector.size() != 1024 || vector.stream().anyMatch(v -> !Float.isFinite(v))
+                            || vector.stream().noneMatch(v -> v != 0)) throw new RagFailure(RagFailure.Code.INDEX_MISMATCH);
+                    for (float value : vector) output.writeInt(Float.floatToIntBits(value));
+                }
+            }
+            output.flush();
+            return HexFormat.of().formatHex(digest.digest());
+        } catch (RagFailure failure) { throw failure; }
+        catch (InterruptedException failure) { Thread.currentThread().interrupt(); throw new RagFailure(RagFailure.Code.QDRANT_UNAVAILABLE); }
+        catch (Exception failure) { throw new RagFailure(RagFailure.Code.QDRANT_UNAVAILABLE); }
+    }
+
     public void upsert(List<Document> chunks) {
         verify(false);
         try {

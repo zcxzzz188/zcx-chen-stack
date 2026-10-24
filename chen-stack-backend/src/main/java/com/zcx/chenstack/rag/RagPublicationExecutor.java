@@ -74,6 +74,8 @@ public final class RagPublicationExecutor {
             if (previous != null && (("COMPLETED".equals(previous.status()) && knowledge.publicationReady()
                     && lifecycle.authorityId().equals(previous.indexAuthority()) && Objects.equals(before.epoch(), previous.indexEpoch()))
                     || "REVOKED".equals(previous.status()))) return result(previous.status());
+            PublicationManifest.require(previous == null || !"COMPLETED".equals(previous.status()),
+                    "RELEASE_COMPLETED_USE_READ_ONLY_RECOVERY");
 
             knowledge.blockPublication();
             store.prepareOperation(operation(manifest, grant, approvalHash));
@@ -105,9 +107,10 @@ public final class RagPublicationExecutor {
                 store.reserveEmbedding(grant.approvalId());
             });
             knowledge.syncReviewed(false);
-            knowledge.verifyPublicationIndex();
+            String indexHash = knowledge.verifyPublicationIndex();
             KnowledgeCatalog verified = lifecycle.snapshot();
-            store.checkpoint(grant.approvalId(), "COMPLETED", true, lifecycle.authorityId(), verified.epoch());
+            PublicationManifest.require(grant.expiresAt().isAfter(Instant.now()), "RELEASE_APPROVAL_EXPIRED");
+            store.checkpoint(grant.approvalId(), "COMPLETED", true, lifecycle.authorityId(), verified.epoch(), indexHash);
             knowledge.confirmPublication(verified);
             return result("COMPLETED");
         } catch (RuntimeException error) {
@@ -132,7 +135,8 @@ public final class RagPublicationExecutor {
             PublicationManifest.require(actual != null && actual.version().equals(draft.version())
                     && KnowledgeCatalog.normalize(actual.text()).equals(KnowledgeCatalog.normalize(draft.text()))
                     && Objects.equals(actual.title(), draft.title()) && Objects.equals(actual.sourceType(), draft.sourceType())
-                    && Objects.equals(actual.sourceUrl(), draft.sourceUrl()), "RELEASE_SOURCE_DRIFT");
+                    && Objects.equals(actual.sourceUrl(), draft.sourceUrl()) && Objects.equals(actual.keywords(), draft.keywords())
+                    && Objects.equals(actual.updatedAt(), draft.updatedAt()), "RELEASE_SOURCE_DRIFT");
             if (manifest.operation() == PublicationManifest.Operation.PUBLISH) {
                 PublicationManifest.require(!"REVOKED".equals(actual.reviewStatus()), "RELEASE_SOURCE_REVOKED");
             }

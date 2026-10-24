@@ -17,7 +17,8 @@ public class RagKnowledgeService implements AutoCloseable {
     private volatile String lastOperation = "NOT_CHECKED";
     private volatile String lastSync = "NOT_RUN";
     private volatile String lastSyncAt = "";
-    private volatile KnowledgeCatalog publicationVerified;
+    private record ReadAuthority(KnowledgeCatalog catalog, String indexAuthority, long indexEpoch) { }
+    private volatile ReadAuthority publicationVerified;
 
     public RagKnowledgeService(RagProperties properties, KnowledgeCatalog catalog,
                                QdrantKnowledgeIndex index, GuardedEmbeddingModel embedding) {
@@ -38,12 +39,25 @@ public class RagKnowledgeService implements AutoCloseable {
 
     private void requireReadable() {
         requireReady();
-        if (lifecycle.durable() && publicationVerified != lifecycle.snapshot()) throw new RagFailure(RagFailure.Code.RECOVERY_REQUIRED);
+        if (!publicationReady()) throw new RagFailure(RagFailure.Code.RECOVERY_REQUIRED);
     }
 
     void blockPublication() { publicationVerified = null; }
-    boolean publicationReady() { return !lifecycle.durable() || publicationVerified == lifecycle.snapshot(); }
-    void confirmPublication(KnowledgeCatalog catalog) { catalog.requireCurrent(); publicationVerified = catalog; }
+    boolean publicationReady() {
+        ReadAuthority verified = publicationVerified;
+        return !lifecycle.durable() || verified != null && verified.catalog() == lifecycle.snapshot();
+    }
+    void confirmPublication(KnowledgeCatalog catalog) { confirmPublication(catalog, lifecycle.authorityId(), catalog.epoch()); }
+    void confirmPublication(KnowledgeCatalog catalog, String indexAuthority, long indexEpoch) {
+        catalog.requireCurrent();
+        publicationVerified = new ReadAuthority(catalog, indexAuthority, indexEpoch);
+    }
+    private Document verified(KnowledgeCatalog catalog, Document candidate) {
+        ReadAuthority authority = publicationVerified;
+        if (!lifecycle.durable()) return catalog.verified(candidate);
+        if (authority == null || authority.catalog() != catalog) throw new RagFailure(RagFailure.Code.RECOVERY_REQUIRED);
+        return catalog.verified(candidate, authority.indexAuthority(), authority.indexEpoch());
+    }
     void publicationBudget(Runnable reservation) {
         requireReady();
         embedding.publicationReservation(reservation);
@@ -53,19 +67,15 @@ public class RagKnowledgeService implements AutoCloseable {
         requireReady();
         index.verify(create, releaseOwner);
     }
-    void verifyPublicationIndex() {
+    String verifyPublicationIndex() {
+        return verifyPublicationIndex(lifecycle.authorityId(), lifecycle.snapshot().epoch());
+    }
+    String verifyPublicationIndex(String indexAuthority, long indexEpoch) {
         requireReady();
         KnowledgeCatalog catalog = lifecycle.snapshot();
-        List<Document> expected = catalog.chunks();
-        for (int start = 0; start < expected.size(); start += 64) {
-            List<String> ids = expected.subList(start, Math.min(start + 64, expected.size())).stream().map(Document::getId).toList();
-            List<Document> found = index.readChunks(ids);
-            if (found.size() != ids.size() || found.stream().anyMatch(chunk -> catalog.verified(chunk) == null)
-                    || !new HashSet<>(ids).equals(found.stream().map(Document::getId).collect(Collectors.toSet()))) {
-                throw new RagFailure(RagFailure.Code.INDEX_MISMATCH);
-            }
-        }
+        String fingerprint = index.fingerprint(catalog.chunks(), indexAuthority, indexEpoch);
         catalog.requireCurrent();
+        return fingerprint;
     }
 
     /** 由受控发布执行器显式调用；默认启动不执行索引同步。 */
@@ -126,7 +136,7 @@ public class RagKnowledgeService implements AutoCloseable {
             for (Document candidate : candidates.stream().limit(properties.getChunkCandidateLimit()).toList()) {
                 if (candidate == null || candidate.getScore() == null || !Double.isFinite(candidate.getScore())
                         || candidate.getScore() < properties.getSimilarityThreshold() || candidate.getScore() > 1) continue;
-                Document chunk = catalog.verified(candidate);
+                Document chunk = verified(catalog, candidate);
                 if (chunk != null) {
                     verified.putIfAbsent(chunk.getId(), chunk);
                     scores.merge(chunk.getId(), candidate.getScore(), Math::max);
@@ -178,7 +188,7 @@ public class RagKnowledgeService implements AutoCloseable {
             List<Document> indexed = index.readChunks(List.copyOf(expected));
             Set<String> verified = new HashSet<>();
             for (Document candidate : indexed) {
-                Document chunk = catalog.verified(candidate);
+                Document chunk = verified(catalog, candidate);
                 if (chunk == null || !expected.contains(chunk.getId()) || !verified.add(chunk.getId())) {
                     throw new RagFailure(RagFailure.Code.INDEX_MISMATCH);
                 }

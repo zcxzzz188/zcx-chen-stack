@@ -1,0 +1,28 @@
+# Explicit overlay for an existing dev/prod backend; never starts or replaces a service by itself.
+# Supply the original Compose project and base files explicitly. All execution switches default off.
+services:
+  backend:
+    volumes:
+      - type: bind
+        source: ${CHEN_RELEASE_CONTROL_DIRECTORY:?Select the approved manifest and approval directory}
+        target: /release
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${CHEN_RELEASE_TRUST_DIRECTORY:?Select the independently managed public trust directory}
+        target: /trust
+        read_only: true
+        bind:
+          create_host_path: false
+    environment:
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-docker,rag}
+      CHEN_RAG_ENABLED: ${CHEN_RAG_ENABLED:-false}
+      CHEN_RAG_RELEASE_ENABLED: ${CHEN_RAG_RELEASE_ENABLED:-false}
+      CHEN_RAG_RELEASE_RECOVERY_ENABLED: ${CHEN_RAG_RELEASE_RECOVERY_ENABLED:-false}
+      CHEN_RAG_RELEASE_MANIFEST_PATH: /release/manifest.json
+      CHEN_RAG_RELEASE_APPROVAL_PATH: /release/approval.json
+      CHEN_RAG_RELEASE_PUBLIC_KEY_PATH: /trust/release-public.pem
+      CHEN_RAG_RELEASE_ARTIFACT_PATH: /app/app.jar
+      CHEN_RAG_RELEASE_OPERATOR: ${CHEN_RAG_RELEASE_OPERATOR:-}
+      CHEN_RAG_RELEASE_ENVIRONMENT: ${CHEN_RAG_RELEASE_ENVIRONMENT:-}

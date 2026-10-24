@@ -3,15 +3,26 @@ package com.zcx.chenstack.rag;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
+import com.baomidou.mybatisplus.annotation.DbType;
+import com.baomidou.mybatisplus.extension.plugins.inner.PaginationInnerInterceptor;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.zcx.chenstack.config.RagProperties;
+import com.zcx.chenstack.config.RagPublicationConfiguration;
+import com.zcx.chenstack.config.RagPublicationProperties;
 import org.junit.jupiter.api.*;
 import org.junit.jupiter.api.io.TempDir;
+import org.apache.ibatis.builder.xml.XMLMapperBuilder;
+import org.apache.ibatis.io.Resources;
+import org.apache.ibatis.mapping.BoundSql;
+import org.apache.ibatis.mapping.MappedStatement;
+import org.apache.ibatis.scripting.defaults.DefaultParameterHandler;
 import org.springframework.ai.document.Document;
 import org.springframework.ai.embedding.AbstractEmbeddingModel;
 import org.springframework.ai.embedding.Embedding;
 import org.springframework.ai.embedding.EmbeddingRequest;
 import org.springframework.ai.embedding.EmbeddingResponse;
 import org.springframework.boot.SpringApplication;
+import org.springframework.boot.DefaultApplicationArguments;
 import org.springframework.boot.autoconfigure.http.HttpMessageConvertersAutoConfiguration;
 import org.springframework.boot.autoconfigure.jackson.JacksonAutoConfiguration;
 import org.springframework.boot.autoconfigure.web.servlet.DispatcherServletAutoConfiguration;
@@ -28,6 +39,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 import javax.sql.DataSource;
 import java.io.IOException;
+import java.io.File;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Proxy;
 import java.net.URI;
@@ -50,6 +62,9 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.IntStream;
+import java.util.jar.JarEntry;
+import java.util.jar.JarOutputStream;
+import java.util.regex.Pattern;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -74,6 +89,7 @@ class PublicationIntegrationIT {
     private List<KnowledgeDocument> drafts;
     private Map<String, byte[]> resources;
     private KeyPair signingKey;
+    private Path runtimeJar;
 
     @BeforeAll void startOnlyTaskOwnedInfrastructure() throws Exception {
         assertEquals("true", System.getProperty("chen.release.it"),
@@ -88,6 +104,87 @@ class PublicationIntegrationIT {
 
     @AfterAll void stopOnlyTaskOwnedInfrastructure() throws Exception {
         if (docker != null) docker.close();
+    }
+
+    @Test void isolatedHistoryVisibilityFiltersBeforePaginationAndCount() throws Exception {
+        EmptyTarget target = emptyTarget();
+        try (var connection = target.source.getConnection(); var statement = connection.createStatement()) {
+            for (String ddl : List.of(
+                    "CREATE TABLE sys_user(id INT PRIMARY KEY,nickname VARCHAR(40),avatar VARCHAR(80),is_deleted TINYINT NOT NULL)",
+                    "CREATE TABLE article(id INT PRIMARY KEY,user_id INT,title VARCHAR(80),cover_url VARCHAR(80),examine_status INT,edit_status INT,is_deleted TINYINT,visible_range INT)",
+                    "CREATE TABLE history(id BIGINT PRIMARY KEY,user_id INT,article_id INT,view_time DATETIME,is_deleted TINYINT)",
+                    "CREATE TABLE follow(follower_id INT,followed_id INT,PRIMARY KEY(follower_id,followed_id))")) statement.execute(ddl);
+            statement.executeUpdate("INSERT INTO sys_user VALUES (7,'viewer','',0),(8,'other','',0),(9,'followed','',0),(10,'unfollowed','',0),(11,'deleted','',1)");
+            statement.executeUpdate("INSERT INTO follow VALUES (7,9)");
+            statement.executeUpdate("""
+                    INSERT INTO article VALUES
+                    (201,7,'own private','',1,0,0,1),
+                    (202,8,'other public','',1,0,0,0),
+                    (203,9,'followed followers','',1,0,0,2),
+                    (211,8,'foreign private','',1,0,0,1),
+                    (212,10,'unfollowed followers','',1,0,0,2),
+                    (213,8,'pending review','',0,0,0,0),
+                    (214,8,'draft','',1,1,0,0),
+                    (215,8,'deleted article','',1,0,1,0),
+                    (216,11,'deleted author','',1,0,0,0),
+                    (217,8,'deleted history','',1,0,0,0),
+                    (218,7,'illegal own visibility','',1,0,0,99),
+                    (219,7,'null own visibility','',1,0,0,NULL)
+                    """);
+            statement.executeUpdate("""
+                    INSERT INTO history VALUES
+                    (1001,7,201,'2026-01-01 10:00:30',0),
+                    (1002,7,202,'2026-01-01 10:00:20',0),
+                    (1003,7,203,'2026-01-01 10:00:10',0),
+                    (1101,7,211,'2026-01-01 10:01:01',0),
+                    (1102,7,212,'2026-01-01 10:01:02',0),
+                    (1103,7,213,'2026-01-01 10:01:03',0),
+                    (1104,7,214,'2026-01-01 10:01:04',0),
+                    (1105,7,215,'2026-01-01 10:01:05',0),
+                    (1106,7,216,'2026-01-01 10:01:06',0),
+                    (1107,7,217,'2026-01-01 10:01:07',1),
+                    (1108,8,202,'2026-01-01 10:01:08',0),
+                    (1109,7,218,'2026-01-01 10:01:09',0),
+                    (1110,8,201,'2026-01-01 10:01:10',0),
+                    (1111,7,219,'2026-01-01 10:01:11',0)
+                    """);
+        }
+        org.apache.ibatis.session.Configuration configuration = new org.apache.ibatis.session.Configuration();
+        String resource = "mapper/HistoryMapper.xml";
+        try (var reader = Resources.getResourceAsReader(resource)) {
+            new XMLMapperBuilder(reader, configuration, resource, configuration.getSqlFragments()).parse();
+        }
+        MappedStatement mapped = configuration.getMappedStatement("com.zcx.chenstack.mapper.HistoryMapper.getUserHistoryList");
+        for (boolean following : List.of(true, false)) {
+            for (int viewer : List.of(7, 8, 99)) {
+                List<Long> expected = viewer == 7
+                        ? following ? List.of(1001L, 1002L, 1003L) : List.of(1001L, 1002L)
+                        : viewer == 8 ? List.of(1108L) : List.of();
+                Map<String, Object> parameters = Map.of("userId", viewer);
+                BoundSql original = mapped.getBoundSql(parameters);
+                String countSql = new PaginationInnerInterceptor(DbType.MYSQL).autoCountSql(new Page<>(1, 2), original.getSql());
+                BoundSql count = new BoundSql(configuration, countSql, original.getParameterMappings(), parameters);
+                try (var connection = target.source.getConnection(); var query = connection.prepareStatement(countSql)) {
+                    new DefaultParameterHandler(mapped, parameters, count).setParameters(query);
+                    try (var rows = query.executeQuery()) {
+                        assertTrue(rows.next()); assertEquals(expected.size(), rows.getLong(1), "Count must use the viewer's real visibility scope.");
+                    }
+                }
+                for (int offset : List.of(0, 2)) {
+                    String pageSql = original.getSql() + " LIMIT 2 OFFSET " + offset;
+                    BoundSql page = new BoundSql(configuration, pageSql, original.getParameterMappings(), parameters);
+                    List<Long> actual = new ArrayList<>();
+                    try (var connection = target.source.getConnection(); var query = connection.prepareStatement(pageSql)) {
+                        new DefaultParameterHandler(mapped, parameters, page).setParameters(query);
+                        try (var rows = query.executeQuery()) { while (rows.next()) actual.add(rows.getLong("id")); }
+                    }
+                    assertEquals(expected.subList(Math.min(offset, expected.size()), Math.min(offset + 2, expected.size())), actual,
+                            "Filtering must precede pagination, viewer=" + viewer + ", following=" + following + ", offset=" + offset);
+                }
+            }
+            if (following) sql(target.source, "DELETE FROM follow WHERE follower_id=7 AND followed_id=9");
+        }
+        System.out.println("PUBLICATION_IT_HISTORY_SQL mapper=REAL_MYBATIS count=REAL_PAGINATION_INTERCEPTOR viewers=7,8,99 followRevocation=PASS");
     }
 
     @Test void validPublicationPersistsExactly39ApprovedSources() throws Exception {
@@ -107,6 +204,10 @@ class PublicationIntegrationIT {
                 KnowledgeEvidence evidence = f.knowledge.retrieveByTitle(draft.title());
                 assertEquals(PublicationManifest.userSourceIds().contains(draft.sourceId()), !evidence.chunks().isEmpty(), draft.sourceId());
             }
+            KnowledgeEvidence semantic = f.knowledge.retrieve("synthetic login help");
+            assertFalse(semantic.chunks().isEmpty(), "The real Qdrant search must return verified synthetic evidence.");
+            assertTrue(semantic.chunks().stream().allMatch(d -> PublicationManifest.userSourceIds()
+                    .contains(d.getMetadata().get("source_id"))));
         }
     }
 
@@ -137,9 +238,10 @@ class PublicationIntegrationIT {
                 PublicationManifest.sha256(signed.envelope));
         try (Fixture f = new Fixture(target.source, target.schema, target.collection, resumed)) {
             assertRecoveryRequired(f);
-            execute(f, approval);
+            restore(f, approval);
             assertReady(f);
             assertEquals(1, resumed.epoch());
+            assertEquals(0, f.model.calls.get());
             assertEquals(1, scalar(target.source, "SELECT COUNT(*) FROM rag_release_event WHERE event_type='BOOTSTRAP'"));
         }
     }
@@ -278,21 +380,241 @@ class PublicationIntegrationIT {
         }
     }
 
-    @Test void restartRequiresAndCanRecoverSameApprovedReceipt() throws Exception {
+    @Test void restartRestoresSameSignedReceiptWithoutEmbeddingOrPersistentWrites() throws Exception {
         Fixture f = fixture();
         Approval approval = approval(f, PublicationManifest.Operation.PUBLISH, 20, null);
         execute(f, approval);
         String oldAuthority = f.lifecycle.authorityId();
         long spent = f.store.operation(approval.grant.approvalId()).embeddingRequests();
+        long events = scalar(f.source, "SELECT COUNT(*) FROM rag_release_event");
+        List<JsonNode> physicalBefore = points(f);
         Fixture restarted = reopen(f);
         try (restarted) {
             assertNotEquals(oldAuthority, restarted.lifecycle.authorityId());
             assertRecoveryRequired(restarted);
-            execute(restarted, approval);
+            restore(restarted, approval);
             assertReady(restarted);
             assertEquals(1, restarted.catalog().epoch());
-            assertTrue(restarted.store.operation(approval.grant.approvalId()).embeddingRequests() > spent);
-            assertEquals(restarted.lifecycle.authorityId(), restarted.store.operation(approval.grant.approvalId()).indexAuthority());
+            assertEquals(spent, restarted.store.operation(approval.grant.approvalId()).embeddingRequests());
+            assertEquals(oldAuthority, restarted.store.operation(approval.grant.approvalId()).indexAuthority());
+            assertEquals(0, restarted.model.calls.get());
+            assertEquals(events, scalar(restarted.source, "SELECT COUNT(*) FROM rag_release_event"));
+            assertEquals(physicalBefore, points(restarted));
+        }
+    }
+
+    @Test void expiredHistoricalApprovalRestoresButCannotStartNewControlledWork() throws Exception {
+        Fixture f = fixture();
+        PublicationManifest manifest = manifest(f, PublicationManifest.Operation.PUBLISH, null);
+        Approval signed = sign(manifest, 20, Instant.now().plusSeconds(15));
+        Approval approval = new Approval(manifest, signed.bytes, signed.envelope, signed.grant,
+                manifest.validate(identity(f), resources));
+        execute(f, approval);
+        long spent = f.store.operation(approval.grant.approvalId()).embeddingRequests();
+        long events = scalar(f.source, "SELECT COUNT(*) FROM rag_release_event");
+        Fixture restarted = reopen(f);
+        try (restarted) {
+            long remaining = Duration.between(Instant.now(), approval.grant.expiresAt()).toMillis();
+            if (remaining >= 0) Thread.sleep(remaining + 30);
+            assertThrows(SecurityException.class, () -> verify(approval.envelope, approval.bytes, manifest.operation()));
+            assertThrows(SecurityException.class, () -> execute(restarted, approval));
+            assertEquals(events, scalar(restarted.source, "SELECT COUNT(*) FROM rag_release_event"));
+            restore(restarted, approval);
+            assertReady(restarted);
+            assertEquals(0, restarted.model.calls.get());
+            assertEquals(spent, restarted.store.operation(approval.grant.approvalId()).embeddingRequests());
+            assertEquals(events, scalar(restarted.source, "SELECT COUNT(*) FROM rag_release_event"));
+        }
+    }
+
+    @Test void missingPhysicalChunkCannotRestoreReadAuthority() throws Exception {
+        Fixture f = fixture();
+        Approval approval = approval(f, PublicationManifest.Operation.PUBLISH, 20, null);
+        execute(f, approval);
+        String chunk = f.catalog().chunks().getFirst().getId();
+        qdrant("POST", "/collections/" + f.collection + "/points/delete?wait=true", Map.of("points", List.of(chunk)));
+        try (Fixture restarted = reopen(f)) { assertRestoreRejected(restarted, approval); }
+    }
+
+    @Test void readOnlyRecoveryRejectsSignatureManifestArtifactAndEnvironmentDrift() throws Exception {
+        Fixture f = fixture();
+        Approval approval = approval(f, PublicationManifest.Operation.PUBLISH, 20, null);
+        execute(f, approval);
+        try (Fixture restarted = reopen(f)) {
+            Map<String, String> envelope = JSON.readValue(approval.envelope, Map.class);
+            byte[] signature = Base64.getUrlDecoder().decode(envelope.get("signature")); signature[0] ^= 1;
+            envelope.put("signature", Base64.getUrlEncoder().withoutPadding().encodeToString(signature));
+            byte[] alteredEnvelope = JSON.writeValueAsBytes(envelope);
+            byte[] alteredManifest = Arrays.copyOf(approval.bytes, approval.bytes.length + 1);
+            alteredManifest[alteredManifest.length - 1] = ' ';
+            long events = scalar(restarted.source, "SELECT COUNT(*) FROM rag_release_event");
+            assertThrows(RuntimeException.class, () -> RagPublicationRecovery.restore(restarted.lifecycle, restarted.knowledge,
+                    approval.bytes, alteredEnvelope, signingKey.getPublic(), OPERATOR, ENVIRONMENT, identity(restarted), resources));
+            assertThrows(RuntimeException.class, () -> RagPublicationRecovery.restore(restarted.lifecycle, restarted.knowledge,
+                    alteredManifest, approval.envelope, signingKey.getPublic(), OPERATOR, ENVIRONMENT, identity(restarted), resources));
+            assertThrows(RuntimeException.class, () -> RagPublicationRecovery.restore(restarted.lifecycle, restarted.knowledge,
+                    approval.bytes, approval.envelope, signingKey.getPublic(), OPERATOR, "other-environment", identity(restarted), resources));
+            var wrongArtifact = new PublicationManifest.RuntimeIdentity(BUILD, "c".repeat(64), ENVIRONMENT, restarted.collection,
+                    restarted.knowledge.embeddingSignature(), restarted.catalog().epoch(), restarted.store.snapshotHash());
+            assertThrows(RuntimeException.class, () -> RagPublicationRecovery.restore(restarted.lifecycle, restarted.knowledge,
+                    approval.bytes, approval.envelope, signingKey.getPublic(), OPERATOR, ENVIRONMENT, wrongArtifact, resources));
+            assertRecoveryRequired(restarted);
+            assertEquals(0, restarted.model.calls.get());
+            assertEquals(events, scalar(restarted.source, "SELECT COUNT(*) FROM rag_release_event"));
+        }
+    }
+
+    @Test void changedPhysicalTextCannotRestoreReadAuthority() throws Exception {
+        Fixture f = fixture();
+        Approval approval = approval(f, PublicationManifest.Operation.PUBLISH, 20, null);
+        execute(f, approval);
+        qdrant("POST", "/collections/" + f.collection + "/points/payload?wait=true",
+                Map.of("payload", Map.of("doc_content", "Tampered physical body"),
+                        "points", List.of(f.catalog().chunks().getFirst().getId())));
+        try (Fixture restarted = reopen(f)) { assertRestoreRejected(restarted, approval); }
+    }
+
+    @Test void changedFinitePhysicalVectorCannotRestoreReadAuthority() throws Exception {
+        Fixture f = fixture();
+        Approval approval = approval(f, PublicationManifest.Operation.PUBLISH, 20, null);
+        execute(f, approval);
+        String chunk = f.catalog().chunks().getFirst().getId();
+        List<Integer> changed = new ArrayList<>(Collections.nCopies(1024, 0)); changed.set(1, 1);
+        qdrant("PUT", "/collections/" + f.collection + "/points/vectors?wait=true",
+                Map.of("points", List.of(Map.of("id", chunk, "vector", changed))));
+        try (Fixture restarted = reopen(f)) { assertRestoreRejected(restarted, approval); }
+    }
+
+    @Test void changedCollectionOwnerCannotRestoreReadAuthority() throws Exception {
+        Fixture f = fixture();
+        Approval approval = approval(f, PublicationManifest.Operation.PUBLISH, 20, null);
+        execute(f, approval);
+        String marker = UUID.nameUUIDFromBytes("chen-rag-index-binding-v1".getBytes(StandardCharsets.UTF_8)).toString();
+        qdrant("POST", "/collections/" + f.collection + "/points/payload?wait=true",
+                Map.of("payload", Map.of("release_owner", "foreign-owner"), "points", List.of(marker)));
+        try (Fixture restarted = reopen(f)) { assertRestoreRejected(restarted, approval); }
+    }
+
+    @Test void catalogGenerationDriftCannotRestoreOriginalReceipt() throws Exception {
+        Fixture f = fixture();
+        Approval approval = approval(f, PublicationManifest.Operation.PUBLISH, 20, null);
+        execute(f, approval);
+        f.lifecycle.update(f.catalog().source("help-login"), f.catalog().epoch());
+        try (Fixture restarted = reopen(f)) {
+            assertEquals(2, restarted.catalog().epoch());
+            assertRestoreRejected(restarted, approval);
+        }
+    }
+
+    @Test void metadataOnlySourceDriftCannotCompleteRecoverOrSendEmbedding() throws Exception {
+        for (boolean changeKeywords : List.of(true, false)) {
+            try (Fixture f = fixture()) {
+                execute(f, approval(f, PublicationManifest.Operation.PUBLISH, 20, null));
+                KnowledgeDocument original = f.catalog().source("help-login");
+                KnowledgeDocument changed = new KnowledgeDocument(original.sourceId(), original.title(), original.text(),
+                        original.version(), original.sourceType(), original.sourceUrl(), original.visibility(), original.reviewStatus(),
+                        changeKeywords ? original.updatedAt() : original.updatedAt().plusSeconds(1),
+                        changeKeywords ? List.of("changed-metadata") : original.keywords());
+                f.lifecycle.update(changed, f.catalog().epoch());
+                Approval recover = approval(f, PublicationManifest.Operation.RECOVER, 20, null);
+                int calls = f.model.calls.get();
+                long completed = scalar(f.source, "SELECT COUNT(*) FROM rag_release_event WHERE event_type='COMPLETED'");
+                assertThrows(SecurityException.class, () -> execute(f, recover), "Metadata drift must fail before indexing.");
+                assertEquals(calls, f.model.calls.get());
+                assertNull(f.store.operation(recover.grant.approvalId()));
+                assertEquals(completed, scalar(f.source, "SELECT COUNT(*) FROM rag_release_event WHERE event_type='COMPLETED'"));
+                assertRecoveryRequired(f);
+            }
+        }
+    }
+
+    @Test void legacyCompletedRowWithoutIndexDigestCannotRestore() throws Exception {
+        Fixture f = fixture();
+        Approval approval = approval(f, PublicationManifest.Operation.PUBLISH, 20, null);
+        execute(f, approval);
+        sql(f.source, "UPDATE rag_release_event SET details_code='INDEX_AUTHORITY_BOUND' WHERE event_type='COMPLETED'");
+        try (Fixture restarted = reopen(f)) { assertRestoreRejected(restarted, approval); }
+    }
+
+    @Test void incompletePublicationCannotUseReadOnlyRecovery() throws Exception {
+        Fixture f = fixture();
+        Approval approval = approval(f, PublicationManifest.Operation.PUBLISH, 20, null);
+        f.model.failAt = 2;
+        executeFailure(f, approval);
+        try (Fixture restarted = reopen(f)) { assertRestoreRejected(restarted, approval); }
+    }
+
+    @Test void revokedSourceStaysRevokedAcrossReadOnlyRestartRecovery() throws Exception {
+        Fixture f = fixture();
+        Approval original = approval(f, PublicationManifest.Operation.PUBLISH, 20, null);
+        execute(f, original);
+        execute(f, approval(f, PublicationManifest.Operation.REVOKE, 0, "help-login"));
+        Fixture restarted = reopen(f);
+        Approval repaired;
+        try (restarted) {
+            assertRestoreRejected(restarted, original);
+            assertEquals("REVOKED", restarted.catalog().source("help-login").reviewStatus());
+            repaired = approval(restarted, PublicationManifest.Operation.RECOVER, 20, null);
+            execute(restarted, repaired);
+            assertReady(restarted);
+            assertTrue(restarted.knowledge.retrieveByTitle("Synthetic help-login").chunks().isEmpty());
+        }
+        try (Fixture again = new Fixture(f.source, f.schema, f.collection)) {
+            restore(again, repaired);
+            assertReady(again);
+            assertTrue(again.knowledge.retrieveByTitle("Synthetic help-login").chunks().isEmpty());
+            assertEquals(38, again.catalog().chunks().size());
+            assertEquals(0, again.model.calls.get());
+        }
+    }
+
+    @Test void unavailableIndexFailsClosedWithoutEmbeddingOrCatalogWrites() throws Exception {
+        Fixture f = fixture();
+        Approval approval = approval(f, PublicationManifest.Operation.PUBLISH, 20, null);
+        execute(f, approval);
+        try (Fixture restarted = reopen(f)) {
+            long events = scalar(restarted.source, "SELECT COUNT(*) FROM rag_release_event");
+            DockerFixture.command("pause", docker.qdrant);
+            try { assertThrows(RuntimeException.class, () -> restore(restarted, approval)); }
+            finally { DockerFixture.command("unpause", docker.qdrant); }
+            assertRecoveryRequired(restarted);
+            assertEquals(0, restarted.model.calls.get());
+            assertEquals(events, scalar(restarted.source, "SELECT COUNT(*) FROM rag_release_event"));
+        }
+    }
+
+    @Test void unavailableDatabaseFailsClosedWithoutProviderWork() throws Exception {
+        Fixture f = fixture();
+        Approval approval = approval(f, PublicationManifest.Operation.PUBLISH, 20, null);
+        execute(f, approval);
+        try (Fixture restarted = reopen(f)) {
+            PublicationManifest.RuntimeIdentity runtime = identity(restarted);
+            DockerFixture.command("pause", docker.mysql);
+            try {
+                assertThrows(RuntimeException.class, () -> RagPublicationRecovery.restore(restarted.lifecycle, restarted.knowledge,
+                        approval.bytes, approval.envelope, signingKey.getPublic(), OPERATOR, ENVIRONMENT, runtime, resources));
+                assertEquals(0, restarted.model.calls.get());
+            } finally { DockerFixture.command("unpause", docker.mysql); }
+        }
+    }
+
+    @Test void dockerContainerRecreationRetainsSignedIndexWithoutEmbedding() throws Exception {
+        Fixture f = fixture();
+        Approval approval = approval(f, PublicationManifest.Operation.PUBLISH, 20, null);
+        execute(f, approval);
+        long events = scalar(f.source, "SELECT COUNT(*) FROM rag_release_event");
+        long requests = f.store.operation(approval.grant.approvalId()).embeddingRequests();
+        List<JsonNode> before = points(f);
+        f.close();
+        docker.recreateQdrant();
+        try (Fixture recreated = new Fixture(f.source, f.schema, f.collection)) {
+            restore(recreated, approval);
+            assertReady(recreated);
+            assertEquals(0, recreated.model.calls.get());
+            assertEquals(requests, recreated.store.operation(approval.grant.approvalId()).embeddingRequests());
+            assertEquals(events, scalar(recreated.source, "SELECT COUNT(*) FROM rag_release_event"));
+            assertEquals(before, points(recreated));
+            System.out.println("PUBLICATION_IT_DOCKER_RECREATED preservedTaskOwnedVolume=true embeddingCalls=0");
         }
     }
 
@@ -464,10 +786,16 @@ class PublicationIntegrationIT {
             assertFalse(process.process.isAlive());
             System.out.println("PUBLICATION_IT_HTTP_FORCED_STOP stage=AFTER_COMPLETED_PUBLICATION");
         }
-        try (HttpProcess restarted = startHttpProcess(schema, collection, "NONE")) {
-            assertEquals("RECOVERY_REQUIRED", get(restarted.port, "/it/status").path("ragAvailability").asText());
-            assertEquals("RECOVERY_REQUIRED", get(restarted.port, "/it/read?title=Synthetic%20help-login").path("error").asText());
+        long events = scalar(docker.source(schema), "SELECT COUNT(*) FROM rag_release_event");
+        long requests = scalar(docker.source(schema), "SELECT SUM(embedding_requests) FROM rag_release_operation");
+        try (HttpProcess restarted = startHttpProcess(schema, collection, "RESTORE")) {
+            assertEquals("CONFIGURED", get(restarted.port, "/it/status").path("ragAvailability").asText());
+            assertEquals("help-login", get(restarted.port, "/it/read?title=Synthetic%20help-login").path("sourceIds").get(0).asText());
+            assertEquals(0, get(restarted.port, "/it/status").path("embedding").path("requests").asInt());
+            assertEquals(events, scalar(docker.source(schema), "SELECT COUNT(*) FROM rag_release_event"));
+            assertEquals(requests, scalar(docker.source(schema), "SELECT SUM(embedding_requests) FROM rag_release_operation"));
         }
+        System.out.println("PUBLICATION_IT_ARCHIVED_RUNNERS preparedPublication=REAL publicationRunner=REAL readOnlyRecoveryRunner=REAL buildIdentity=REAL embeddingCallsOnRestart=0");
     }
 
     private record EmptyTarget(DataSource source, String schema, String collection) { }
@@ -578,6 +906,21 @@ class PublicationIntegrationIT {
                 PublicationManifest.sha256(approval.envelope), approval.validatedDrafts).execute();
     }
 
+    private Map<String, Object> restore(Fixture f, Approval approval) {
+        return RagPublicationRecovery.restore(f.lifecycle, f.knowledge, approval.bytes, approval.envelope,
+                signingKey.getPublic(), OPERATOR, ENVIRONMENT, identity(f), resources);
+    }
+
+    private void assertRestoreRejected(Fixture f, Approval approval) throws Exception {
+        long events = scalar(f.source, "SELECT COUNT(*) FROM rag_release_event");
+        long requests = scalar(f.source, "SELECT COALESCE(SUM(embedding_requests),0) FROM rag_release_operation");
+        assertThrows(RuntimeException.class, () -> restore(f, approval));
+        assertRecoveryRequired(f);
+        assertEquals(0, f.model.calls.get());
+        assertEquals(events, scalar(f.source, "SELECT COUNT(*) FROM rag_release_event"));
+        assertEquals(requests, scalar(f.source, "SELECT COALESCE(SUM(embedding_requests),0) FROM rag_release_operation"));
+    }
+
     private void executeFailure(Fixture f, Approval approval) {
         try { execute(f, approval); }
         catch (RuntimeException expected) { return; }
@@ -628,6 +971,10 @@ class PublicationIntegrationIT {
         try (var connection = source.getConnection(); var statement = connection.createStatement(); var rows = statement.executeQuery(sql)) {
             assertTrue(rows.next()); return rows.getLong(1);
         }
+    }
+
+    private static void sql(DataSource source, String sql) throws Exception {
+        try (var connection = source.getConnection(); var statement = connection.createStatement()) { statement.executeUpdate(sql); }
     }
 
     private static void applyDdl(DataSource source) throws Exception {
@@ -715,6 +1062,7 @@ class PublicationIntegrationIT {
         final String network = "chen-release-it-" + id;
         final String mysql = network + "-mysql";
         final String qdrant = network + "-qdrant";
+        final String volume = network + "-qdrant-data";
         final String password = UUID.randomUUID().toString();
         final Path temporary;
         int mysqlPort, grpcPort, restPort;
@@ -724,13 +1072,12 @@ class PublicationIntegrationIT {
             command("image", "inspect", "mysql:8.0"); command("image", "inspect", "qdrant/qdrant:v1.13.6");
             try {
                 command("network", "create", "--driver", "bridge", "--label", "chen.release.it=" + id, network);
+                command("volume", "create", "--label", "chen.release.it=" + id, volume);
                 Path env = temporary.resolve("mysql.env");
                 Files.writeString(env, "MYSQL_ROOT_PASSWORD=" + password + "\nMYSQL_ROOT_HOST=%\n", StandardCharsets.UTF_8);
                 command("run", "--pull=never", "--detach", "--name", mysql, "--label", "chen.release.it=" + id,
                         "--network", network, "--dns", "127.0.0.1", "--publish", "127.0.0.1::3306", "--env-file", env.toString(), "mysql:8.0");
-                command("run", "--pull=never", "--detach", "--name", qdrant, "--label", "chen.release.it=" + id,
-                        "--network", network, "--dns", "127.0.0.1", "--env", "QDRANT__TELEMETRY_DISABLED=true",
-                        "--publish", "127.0.0.1::6333", "--publish", "127.0.0.1::6334", "qdrant/qdrant:v1.13.6");
+                startQdrant();
                 mysqlPort = port(mysql, "3306/tcp"); restPort = port(qdrant, "6333/tcp"); grpcPort = port(qdrant, "6334/tcp");
                 long deadline = System.nanoTime() + Duration.ofSeconds(90).toNanos();
                 boolean ready = false;
@@ -753,6 +1100,27 @@ class PublicationIntegrationIT {
             source.setDriverClassName("com.mysql.cj.jdbc.Driver");
             source.setUrl("jdbc:mysql://127.0.0.1:" + mysqlPort + "/" + schema + "?allowPublicKeyRetrieval=true&useSSL=false&connectTimeout=2000&socketTimeout=5000&serverTimezone=UTC");
             source.setUsername("root"); source.setPassword(password); return source;
+        }
+        void startQdrant() throws Exception {
+            command("run", "--pull=never", "--detach", "--name", qdrant, "--label", "chen.release.it=" + id,
+                    "--network", network, "--dns", "127.0.0.1", "--env", "QDRANT__TELEMETRY_DISABLED=true",
+                    "--mount", "type=volume,src=" + volume + ",dst=/qdrant/storage",
+                    "--publish", "127.0.0.1:" + (restPort == 0 ? "" : restPort) + ":6333",
+                    "--publish", "127.0.0.1:" + (grpcPort == 0 ? "" : grpcPort) + ":6334", "qdrant/qdrant:v1.13.6");
+        }
+        void recreateQdrant() throws Exception {
+            assertEquals(id, JSON.readTree(command("inspect", "--format", "{{json .Config.Labels}}", qdrant)).path("chen.release.it").asText());
+            assertEquals(id, JSON.readTree(command("volume", "inspect", "--format", "{{json .Labels}}", volume)).path("chen.release.it").asText());
+            command("stop", "--time", "10", qdrant);
+            command("rm", qdrant);
+            startQdrant();
+            long deadline = System.nanoTime() + Duration.ofSeconds(30).toNanos();
+            boolean ready = false;
+            while (System.nanoTime() < deadline) {
+                try { request("http://127.0.0.1:" + restPort + "/collections", "GET", null); ready = true; break; }
+                catch (Exception ignored) { Thread.sleep(200); }
+            }
+            assertTrue(ready, "Recreated task-owned Qdrant must retain its volume and become available.");
         }
         int port(String container, String privatePort) throws Exception {
             String output = command("port", container, privatePort).strip(); return Integer.parseInt(output.substring(output.lastIndexOf(':') + 1));
@@ -779,8 +1147,15 @@ class PublicationIntegrationIT {
                 assertEquals(id, JSON.readTree(command("network", "inspect", "--format", "{{json .Labels}}", network)).path("chen.release.it").asText());
                 command("network", "rm", network);
             }
+            Set<String> ownedVolumes = new HashSet<>(command("volume", "ls", "--filter", "label=chen.release.it=" + id,
+                    "--format", "{{.Name}}").lines().toList());
+            if (ownedVolumes.contains(volume)) {
+                assertEquals(id, JSON.readTree(command("volume", "inspect", "--format", "{{json .Labels}}", volume)).path("chen.release.it").asText());
+                command("volume", "rm", volume);
+            }
             assertTrue(command("ps", "--all", "--filter", "label=chen.release.it=" + id, "--format", "{{.Names}}").isBlank());
             assertTrue(command("network", "ls", "--filter", "label=chen.release.it=" + id, "--format", "{{.Name}}").isBlank());
+            assertTrue(command("volume", "ls", "--filter", "label=chen.release.it=" + id, "--format", "{{.Name}}").isBlank());
             System.out.println("PUBLICATION_IT_CLEANED label=" + id);
         }
     }
@@ -789,9 +1164,15 @@ class PublicationIntegrationIT {
         Path marker = temporary.resolve("http-" + UUID.randomUUID() + ".port");
         Path log = temporary.resolve("http-" + UUID.randomUUID() + ".log");
         String classpath = System.getProperty("surefire.test.class.path", System.getProperty("java.class.path"));
-        var builder = new ProcessBuilder(Path.of(System.getProperty("java.home"), "bin", "java").toString(), "-cp", classpath,
+        String dependencies = Arrays.stream(classpath.split(Pattern.quote(File.pathSeparator)))
+                .filter(path -> path.endsWith(".jar") && Files.isRegularFile(Path.of(path)))
+                .collect(java.util.stream.Collectors.joining(File.pathSeparator));
+        assertFalse(dependencies.isBlank(), "The isolated archive must retain the existing Surefire dependency JARs.");
+        Path artifact = syntheticRuntimeJar();
+        var builder = new ProcessBuilder(Path.of(System.getProperty("java.home"), "bin", "java").toString(), "-cp",
+                artifact + File.pathSeparator + dependencies,
                 HttpApplication.class.getName(), Integer.toString(docker.mysqlPort), Integer.toString(docker.grpcPort), schema,
-                collection, action, marker.toString());
+                collection, action, marker.toString(), temporary.resolve("receipt-" + schema).toString(), artifact.toString());
         builder.environment().put("CHEN_SYNTHETIC_MYSQL_PASSWORD", docker.password);
         builder.redirectErrorStream(true).redirectOutput(log.toFile());
         Process process = builder.start();
@@ -803,6 +1184,34 @@ class PublicationIntegrationIT {
             fail("Synthetic Spring Boot process did not start: " + details.substring(Math.max(0, details.length() - 8000)));
         }
         return new HttpProcess(process, Integer.parseInt(Files.readString(marker).strip()));
+    }
+
+    /** Test archive contains compiled classes and synthetic public resources, never application config or private keys. */
+    private Path syntheticRuntimeJar() throws Exception {
+        if (runtimeJar != null) return runtimeJar;
+        Path artifact = temporary.resolve("synthetic-release-runtime.jar");
+        Set<String> entries = new HashSet<>();
+        try (JarOutputStream jar = new JarOutputStream(Files.newOutputStream(artifact))) {
+            for (Class<?> type : List.of(PublicationBuildIdentity.class, PublicationIntegrationIT.class)) {
+                Path root = Path.of(type.getProtectionDomain().getCodeSource().getLocation().toURI());
+                assertTrue(Files.isDirectory(root), "Only official compiled classes are packaged into the synthetic archive.");
+                try (var files = Files.walk(root)) {
+                    for (Path file : files.filter(Files::isRegularFile).filter(path -> path.toString().endsWith(".class")).sorted().toList()) {
+                        String name = root.relativize(file).toString().replace(File.separatorChar, '/');
+                        if (!entries.add(name)) continue;
+                        jar.putNextEntry(new JarEntry(name)); Files.copy(file, jar); jar.closeEntry();
+                    }
+                }
+            }
+            Map<String, byte[]> publicResources = new TreeMap<>(resources);
+            publicResources.put("META-INF/chen-release-build.properties", ("gitCommit=" + BUILD + "\n").getBytes(StandardCharsets.UTF_8));
+            for (var resource : publicResources.entrySet()) {
+                assertTrue(entries.add(resource.getKey()));
+                jar.putNextEntry(new JarEntry(resource.getKey())); jar.write(resource.getValue()); jar.closeEntry();
+            }
+        }
+        runtimeJar = artifact;
+        return artifact;
     }
 
     private record HttpProcess(Process process, int port) implements AutoCloseable {
@@ -823,9 +1232,19 @@ class PublicationIntegrationIT {
             JdbcCatalogStore store = JdbcCatalogStore.open(source);
             KnowledgeCatalog catalog = KnowledgeCatalog.restore(store);
             RagProperties properties = properties(args[3], grpcPort);
+            properties.setEmbeddingApiKey("synthetic-local-provider-only");
             GuardedEmbeddingModel embedding = new GuardedEmbeddingModel(new LocalEmbedding(), properties);
             RagKnowledgeService knowledge = new RagKnowledgeService(properties, catalog, new QdrantKnowledgeIndex(properties, embedding), embedding);
             String before = (String) knowledge.diagnostics().get("ragAvailability");
+            Path receipt = Path.of(args[6]);
+            PublicationBuildIdentity.Identity build = PublicationBuildIdentity.read(Path.of(args[7]));
+            assertEquals(BUILD, build.gitCommit());
+            RagPublicationProperties release = new RagPublicationProperties();
+            release.setManifestPath(receipt.resolve("manifest.json").toString());
+            release.setApprovalPath(receipt.resolve("approval.json").toString());
+            release.setPublicKeyPath(receipt.resolve("public-key.pem").toString());
+            release.setArtifactPath(args[7]); release.setOperator(OPERATOR); release.setEnvironment(ENVIRONMENT);
+            RagPublicationConfiguration configuration = new RagPublicationConfiguration();
             if ("PUBLISH".equals(args[4])) {
                 // Independent ephemeral approval for this synthetic child process only.
                 PublicationIntegrationIT test = new PublicationIntegrationIT();
@@ -834,15 +1253,25 @@ class PublicationIntegrationIT {
                 test.resources = Map.of(PublicationManifest.PLATFORM_HELP_RESOURCE, JSON.writeValueAsBytes(test.drafts),
                         PublicationManifest.CAPABILITIES_RESOURCE, "{\"syntheticFixture\":true}\n".getBytes(StandardCharsets.UTF_8));
                 Map<String, String> hashes = new TreeMap<>(); test.resources.forEach((key, bytes) -> hashes.put(key, PublicationManifest.sha256(bytes)));
-                PublicationManifest manifest = new PublicationManifest(1, BUILD, ARTIFACT, ENVIRONMENT, args[3], knowledge.embeddingSignature(), hashes,
+                PublicationManifest manifest = new PublicationManifest(1, build.gitCommit(), build.artifactSha256(), ENVIRONMENT, args[3], knowledge.embeddingSignature(), hashes,
                         catalog.epoch(), store.snapshotHash(), PublicationManifest.Operation.PUBLISH, null, false, true,
                         test.drafts.stream().filter(d -> PublicationManifest.userSourceIds().contains(d.sourceId()))
                                 .map(d -> new PublicationManifest.Topic(d.sourceId(), d.version(), KnowledgeCatalog.hash(d.text()))).toList());
                 Approval approval = test.sign(manifest, 20, Instant.now().plusSeconds(600));
-                List<KnowledgeDocument> approved = manifest.validate(new PublicationManifest.RuntimeIdentity(BUILD, ARTIFACT, ENVIRONMENT,
-                        args[3], knowledge.embeddingSignature(), catalog.epoch(), store.snapshotHash()), test.resources);
-                new RagPublicationExecutor(catalog.lifecycle(), knowledge, manifest, approval.grant,
-                        PublicationManifest.sha256(approval.envelope), approved).execute();
+                Files.createDirectory(receipt);
+                Files.write(receipt.resolve("manifest.json"), approval.bytes);
+                Files.write(receipt.resolve("approval.json"), approval.envelope);
+                Files.writeString(receipt.resolve("public-key.pem"), "-----BEGIN PUBLIC KEY-----\n"
+                        + Base64.getMimeEncoder(64, new byte[]{'\n'}).encodeToString(test.signingKey.getPublic().getEncoded())
+                        + "\n-----END PUBLIC KEY-----\n", StandardCharsets.US_ASCII);
+                release.setEnabled(true);
+                var prepared = configuration.preparedPublication(release, properties);
+                configuration.publicationRunner(prepared, catalog.lifecycle(), knowledge).run(new DefaultApplicationArguments());
+                System.out.println("PUBLICATION_IT_PRODUCTION_RUNNER mode=PUBLISH archivedBuildIdentity=true");
+            } else if ("RESTORE".equals(args[4])) {
+                release.setRecoveryEnabled(true);
+                configuration.readOnlyRecoveryRunner(release, properties, catalog.lifecycle(), knowledge).run(new DefaultApplicationArguments());
+                System.out.println("PUBLICATION_IT_PRODUCTION_RUNNER mode=READ_ONLY_RECOVERY archivedBuildIdentity=true");
             }
             SpringApplication app = new SpringApplication(HttpApplication.class);
             app.setDefaultProperties(Map.of("server.port", "0", "spring.main.banner-mode", "off"));

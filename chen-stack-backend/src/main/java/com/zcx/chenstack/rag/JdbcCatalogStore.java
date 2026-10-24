@@ -183,6 +183,59 @@ public final class JdbcCatalogStore implements AutoCloseable {
             Long appliedGeneration, String appliedSnapshotHash, String collection, long maxEmbeddingRequests,
             long embeddingRequests, boolean targetInitialized, String indexAuthority, Long indexEpoch, String error) {}
 
+    record ReleaseReceipt(ReleaseOperation operation, java.time.Instant validatedAt,
+                          java.time.Instant completedAt, String indexHash) { }
+
+    /** 新事务只读重验持久快照；不能用连接内缓存替代恢复证据。 */
+    synchronized void requireUnchanged() {
+        try {
+            connection.rollback();
+            State persisted = read();
+            if (persisted.generation() != state.generation() || !digest(persisted).equals(digest(state))) {
+                throw new IllegalStateException("CATALOG_GENERATION_CONFLICT");
+            }
+        } catch (Exception error) { throw new IllegalStateException("CATALOG_RECOVERY_STATE_DRIFT", error); }
+        finally { rollback(); }
+    }
+
+    synchronized ReleaseReceipt completedReceipt(String manifestHash, String approvalHash) {
+        requireUnchanged();
+        try (PreparedStatement query = connection.prepareStatement(
+                "SELECT operation_id FROM rag_release_operation WHERE manifest_sha256=? AND approval_sha256=? AND status='COMPLETED'")) {
+            query.setString(1, manifestHash); query.setString(2, approvalHash);
+            String id;
+            try (ResultSet result = query.executeQuery()) {
+                if (!result.next()) throw new IllegalStateException("RECOVERY_COMPLETED_RECEIPT_REQUIRED");
+                id = result.getString(1);
+                if (result.next()) throw new IllegalStateException("RECOVERY_RECEIPT_AMBIGUOUS");
+            }
+            ReleaseOperation operation = operation(id);
+            java.time.Instant validated = null, completed = null;
+            String hash = null;
+            try (PreparedStatement events = connection.prepareStatement(
+                    "SELECT event_type,TIMESTAMPDIFF(MICROSECOND,'1970-01-01 00:00:00',created_at),details_code FROM rag_release_event WHERE operation_id=? ORDER BY id")) {
+                events.setString(1, id);
+                try (ResultSet result = events.executeQuery()) {
+                    while (result.next()) {
+                        long micros = result.getLong(2);
+                        java.time.Instant time = java.time.Instant.ofEpochSecond(micros / 1_000_000, micros % 1_000_000 * 1000);
+                        if ("VALIDATED".equals(result.getString(1)) && validated == null) validated = time;
+                        if ("COMPLETED".equals(result.getString(1))) {
+                            completed = time;
+                            String code = result.getString(3);
+                            hash = code != null && code.startsWith("INDEX_SHA256:") ? code.substring("INDEX_SHA256:".length()) : null;
+                        }
+                    }
+                }
+            }
+            if (validated == null || completed == null || completed.isBefore(validated) || !PublicationManifest.validHash(hash)) {
+                throw new IllegalStateException("RECOVERY_VERIFIABLE_INDEX_RECEIPT_REQUIRED");
+            }
+            return new ReleaseReceipt(operation, validated, completed, hash);
+        } catch (SQLException error) { throw new IllegalStateException("RECOVERY_RECEIPT_READ_FAILED", error); }
+        finally { rollback(); }
+    }
+
     synchronized ReleaseOperation operation(String id) {
         requireOwner();
         try (PreparedStatement query = connection.prepareStatement("SELECT operation_id,manifest_sha256,approval_sha256,environment,operator_id,approver_id,operation_type,status,expected_generation,applied_generation,applied_snapshot_sha256,target_collection,max_embedding_requests,embedding_requests,target_initialized,index_authority,index_epoch,last_error_code FROM rag_release_operation WHERE operation_id=?")) {
@@ -230,11 +283,23 @@ public final class JdbcCatalogStore implements AutoCloseable {
     }
 
     synchronized void checkpoint(String id, String status, boolean initialized, String authority, Long epoch) {
+        checkpoint(id, status, initialized, authority, epoch, null);
+    }
+
+    synchronized void checkpoint(String id, String status, boolean initialized, String authority, Long epoch, String indexHash) {
         try {
             requireOwner();
             State persisted = read();
             if (persisted.generation() != state.generation() || !digest(persisted).equals(digest(state))) {
                 throw new IllegalStateException("CATALOG_GENERATION_CONFLICT");
+            }
+            if ("COMPLETED".equals(status)) {
+                if (!PublicationManifest.validHash(indexHash)) throw new IllegalStateException("RELEASE_INDEX_DIGEST_REQUIRED");
+                try (PreparedStatement update = connection.prepareStatement(
+                        "UPDATE rag_release_operation SET applied_generation=?,applied_snapshot_sha256=? WHERE operation_id=?")) {
+                    update.setLong(1, state.generation()); update.setString(2, digest(state)); update.setString(3, id);
+                    if (update.executeUpdate() != 1) throw new SQLException("RELEASE_STATE_MISSING");
+                }
             }
             try (PreparedStatement update = connection.prepareStatement("UPDATE rag_release_operation SET status=?,target_initialized=?,index_authority=?,index_epoch=?,last_error_code=NULL,updated_at=CURRENT_TIMESTAMP(6) WHERE operation_id=?")) {
                 update.setString(1, status); update.setBoolean(2, initialized); update.setString(3, authority);
@@ -242,7 +307,7 @@ public final class JdbcCatalogStore implements AutoCloseable {
                 update.setString(5, id);
                 if (update.executeUpdate() != 1) throw new SQLException("RELEASE_STATE_MISSING");
             }
-            appendEvent(id, status, state.generation(), "INDEX_AUTHORITY_BOUND"); connection.commit();
+            appendEvent(id, status, state.generation(), indexHash == null ? "INDEX_AUTHORITY_BOUND" : "INDEX_SHA256:" + indexHash); connection.commit();
         } catch (Exception error) { rollback(); throw new IllegalStateException("RELEASE_CHECKPOINT_FAILED_CLOSED", error); }
     }
 
@@ -269,7 +334,7 @@ public final class JdbcCatalogStore implements AutoCloseable {
     }
 
     private void appendEvent(String id, String event, long generation, String code) throws SQLException {
-        try (PreparedStatement insert = connection.prepareStatement("INSERT INTO rag_release_event(operation_id,event_type,generation,details_code,created_at) VALUES(?,?,?,?,CURRENT_TIMESTAMP(6))")) {
+        try (PreparedStatement insert = connection.prepareStatement("INSERT INTO rag_release_event(operation_id,event_type,generation,details_code,created_at) VALUES(?,?,?,?,UTC_TIMESTAMP(6))")) {
             insert.setString(1, id); insert.setString(2, event); insert.setLong(3, generation); insert.setString(4, code); insert.executeUpdate();
         }
     }

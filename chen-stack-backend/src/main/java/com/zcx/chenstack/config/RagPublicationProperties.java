@@ -10,6 +10,7 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 @ConfigurationProperties(prefix = "chen.rag.release")
 public class RagPublicationProperties {
     private boolean enabled = false;
+    private boolean recoveryEnabled = false;
     private String manifestPath = "";
     private String approvalPath = "";
     private String publicKeyPath = "";

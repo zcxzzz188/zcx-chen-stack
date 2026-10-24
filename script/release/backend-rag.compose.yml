@@ -34,10 +34,14 @@ services:
         source: ${CHEN_RELEASE_CONTROL_DIRECTORY:?Select the approved manifest and approval directory}
         target: /release
         read_only: true
+        bind:
+          create_host_path: false
       - type: bind
         source: ${CHEN_RELEASE_TRUST_DIRECTORY:?Select the independently controlled trust directory}
         target: /trust
         read_only: true
+        bind:
+          create_host_path: false
     environment:
       TZ: Asia/Shanghai
       SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-docker,rag}
@@ -80,6 +84,7 @@ services:
       CHEN_RAG_QDRANT_API_KEY: ${CHEN_RAG_QDRANT_API_KEY:?Set an independent Qdrant API key}
       CHEN_RAG_QDRANT_COLLECTION: ${CHEN_RAG_QDRANT_COLLECTION:?Select an explicit new release collection}
       CHEN_RAG_RELEASE_ENABLED: ${CHEN_RAG_RELEASE_ENABLED:-false}
+      CHEN_RAG_RELEASE_RECOVERY_ENABLED: ${CHEN_RAG_RELEASE_RECOVERY_ENABLED:-false}
       CHEN_RAG_RELEASE_MANIFEST_PATH: /release/manifest.json
       CHEN_RAG_RELEASE_APPROVAL_PATH: /release/approval.json
       CHEN_RAG_RELEASE_PUBLIC_KEY_PATH: /trust/release-public.pem

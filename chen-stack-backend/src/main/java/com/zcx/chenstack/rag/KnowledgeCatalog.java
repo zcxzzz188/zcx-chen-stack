@@ -81,12 +81,21 @@ public final class KnowledgeCatalog {
     public KnowledgeDocument source(String id) { requireCurrent(); return sources.get(id); }
 
     public Document verified(Document candidate) {
+        return verified(candidate, lifecycle.authorityId(), epoch);
+    }
+
+    Document verified(Document candidate, String indexAuthority, long indexEpoch) {
         requireCurrent();
         if (candidate == null) return null;
         Document current = chunks.get(candidate.getId());
         if (current == null) return null;
         for (Map.Entry<String, Object> field : current.getMetadata().entrySet()) {
-            if (!field.getValue().equals(candidate.getMetadata().get(field.getKey()))) return null;
+            Object expected = switch (field.getKey()) {
+                case "catalog_authority" -> indexAuthority;
+                case "catalog_epoch" -> Long.toString(indexEpoch);
+                default -> field.getValue();
+            };
+            if (!expected.equals(candidate.getMetadata().get(field.getKey()))) return null;
         }
         // 不采信向量库的正文，即使 payload 被篡改也只能取本地已审校版本。
         return copy(current);

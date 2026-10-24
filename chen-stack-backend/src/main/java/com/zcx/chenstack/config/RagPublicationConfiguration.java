@@ -8,6 +8,7 @@ import com.zcx.chenstack.rag.PublicationBuildIdentity;
 import com.zcx.chenstack.rag.PublicationManifest;
 import com.zcx.chenstack.rag.RagKnowledgeService;
 import com.zcx.chenstack.rag.RagPublicationExecutor;
+import com.zcx.chenstack.rag.RagPublicationRecovery;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
@@ -41,7 +42,7 @@ public class RagPublicationConfiguration {
     public Prepared preparedPublication(RagPublicationProperties release, RagProperties rag) {
         try {
             rag.validate();
-            if (!release.isEnabled() || !rag.isEnabled() || rag.getEmbeddingApiKey() == null || rag.getEmbeddingApiKey().isBlank()) {
+            if (!release.isEnabled() || release.isRecoveryEnabled() || !rag.isEnabled() || rag.getEmbeddingApiKey() == null || rag.getEmbeddingApiKey().isBlank()) {
                 throw new SecurityException("PUBLICATION_REQUIRES_DURABLE_RAG");
             }
             byte[] manifestBytes = input(release.getManifestPath(), 65_536);
@@ -71,6 +72,30 @@ public class RagPublicationConfiguration {
     public ApplicationRunner publicationRunner(Prepared prepared, CatalogLifecycle lifecycle, RagKnowledgeService knowledge) {
         return arguments -> new RagPublicationExecutor(lifecycle, knowledge, prepared.manifest(), prepared.grant(),
                 prepared.approvalHash(), prepared.drafts()).execute();
+    }
+
+    @Bean
+    @ConditionalOnProperty(prefix = "chen.rag.release", name = "recovery-enabled", havingValue = "true")
+    public ApplicationRunner readOnlyRecoveryRunner(RagPublicationProperties release, RagProperties rag,
+            CatalogLifecycle lifecycle, RagKnowledgeService knowledge) {
+        if (release.isEnabled() || !rag.isEnabled()) throw new SecurityException("RECOVERY_REQUIRES_EXCLUSIVE_READ_ONLY_MODE");
+        rag.validate();
+        return arguments -> {
+            try {
+                byte[] manifestBytes = input(release.getManifestPath(), 65_536);
+                byte[] approvalBytes = input(release.getApprovalPath(), 16_384);
+                PublicKey key = publicKey(input(release.getPublicKeyPath(), 8_192));
+                var identity = PublicationBuildIdentity.read(Path.of(release.getArtifactPath()));
+                var runtime = new PublicationManifest.RuntimeIdentity(identity.gitCommit(), identity.artifactSha256(),
+                        release.getEnvironment(), rag.getCollection(),
+                        KnowledgeCatalog.hash(rag.getEmbeddingBaseUrl() + "|" + rag.getEmbeddingModel() + "|1024|chunk-v1"),
+                        lifecycle.snapshot().epoch(), "UNUSED_READ_ONLY_RECOVERY");
+                RagPublicationRecovery.restore(lifecycle, knowledge, manifestBytes, approvalBytes, key,
+                        release.getOperator(), release.getEnvironment(), runtime, identity.resources());
+            } catch (Exception error) {
+                throw new SecurityException("PUBLICATION_READ_ONLY_RECOVERY_REJECTED");
+            }
+        };
     }
 
     static byte[] input(String value, int limit) {

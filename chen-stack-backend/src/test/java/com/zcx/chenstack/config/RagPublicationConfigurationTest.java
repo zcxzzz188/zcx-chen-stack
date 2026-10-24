@@ -153,4 +153,32 @@ class RagPublicationConfigurationTest {
             }
         }
     }
+
+    @Test void readOnlyRecoveryIsMutuallyExclusiveWithWritesAndRequiresRag() throws Exception {
+        var fixture = fixture();
+        var config = new RagPublicationConfiguration();
+        fixture.release().setRecoveryEnabled(true);
+        assertThrows(SecurityException.class, () -> config.preparedPublication(fixture.release(), fixture.rag()));
+        assertThrows(SecurityException.class, () -> config.readOnlyRecoveryRunner(fixture.release(), fixture.rag(), null, null));
+        fixture.release().setEnabled(false); fixture.rag().setEnabled(false);
+        assertThrows(SecurityException.class, () -> config.readOnlyRecoveryRunner(fixture.release(), fixture.rag(), null, null));
+    }
+
+    @Test void recoveryRunnerPassesOriginalBytesAndTrustedRuntimeWithoutCreatingWriteExecutor() throws Exception {
+        var fixture = fixture(); fixture.release().setEnabled(false); fixture.release().setRecoveryEnabled(true);
+        var lifecycle = new KnowledgeCatalog(List.of()).lifecycle();
+        RagKnowledgeService knowledge = mock(RagKnowledgeService.class);
+        try (var build = mockStatic(PublicationBuildIdentity.class);
+             var recovery = mockStatic(RagPublicationRecovery.class);
+             var executors = mockConstruction(RagPublicationExecutor.class)) {
+            build.when(() -> PublicationBuildIdentity.read(any())).thenReturn(fixture.identity());
+            var runner = new RagPublicationConfiguration().readOnlyRecoveryRunner(fixture.release(), fixture.rag(), lifecycle, knowledge);
+            recovery.verifyNoInteractions();
+            runner.run(new DefaultApplicationArguments());
+            recovery.verify(() -> RagPublicationRecovery.restore(eq(lifecycle), eq(knowledge),
+                    eq(Files.readAllBytes(Path.of(fixture.release().getManifestPath()))), eq(fixture.approval()), any(),
+                    eq("executor-b"), eq("isolated"), any(), eq(fixture.identity().resources())), times(1));
+            assertTrue(executors.constructed().isEmpty());
+        } finally { lifecycle.close(); }
+    }
 }

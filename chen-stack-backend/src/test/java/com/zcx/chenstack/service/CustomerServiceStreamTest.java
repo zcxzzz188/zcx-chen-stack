@@ -134,6 +134,29 @@ class CustomerServiceStreamTest {
         assertEquals("恢复正常", recovered.getFirst().text());
     }
 
+    @Test void synchronousAnswerFailureStillFinishesSseAndAllowsTheNextRequest() {
+        when(answers.answer(anyString(), anyString(), eq(42), any(BooleanSupplier.class), any(CustomerServiceTools.class)))
+                .thenThrow(new IllegalStateException("INTERNAL_SECRET"))
+                .thenReturn(Flux.just("恢复正常"));
+        var failed = orchestrator.chat("问题", "same", 42).collectList().block(Duration.ofSeconds(5));
+        assertEquals(List.of("ERROR_STATE", "DONE"), failed.stream().map(CustomerServiceEvent::type).toList());
+        assertEquals("这次回答未能完成，请重试。", failed.getFirst().text());
+        assertFalse(failed.toString().contains("INTERNAL_SECRET"));
+        var recovered = orchestrator.chat("重试", "same", 42).collectList().block(Duration.ofSeconds(5));
+        assertEquals(List.of("TEXT", "DONE"), recovered.stream().map(CustomerServiceEvent::type).toList());
+        assertEquals("恢复正常", recovered.getFirst().text());
+    }
+
+    @Test void timedOutAnswerEmitsSanitizedErrorAndExactlyOneDone() {
+        when(answers.answer(anyString(), anyString(), eq(42), any(BooleanSupplier.class), any(CustomerServiceTools.class)))
+                .thenReturn(Flux.concat(Flux.just("未完成片段"),
+                        Flux.error(new java.util.concurrent.TimeoutException("INTERNAL_TIMEOUT_DETAILS"))));
+        var events = orchestrator.chat("等待", "same", 42).collectList().block(Duration.ofSeconds(5));
+        assertEquals(List.of("TEXT", "ERROR_STATE", "DONE"), events.stream().map(CustomerServiceEvent::type).toList());
+        assertEquals("这次回答用时较长，请稍后重试，或把问题说得更具体一些。", events.get(1).text());
+        assertFalse(events.toString().contains("INTERNAL_TIMEOUT_DETAILS"));
+    }
+
     @Test void cancellingSseDisposesUpstreamProviderSubscription() throws Exception {
         CountDownLatch subscribed = new CountDownLatch(1);
         CountDownLatch cancelled = new CountDownLatch(1);
