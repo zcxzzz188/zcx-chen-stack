@@ -1,126 +1,85 @@
-# G2 RAG 发布准备
+# 受控本地知识发布与只读恢复
 
-这里的脚本只在操作者显式执行时工作，不读取或写入仓库 `.env`，不重启现有容器，不自动应用 DDL、发布知识或同步索引。默认 `CHEN_RAG_ENABLED=false`、`CHEN_RAG_RELEASE_ENABLED=false`、`CHEN_RAG_RELEASE_RECOVERY_ENABLED=false`。执行知识发布仍需独立批准、匹配的 manifest/approval 和正确制品；本目录不是批准凭据。
+正式发布不再使用Ed25519、签名信封、公私钥或独立签名人。`operation.json`是可信运维账户确认的操作记录，SHA256用于绑定原始字节和发现身份漂移，不能防止拥有部署/数据库/文件权限的恶意管理员篡改。本方案依赖运维账户、部署权限、受保护宿主目录和审计。
 
-## 本地构建与检查（PowerShell 7）
+## 默认与权限
 
-从仓库根运行无网络自检：
+- 普通后端不提供发布HTTP路由或客服写工具；`CHEN_RAG_RELEASE_ENABLED`默认false。即使普通Main启动时误设true，没有专用命令的Invocation也会失败关闭。
+- 写PUBLISH/RECOVER/REVOKE只由 `com.zcx.chenstack.rag.RagPublicationCommand` 本地非Web进程执行。它只加载DataSource、Jackson及RAG组件，不加载业务调度器、控制器或聊天服务，完成后关闭上下文退出。
+- 独立入口要求显式写开关、匹配的运维身份/环境、confirmed=true的操作原件、实际JAR/资源/Manifest、持久预算及真实Catalog/集合前提。不是固定伪造签名，也不存在永真验签。
+- control目录仅放manifest.json和operation.json，宿主可信运维账户可写，容器只读。budget目录独立受保护、持久保存并以可写挂载供发送前记账，不放凭据；正式目录须在仓库外。部署前检查ACL，普通用户不得改写。TLS truststore仅用于Qdrant传输安全，与已取消的发布签名无关，继续沿用。
 
-```powershell
-pwsh -NoProfile -File script/release/Test-ReleaseConfiguration.ps1 -SelfTest
-```
-
-使用已缓存的 Maven 依赖，构建并运行正式测试；依赖缺失时失败，不自动联网下载：
+## 构建与检查（PowerShell 7）
 
 ```powershell
 pwsh -NoProfile -File script/release/Build-Backend.ps1
+pwsh -NoProfile -File script/release/Prepare-ReleaseOperation.ps1 -SelfTest
+pwsh -NoProfile -File script/release/Test-ReleaseConfiguration.ps1 -SelfTest
 ```
 
-脚本只读本地 `git rev-parse HEAD`，将 `chen.release.gitCommit` 交给正式 POM 的资源过滤，检查成品 JAR **根目录** `META-INF/chen-release-build.properties` 的 `gitCommit`，并兼容仅位于 `BOOT-INF/classes/META-INF/chen-release-build.properties` 的布局；两处同时存在或同名条目重复时拒绝，避免构建身份歧义。当前 Spring Boot repackage 将此 `META-INF` 元数据保留在 JAR 根目录，知识资源仍位于 `BOOT-INF/classes/knowledge/`。脚本输出 JAR 路径和 SHA256。HEAD 是当前源码的基准提交，不代表工作树干净，也不代替独立审查或最终提交。
+正式Build-Backend读取用户已提交的新HEAD，以离线Maven verify构建并核对JAR内Git身份。源码修改后必须由用户本人提交，再生成正式JAR及对应Manifest；未提交的UNSET构建只作测试，不能作为发布制品。Java正式入口重新核验两个知识资源的原始Hash、39条正文规范化Hash、版本和精确白名单，help-history及12个后台主题不发布。
 
-操作者从受保护的凭据来源配置**当前进程环境变量**后运行：
+操作记录字段固定为schemaVersion=1、operationId、operator、environment、manifestSha256、maxEmbeddingRequests、allowedOperation、confirmed。operationId为ASCII `[A-Za-z0-9._-]{1,80}`，与持久操作ID一致；同ID不得改记录Hash/预算/目标。没有expiresAt或签名字段。REVOKE的Embedding预算必须0。
+
+以下只准备操作记录，只有获准操作者显式-Confirm才创建，默认/ValidateOnly不写文件。替换所有占位值，输出不得存在。首次费用账本通过-InitializeBudget创建且禁止覆盖，已有账本的后续操作省略该开关，继续使用原账本和预算ID。
 
 ```powershell
-pwsh -NoProfile -File script/release/Test-ReleaseConfiguration.ps1
+pwsh -NoProfile -File script/release/Prepare-ReleaseOperation.ps1 `
+  -ManifestPath 'D:\ChenStackRelease\control\manifest.json' `
+  -ArtifactPath 'D:\zcx-chen-stack\chen-stack-backend\target\zcx-chen-stack-backend-1.0-SNAPSHOT.jar' `
+  -ExpectedManifestSha256 '<本次已核对的Manifest原始SHA256>' `
+  -ExpectedArtifactSha256 '<本次已核对的JAR原始SHA256>' `
+  -OperationId '<本次唯一操作ID>' -Operator 'codex-deployer' -Environment 'production' `
+  -MaxEmbeddingRequests 64 -OperationOutputPath 'D:\ChenStackRelease\control\operation.json' `
+  -InitializeBudget -BudgetLedgerPath 'D:\ChenStackRelease\budget\provider-attempts.ledger' `
+  -BudgetId '<本轮固定预算ID>' -Confirm
 ```
 
-检查只读取已列名的进程变量，不解析 `.env`、不打印密钥、不连接 Qdrant/模型/数据库。测试也可用 `-Configuration` 显式传入内存 hashtable。发布或只读恢复启用时，还会检查显式指定的宿主机控制目录、独立信任目录、Manifest/Approval 原文件、公钥格式、审批字段、JAR SHA256 及 JAR 内嵌 Git 身份；`-ArtifactPath` 可指定待复制到 `/app/app.jar` 的宿主机 JAR，默认使用正式 `target/zcx-chen-stack-backend-1.0-SNAPSHOT.jar`。禁用时不读取这些文件。输出 `CONFIGURATION_ONLY_PASS` 仍不证明真实签名权威、目录代际、远端集合、索引或人员/ACL 隔离；这些由后端控制与独立人工验收确认。
+此脚本检查显式Hash、JAR提交/资源和主题范围，不代替Java完整语义校验，不启动发布、不调用Provider、不改Git。数据目录及ACL必须先准备；若创建账本后后续操作失败，保留已有账本，不重建/清零。
 
-必须明确配置：
+## 持久费用边界
 
-- `SPRING_PROFILES_ACTIVE` 包含 `rag`；候选项目的 `CHEN_RELEASE_PROJECT_NAME` 使用新的 `chen-release-*` 项目名。既有部署的只读预检显式加 `-ExistingDeployment`，并填入从原部署记录核对的真实项目名。
-- `CHEN_RAG_QDRANT_COLLECTION` 使用明确批准的目标集合，符合 `chen_[a-z0-9_]{1,90}`，不能沿用默认 `chen_platform_help_v1`。仅当新的受控 PUBLISH/RECOVER 操作在 Manifest 中指定 `createCollection=true` 时，才要求 `CHEN_RELEASE_NEW_COLLECTION_CONFIRMED=true`；对已有集合的操作、REVOKE 和正常只读恢复均设为 `false`。检查脚本不查询远端证明集合存在或为空。
-- `CHEN_RAG_QDRANT_HOST`、可选 gRPC 端口（默认 6334）、`CHEN_RAG_QDRANT_TLS` 和独立 `CHEN_RAG_QDRANT_API_KEY`。非 loopback 必须 TLS；Qdrant、Embedding、聊天 Key 不得复用。启用 RAG 必须提供独立 Embedding Key。
-- 发布控制 `CHEN_RAG_RELEASE_ENABLED=true` 与只读恢复 `CHEN_RAG_RELEASE_RECOVERY_ENABLED=true` **互斥**，任一启用都要求 `CHEN_RAG_ENABLED=true` 和独立 Embedding Key。只读恢复不会调用 Embedding，但恢复后的正常语义检索仍使用该 Key。
-- 两种模式均提供 `CHEN_RELEASE_CONTROL_DIRECTORY`、`CHEN_RELEASE_TRUST_DIRECTORY` 两个已存在且独立、不相互嵌套的宿主机绝对目录，分别只含已核对的 `manifest.json` / `approval.json` 与独立维护的 `release-public.pem`。公钥文件只含公开的 Ed25519 X.509/SPKI `BEGIN PUBLIC KEY`，不含私钥。
-- 容器路径固定为 `CHEN_RAG_RELEASE_MANIFEST_PATH=/release/manifest.json`、`APPROVAL_PATH=/release/approval.json`、`PUBLIC_KEY_PATH=/trust/release-public.pem`、`ARTIFACT_PATH=/app/app.jar`；这些后缀均带 `CHEN_RAG_RELEASE_` 前缀。还需显式设置 `CHEN_RAG_RELEASE_OPERATOR`、`CHEN_RAG_RELEASE_ENVIRONMENT`。宿主机路径不应直接填到容器路径参数中。预检不会代替后端原字节验签。
+本轮部署将同一个 `/budget/provider-attempts.ledger` 供发布命令与后端读取查询/聊天使用，budgetId和64/20限额保持不变。同步Chat、流式Chat以及查询/发布Embedding均在实际HTTP发送前取得文件锁、校验累计记录、追加保守消耗并force落盘；失败/超时/UNKNOWN不退款。没有账本、截断、锁冲突、预算ID/额度不符或超限均在发送前拒绝，不自动创建或修复账本。费用账本不保存提示词、用户数据、API Key或响应。
 
-## DDL
+该账本统计接入客户端的所有发送尝试，因此本轮窗口中的其他同客户端流量也消耗额度，不能再额外花掉64/20之外的预算。现有发布operation的Embedding发送前持久预留仍独立保留；可能保守双记账的未发送请求不能释放/重置。这是尝试次数上限，不是供应商金额或token用量证明。默认未配置费用账本时原有普通业务保持原行为；实际运维发布入口强制要求配置，受控E2E也必须用已配置的同一账本。
 
-`sql/g2_rag_catalog.sql` 面向 MySQL 8.0，只创建四个独立表，不选数据库、不插入初始 Catalog、不改审核/发布状态。操作者先核对目标数据库并备份受影响状态，再用已有获准数据库工具显式应用。`IF NOT EXISTS` 不会修复既有表结构；已存在时必须核对 `SHOW CREATE TABLE`，不以脚本执行成功认定结构匹配。
+容器环境：`CHEN_RAG_RELEASE_BUDGET_LEDGER_PATH=/budget/provider-attempts.ledger`、`CHEN_RAG_RELEASE_BUDGET_ID=<本轮固定ID>`、`CHEN_RAG_RELEASE_MAX_EMBEDDING_HTTP_ATTEMPTS=64`、`CHEN_RAG_RELEASE_MAX_CHAT_HTTP_ATTEMPTS=20`。不得删除账本或换ID/路径绕过限额。增加预算需要新批准，不通过修改旧文件额度实现。
 
-`rag_catalog_state`、`rag_source_state` 完全沿用 `JdbcCatalogStore` 的持久化权威，初始化仍走受控代码。`rag_release_operation` 记录操作身份、批准哈希、代际和预算，`rag_release_event` 记录最小事件代码；它们不存另一套知识正文，不存密码、API Key 或原始凭据。
+## 既有dev项目正式部署
 
-## 独立候选 Compose
+保留原Compose项目dev、base顺序、端口、网络、凭据注入和Qdrant卷。现有 `backend-rag.override.yml` 仅补control只读、budget持久可写挂载与环境参数，create_host_path=false，未准备目录时拒绝；不再挂trust。`backend-rag.compose.yml`仍是隔离候选模板，不能用其新Qdrant卷代替正式索引。
 
-`backend-rag.compose.yml` 只用于**新的候选项目**。Qdrant 和后端共享网络命名空间，后端经 `127.0.0.1:6334` 加独立 Key 访问新 Qdrant；6333/6334 不暴露到宿主机，只有选定的后端端口绑定宿主机 loopback。新卷使用项目作用域，不挂载既有生产数据卷。
+正式切换前一次性授权必须绑定新Commit/JAR/Manifest、production/chen_stack/chen_platform_help_release_v1、39条范围、创建集合/Catalog写入、短时backend中断、回退及64/20付费上限。执行前核对最新29表备份及隔离恢复、实时Catalog/集合、TLS和独立Key（不打印值）、候选镜像JAR身份及旧后端回退。生成配置可使用 `config --quiet`，禁止打印含密钥的展开配置。
 
-额外明确设置 `CHEN_RELEASE_BACKEND_PORT`（未占用端口）、`CHEN_RELEASE_BACKEND_IMAGE`（唯一候选 tag）、`CHEN_RELEASE_CONTROL_DIRECTORY`（仅已批准 manifest、approval，挂载到只读 `/release`）、`CHEN_RELEASE_TRUST_DIRECTORY`（由部署安全负责人控制的独立信任公钥目录，挂载到只读 `/trust`），以及 Compose 中要求的 MySQL、Redis、RabbitMQ、MinIO、聊天和 JWT 配置。公钥固定从 `/trust/release-public.pem` 读取，不从操作者提交的 `/release` 目录读取。现有服务不会被本模板启动或修改，必须自行提供此项目可达且已批准的地址，不能假定原项目服务名在新网络内可达。
-
-独立信任目录、部署配置和信任根选择必须由部署安全负责人控制，操作者不得替换、修改或自行选择信任公钥及其挂载路径；私钥只保存在审批侧仓库外。容器只读挂载不能阻止有权限的人修改宿主机文件，必须通过实际部署账户、目录 ACL 及发布权限落实隔离。代码中 approver 与 operator 不同只拒绝同名自批，不证明两者属于不同自然人。这些是必要外部前置条件，本轮没有验证真实人员或 ACL 隔离，也不擅自修改系统 ACL。
-
-检查 Compose 时只使用 `config --quiet`，不把展开后的秘密输出到终端或报告。可用 `COMPOSE_DISABLE_ENV_FILE=true` 防止隐式载入工作目录 `.env`；若部署工具版本不支持，使用显式选定的外部受保护 `--env-file`。本目录不会为用户生成真实 `.env`。
-
-配置、DDL、制品及发布审批全部确认后，操作者才可显式使用单独项目的 `docker compose build backend`、`docker compose up -d`。这里不自动执行这些命令，不提供 `down -v`、清库或回滚账本操作。若使用已批准的远程 Qdrant，应显式采用 TLS 与独立 Key 的部署配置，不把本模板的 loopback 明文连接改为普通跨容器连接。
-
-## 既有部署的发布/恢复挂载
-
-`backend-rag.override.yml` 是供 `script/dev/docker-compose.yml` 或既有 prod base **显式合并**的 override，只补后端公共控制文件、独立信任目录及身份输入，不改变镜像、数据库、Qdrant、网络、端口、卷或其他服务。三个开关默认关闭；仅选择该文件不会执行发布。宿主机目录必须预先存在，`create_host_path=false` 防止拼错路径时自动创建空目录。
-
-由部署负责人从原部署记录确认项目名、原 base 文件和凭据注入方式；不得换一个项目名把既有实例当成候选实例，也不得把候选 Compose 的新 Qdrant 卷当作正式索引。下例只做静态检查（PowerShell 7），不启动或替换容器：
+下面只是获准后的命令形态，不是部署授权。先按原部署注入可信环境并在当前进程设控制路径、预算路径/ID和操作者。普通后端不得保留写开关；设置本地命令时使用一次性容器环境。若现有RAG后端持有Catalog owner锁，按批准计划只停止backend以交接，不停其他服务。
 
 ```powershell
-# 先在当前进程配置上文列出的参数；不要打印或粘贴秘密。
-$env:COMPOSE_DISABLE_ENV_FILE = 'true'
 pwsh -NoProfile -File script/release/Test-ReleaseConfiguration.ps1 -ExistingDeployment
-if ($LASTEXITCODE -ne 0) { throw 'Release precheck failed' }
-docker compose --project-name $env:CHEN_RELEASE_PROJECT_NAME `
-    -f script/dev/docker-compose.yml -f script/release/backend-rag.override.yml config --quiet
-if ($LASTEXITCODE -ne 0) { throw 'Compose configuration failed' }
+if ($LASTEXITCODE -ne 0) { throw '发布配置预检失败。' }
+docker compose --project-name dev --project-directory 'D:\zcx-chen-stack\script\dev' `
+  --env-file 'D:\zcx-chen-stack\script\dev\.env' `
+  -f 'D:\zcx-chen-stack\script\dev\docker-compose.yml' `
+  -f 'D:\zcx-chen-stack\script\release\backend-rag.override.yml' `
+  run --rm --no-deps -e CHEN_RAG_ENABLED=true -e CHEN_RAG_RELEASE_ENABLED=true `
+  -e CHEN_RAG_RELEASE_RECOVERY_ENABLED=false --entrypoint java backend `
+  -Dloader.main=com.zcx.chenstack.rag.RagPublicationCommand -cp /app/app.jar `
+  org.springframework.boot.loader.launch.PropertiesLauncher --spring.main.web-application-type=none
+if ($LASTEXITCODE -ne 0) { throw '本地运维操作失败，停止；保留所有记录，不自动重试。' }
 ```
 
-若原部署使用多个 base 文件，必须保持原有文件及顺序，再将本 override 放到最后。不要输出展开后的 `docker compose config`；其中可能含秘密。静态检查成功不授予部署权限，真正替换容器仍需独立授权。
+`CHEN_RELEASE_PROJECT_NAME`须明确dev，profiles保留dev并加rag；`CHEN_RELEASE_CONTROL_DIRECTORY`和`CHEN_RELEASE_BUDGET_DIRECTORY`为已核对外部绝对目录。首次发布需新集合确认；稳态读取及撤销不得沿用创建确认。宿主Manifest/operation目录映射为/release，JAR固定/app/app.jar。数据库名未写入Manifest字段，必须由实际部署检查与一次性授权限定为chen_stack。
 
-## 正常重启、修复、升级与撤销
+## 恢复、幂等、撤销和失败关闭
 
-| 场景 | 开关与审批 | 行为和边界 |
-|---|---|---|
-| 首次发布 | `RELEASE_ENABLED=true`，`RECOVERY_ENABLED=false`；未过期 PUBLISH 签名 | 仅按 Manifest 批准初始化空 Catalog/新集合、发布 39 个用户主题；`help-history` 和 12 个后台主题排除。发布预算持久化且发送前预留；失败请求也消耗预留。 |
-| 无数据变化的正常 JVM/Docker 重启 | `RELEASE_ENABLED=false`，`RECOVERY_ENABLED=true`；保留原 PUBLISH/RECOVER 的 Manifest、Approval 和可信公钥 | 对历史原签名、同一 JAR、环境、数据库身份、当前代际/快照、来源状态、集合绑定及全索引摘要进行只读校验。原授权可过期；不重新发布、不写 Catalog、不创建集合、不调用 Embedding。此模式不能用来继续未完成操作。 |
-| 发布中断或索引不一致 | 发布开关启用、恢复开关关闭；有效且匹配的原审批仅可在原检查点/预算内继续，或新批准 RECOVER | 写索引/Embedding 仍需未过期授权和持久预算。正常只读恢复不会自动修补。 |
-| 旧 COMPLETED 没有索引摘要 | 新的、独立批准的 RECOVER，明确当前代际/快照和费用 | 先受控重建并生成完整摘要，以后同一制品的正常重启才能零 Embedding 恢复；不能仅信任旧 COMPLETED 字段。 |
-| JAR 升级或回退 | 目标提交构建对应 JAR、新 Manifest、新独立 RECOVER 授权 | 仅代码变化、知识内容/版本/元数据仍与持久来源一致时可用 RECOVER；它不更新知识正文或来源版本。旧 Manifest 的 JAR Hash 不能代表新代码。重新核对资源、持久 schema/状态和索引兼容性；未经验证的旧版本不准直接恢复读取。不能回滚 Catalog 账本或清理正式索引来配合旧 JAR。 |
-| 来源撤销 | 新 REVOKE 签名，预算为 0，发布开关启用、恢复开关关闭 | 持久墓碑立即令旧读取凭据失效；即使物理删除失败也不复活来源。撤销使原完成快照失效，剩余来源要另行授权 RECOVER 后才恢复读取。REVOKE Receipt 不能当作正常重启读取凭据。 |
+| 场景 | 行为 |
+|---|---|
+| 首次PUBLISH | 只在受控本地命令按明确许可初始化空目录、创建唯一目标集合，发布39条，持久保存operation Hash/ID、operator、模式、环境、代际、目标和预算。 |
+| 普通JVM重启/Docker重建 | 服务器写开关false、recovery-enabled=true；只需原Manifest和已完成持久记录，不读operation文件。核对同一JAR/资源、当前代际/快照、来源/墓碑、数据库/集合owner、index authority/epoch及全物理摘要，0发布/0Embedding/0目录写入。 |
+| 中断发布 | 普通启动拒绝续作。只有显式本地命令使用同一不可变操作ID/记录和剩余预算才可继续；不清零预算。 |
+| 写入RECOVER | 显式新受控操作与匹配当前代际/快照的Manifest；不改变知识正文/版本，不复活撤销来源。旧签名完成记录不能直接冒认为新模式。 |
+| REVOKE | 显式本地操作、预算0，持久墓碑立即使旧receipt失效；即使物理删除失败也不复活。剩余来源需新RECOVER完成后恢复读取。 |
+| JAR升级/回退 | 新制品/Manifest重新核验；不能把旧Manifest当新JAR授权。保留账本，兼容性不符则RAG关闭。 |
 
-表中的 `RELEASE_ENABLED` / `RECOVERY_ENABLED` 均带 `CHEN_RAG_RELEASE_` 前缀。写操作完成后由获准部署方切换为只读恢复配置，保留相应原件；不要让限时写操作 Runner 随普通容器重启重复执行。`ApplicationRunner` 只在对应显式开关开启时执行，双开必须失败。
+持久旧SQL列兼容保留：approval_sha256现在存操作记录原始SHA256，approver_id存CONTROLLED_OPERATOR，不是审批人或签名证明。VALIDATED审计标记为LOCAL_OPERATOR_AND_SCOPE_VERIFIED。只读恢复只认可新模式的完整完成记录及索引摘要；同Manifest出现多条可候选完成记录则失败关闭，不猜哪一条。
 
-失败关闭时保持普通客服可用的回退入口：按部署授权关闭 RAG 与两个控制开关，保留 Catalog、墓碑、发布账本和正式 Qdrant 数据以供调查。不要删除数据、覆盖已完成记录、下调权限门禁或改用合成签名。真正的部署回退须先验证目标 JAR/配置的兼容边界。
-
-读取 Embedding 的日上限目前是每进程上限，重启会重置；它不能证明跨进程/跨实例总日额。发布的审批级预算独立持久化，正常只读恢复消耗为 0。真实 Provider 质量、生产 TLS/ACL 和真人体验仍需另行授权验收。
-
-## 外部审批人离线签名（Java 21，PowerShell 7）
-
-审批人先独立核对 manifest 原文件及其制品/资源哈希、主题清单、环境、目标集合、操作和预期目录代际，再签名。操作者不能给自己审批。通过既有受保护密钥流程，在**仓库外**预置 Ed25519 私钥（未加密 PKCS8 PEM，`BEGIN PRIVATE KEY`）与匹配公钥（X.509/SPKI PEM，`BEGIN PUBLIC KEY`）；本工具不生成正式密钥、不复制或输出私钥，也不读取 `.env`。私钥文件权限与保管由审批人负责。
-
-先在仓库根执行无文件密钥、无网络自检：
-
-```powershell
-java script/release/SignReleaseApproval.java --self-test
-```
-
-下例路径和身份为示例，审批人必须换成已独立核对的真实批准对象。输出目录须已存在，输出审批文件必须不存在。参数顺序为私钥、公钥、manifest、输出、approvalId、approver、operator、environment、operation、UTC 截止时间、最大 Embedding 请求数；全部显式提供：
-
-```powershell
-$expiresAt = [DateTime]::UtcNow.AddHours(2).ToString('yyyy-MM-ddTHH:mm:ssZ')
-$approvalArgs = @(
-    'C:/ApprovedKeys/reviewer-private.pem'
-    'C:/ApprovedKeys/reviewer-public.pem'
-    'C:/ApprovedRelease/manifest.json'
-    'C:/ApprovedRelease/approval.json'
-    'approval-20261024-01'
-    'reviewer-a'
-    'operator-b'
-    'production'
-    'PUBLISH'
-    $expiresAt
-    '64'
-)
-java script/release/SignReleaseApproval.java @approvalArgs
-if ($LASTEXITCODE -ne 0) { throw 'Approval signing failed' }
-```
-
-`operation` 仅可为 `PUBLISH`、`RECOVER`、`REVOKE`；REVOKE 的预算必须为 0，其他操作预算为显式非负 int。日期必须带 UTC `Z` 且尚未过期。`approvalId` 只接受 ASCII `[A-Za-z0-9._-]{1,80}`；approver/operator 以字母或数字开头，后续可含 `._:@/-`，最长 128 字符；environment 以字母或数字开头，后续可含 `._-`，最长 80 字符。工具采用比服务端更窄的身份字符集，避免构造 JSON 时引入转义歧义。
-
-工具按 `PublicationAuthorization.Grant` 固定字段生成 UTF-8 payload，对 **manifest 原始字节**计算 SHA256，使用 Ed25519 签署 **payload 原始字节**，再把 payload 与 signature 各自编码成 Base64URL without padding，写入 `{ "payload": "...", "signature": "..." }` envelope。不要重新序列化或改写 payload。工具会用给定公钥自验签，并输出 `PUBLIC_KEY_SPKI_SHA256`；这是公钥 DER/SPKI 的 SHA256，不是 PEM 文本文件的哈希。
-
-审批人通过独立受信渠道核对并交付公钥指纹及审批文件。部署安全负责人按已批准流程维护 `/trust` 及信任根，操作者不得根据自己的签名工具输出替换或自选信任锚。工具只证明签名与所给公钥一致，不解析完整 manifest 或证明内容获批；正式后端仍核对可信公钥、操作者、环境、操作、过期时间、原始 manifest 哈希、制品和目录状态。签名成功不执行发布或 Provider 调用。
+异常时关闭RAG和发布/恢复开关以保留普通客服；保留Catalog、墓碑、索引及费用账本。禁止清卷、删除来源、恢复旧账本或自动重试来消除失败。真实Provider质量、正式重启及真人验收另记实际证据，Mock/HTTP200不构成最终验收，G2不由执行工具自闭。

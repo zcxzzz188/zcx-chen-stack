@@ -29,34 +29,29 @@ function Read-BoundedFile([string]$Path, [int]$Limit) {
     } finally { $stream.Dispose() }
 }
 
-function Read-Base64Url([string]$Value, [int]$Limit) {
-    if ($Value -cnotmatch '^[A-Za-z0-9_-]+$' -or $Value.Length -gt $Limit * 2) { throw 'Invalid approval encoding.' }
-    try { $bytes = [Convert]::FromBase64String($Value.Replace('-', '+').Replace('_', '/') + ('=' * ((4 - $Value.Length % 4) % 4))) }
-    catch { throw 'Invalid approval encoding.' }
-    if ($bytes.Length -gt $Limit -or [Convert]::ToBase64String($bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_') -cne $Value) {
-        throw 'Invalid approval encoding.'
-    }
-    return ,$bytes
-}
-
 function Test-ReleaseFiles([hashtable]$Values, [bool]$Recovery) {
-    foreach ($name in @('CONTROL', 'TRUST')) {
-        $directory = [string]$Values["CHEN_RELEASE_${name}_DIRECTORY"]
-        if (-not [IO.Path]::IsPathFullyQualified($directory) -or -not (Test-Path -LiteralPath $directory -PathType Container)) {
-            throw "CHEN_RELEASE_${name}_DIRECTORY must name an existing absolute host directory."
-        }
+    $budgetDirectory = [string]$Values['CHEN_RELEASE_BUDGET_DIRECTORY']
+    $budgetId = [string]$Values['CHEN_RAG_RELEASE_BUDGET_ID']
+    if (-not [IO.Path]::IsPathFullyQualified($budgetDirectory) -or
+        -not (Test-Path -LiteralPath $budgetDirectory -PathType Container) -or
+        $budgetId -cnotmatch '^[A-Za-z0-9._-]{1,80}$' -or
+        [string]$Values['CHEN_RAG_RELEASE_BUDGET_LEDGER_PATH'] -cne '/budget/provider-attempts.ledger') {
+        throw 'Controlled release and E2E require a persistent budget directory, fixed budget ID and container path.'
     }
-    $control = (Get-Item -LiteralPath $Values['CHEN_RELEASE_CONTROL_DIRECTORY']).FullName.TrimEnd([IO.Path]::DirectorySeparatorChar)
-    $trust = (Get-Item -LiteralPath $Values['CHEN_RELEASE_TRUST_DIRECTORY']).FullName.TrimEnd([IO.Path]::DirectorySeparatorChar)
-    $separator = [IO.Path]::DirectorySeparatorChar
-    if ($control -ieq $trust -or $control.StartsWith($trust + $separator, [StringComparison]::OrdinalIgnoreCase) -or
-        $trust.StartsWith($control + $separator, [StringComparison]::OrdinalIgnoreCase)) {
-        throw 'Control and independently managed trust directories must be separate, without nesting.'
+    $ledger = [Text.UTF8Encoding]::new($false,$true).GetString((Read-BoundedFile (Join-Path $budgetDirectory 'provider-attempts.ledger') 65536))
+    if (-not $ledger.StartsWith("CHEN_RELEASE_HTTP_BUDGET_V1|$budgetId|64|20`n", [StringComparison]::Ordinal) -or
+        -not $ledger.EndsWith("`n") -or $ledger.Contains("`r")) {
+        throw 'Budget header, fixed 64/20 limits or complete record boundary differs; do not reset the ledger.'
     }
+    $directory = [string]$Values['CHEN_RELEASE_CONTROL_DIRECTORY']
+    if (-not [IO.Path]::IsPathFullyQualified($directory) -or -not (Test-Path -LiteralPath $directory -PathType Container)) {
+        throw 'CHEN_RELEASE_CONTROL_DIRECTORY must name an existing absolute host directory.'
+    }
+    $control = (Get-Item -LiteralPath $directory).FullName
     $expectedPaths = @{
-        MANIFEST_PATH = '/release/manifest.json'; APPROVAL_PATH = '/release/approval.json'
-        PUBLIC_KEY_PATH = '/trust/release-public.pem'; ARTIFACT_PATH = '/app/app.jar'
+        MANIFEST_PATH = '/release/manifest.json'; ARTIFACT_PATH = '/app/app.jar'
     }
+    if (-not $Recovery) { $expectedPaths['OPERATION_PATH'] = '/release/operation.json' }
     foreach ($name in $expectedPaths.Keys) {
         if ([string]$Values["CHEN_RAG_RELEASE_$name"] -cne $expectedPaths[$name]) {
             throw "CHEN_RAG_RELEASE_$name must match the container mount path."
@@ -76,7 +71,7 @@ function Test-ReleaseFiles([hashtable]$Values, [bool]$Recovery) {
     }
     $fresh = Read-Boolean $Values 'CHEN_RELEASE_NEW_COLLECTION_CONFIRMED'
     $creates = -not $Recovery -and $manifest['operation'] -cne 'REVOKE' -and $manifest['createCollection']
-    if ($fresh -ne $creates) { throw 'Fresh-target confirmation must match a signed collection creation; read-only recovery and revocation use an existing target.' }
+    if ($fresh -ne $creates) { throw 'Fresh-target confirmation must match controlled collection creation; read-only recovery and revocation use an existing target.' }
     if ($Recovery -and $manifest['operation'] -cnotin @('PUBLISH', 'RECOVER')) {
         throw 'Read-only restart recovery requires the completed PUBLISH or RECOVER receipt.'
     }
@@ -84,37 +79,28 @@ function Test-ReleaseFiles([hashtable]$Values, [bool]$Recovery) {
         ($manifest['createCollection'] -or $manifest['initializeEmptyCatalog'])) {
         throw 'REVOKE cannot initialize the Catalog or create a collection.'
     }
-    $approval = Read-BoundedFile (Join-Path $control 'approval.json') 16384
-    try { $envelope = $utf8.GetString($approval) | ConvertFrom-Json -AsHashtable -ErrorAction Stop }
-    catch { throw 'Approval envelope is not valid UTF-8 JSON.' }
-    $signature = Read-Base64Url ([string]$envelope['signature']) 64
-    if ($signature.Length -ne 64) { throw 'Ed25519 signatures must be 64 bytes.' }
-    $payload = Read-Base64Url ([string]$envelope['payload']) 8192
-    try { $grant = $utf8.GetString($payload) | ConvertFrom-Json -AsHashtable -ErrorAction Stop }
-    catch { throw 'Approval payload is not valid UTF-8 JSON.' }
     $manifestHash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($raw)).ToLowerInvariant()
-    $expiresAt = [DateTimeOffset]::MinValue
-    $budget = 0
-    if ([string]$grant['manifestSha256'] -cne $manifestHash -or
-        [string]$grant['operator'] -cne [string]$Values['CHEN_RAG_RELEASE_OPERATOR'] -or
-        [string]::IsNullOrWhiteSpace([string]$grant['approver']) -or $grant['approver'] -ceq $grant['operator'] -or
-        [string]$grant['environment'] -cne [string]$manifest['environment'] -or
-        [string]$grant['allowedOperation'] -cne [string]$manifest['operation'] -or
-        -not [DateTimeOffset]::TryParse([string]$grant['expiresAt'], [ref]$expiresAt) -or
-        -not [int]::TryParse([string]$grant['maxEmbeddingRequests'], [ref]$budget) -or $budget -lt 0 -or
-        ($manifest['operation'] -ceq 'REVOKE' -and $budget -ne 0)) {
-        throw 'Approval fields do not match the raw Manifest or deployment identities.'
-    }
-    if (-not $Recovery -and $expiresAt -le [DateTimeOffset]::UtcNow) { throw 'Approval expired for a new controlled operation.' }
-    $publicKey = Read-BoundedFile (Join-Path $trust 'release-public.pem') 8192
-    $pem = [Text.Encoding]::ASCII.GetString($publicKey)
-    if ($pem -cnotmatch '\A-----BEGIN PUBLIC KEY-----\s+([A-Za-z0-9+/=\s]+)-----END PUBLIC KEY-----\s*\z') {
-        throw 'Trust input must be an Ed25519 SPKI PUBLIC KEY PEM.'
-    }
-    try { $spki = [Convert]::FromBase64String(($Matches[1] -replace '\s', '')) }
-    catch { throw 'Trust public key has invalid Base64.' }
-    if ($spki.Length -ne 44 -or [Convert]::ToHexString($spki[0..11]) -cne '302A300506032B6570032100') {
-        throw 'Trust public key must use Ed25519 SPKI format.'
+    $operationHash = $null
+    if (-not $Recovery) {
+        $operationBytes = Read-BoundedFile (Join-Path $control 'operation.json') 8192
+        try { $record = $utf8.GetString($operationBytes) | ConvertFrom-Json -AsHashtable -ErrorAction Stop }
+        catch { throw 'Operation record is not valid UTF-8 JSON.' }
+        $fields = @('schemaVersion', 'operationId', 'operator', 'environment', 'manifestSha256', 'maxEmbeddingRequests', 'allowedOperation', 'confirmed')
+        if ($record -isnot [System.Collections.IDictionary] -or $record.Count -ne $fields.Count -or
+            @($fields | Where-Object { $record.Keys -cnotcontains $_ }).Count -ne 0 -or
+            $record['schemaVersion'] -isnot [long] -and $record['schemaVersion'] -isnot [int] -or $record['schemaVersion'] -ne 1 -or
+            [string]$record['operationId'] -cnotmatch '^[A-Za-z0-9._-]{1,80}$' -or
+            [string]$record['manifestSha256'] -cne $manifestHash -or
+            [string]$record['operator'] -cne [string]$Values['CHEN_RAG_RELEASE_OPERATOR'] -or
+            [string]$record['environment'] -cne [string]$manifest['environment'] -or
+            [string]$record['allowedOperation'] -cne [string]$manifest['operation'] -or
+            $record['confirmed'] -isnot [bool] -or -not $record['confirmed'] -or
+            $record['maxEmbeddingRequests'] -isnot [long] -and $record['maxEmbeddingRequests'] -isnot [int] -or
+            $record['maxEmbeddingRequests'] -lt 0 -or $record['maxEmbeddingRequests'] -gt [int]::MaxValue -or
+            ($manifest['operation'] -ceq 'REVOKE' -and $record['maxEmbeddingRequests'] -ne 0)) {
+            throw 'Operation record is unconfirmed or differs from the raw Manifest and deployment identities.'
+        }
+        $operationHash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($operationBytes)).ToLowerInvariant()
     }
     if (-not (Test-Path -LiteralPath $ArtifactPath -PathType Leaf)) { throw 'The host artifact to be copied into /app/app.jar is missing.' }
     $artifactHash = (Get-FileHash -LiteralPath $ArtifactPath -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -136,8 +122,9 @@ function Test-ReleaseFiles([hashtable]$Values, [bool]$Recovery) {
         Operation = $(if ($Recovery) { 'READ_ONLY_RESTART' } else { $manifest['operation'] })
         ManifestSha256 = $manifestHash
         ArtifactSha256 = $artifactHash
-        SignatureAuthority = 'NOT_VERIFIED_BACKEND_MUST_VERIFY'
-        HostAclAndSignerIsolation = 'MANUAL_PENDING'
+        OperationSha256 = $operationHash
+        WriteEntryPoint = 'LOCAL_COMMAND_REQUIRED_NOT_VERIFIED_BY_THIS_SCRIPT'
+        CatalogAndIndexState = 'NOT_VERIFIED_NO_NETWORK_CALLS'
     }
 }
 
@@ -185,10 +172,15 @@ function Test-Configuration([hashtable]$Values, [bool]$Existing = $false) {
     }
     $files = $null
     if ($releaseEnabled -or $recoveryEnabled) {
-        foreach ($name in @('MANIFEST_PATH', 'APPROVAL_PATH', 'PUBLIC_KEY_PATH', 'OPERATOR', 'ENVIRONMENT', 'ARTIFACT_PATH')) {
+        foreach ($name in @('MANIFEST_PATH', 'OPERATOR', 'ENVIRONMENT', 'ARTIFACT_PATH')) {
             if ([string]::IsNullOrWhiteSpace([string]$Values["CHEN_RAG_RELEASE_$name"])) {
                 throw "Enabled release or recovery requires CHEN_RAG_RELEASE_$name."
             }
+        }
+        $operator = [string]$Values['CHEN_RAG_RELEASE_OPERATOR']
+        if ($operator.Length -gt 128 -or $operator -cne $operator.Trim() -or $operator -match '[\x00-\x1f\x7f]' -or
+            [string]$Values['CHEN_RAG_RELEASE_ENVIRONMENT'] -cnotmatch '^[A-Za-z0-9._-]{1,80}$') {
+            throw 'Release operator or environment is invalid.'
         }
         $files = Test-ReleaseFiles $Values $recoveryEnabled
     }
@@ -213,7 +205,7 @@ if ($SelfTest) {
         CHEN_RAG_EMBEDDING_API_KEY = 'synthetic-embedding'; SPRING_AI_OPENAI_API_KEY = 'synthetic-chat'
     }
     $result = Test-Configuration $baseline
-    if ($result.RagEnabled -or $result.ReleaseEnabled) { throw 'Disabled defaults regression.' }
+    if ($result.RagEnabled -or $result.ReleaseEnabled -or $result.RecoveryEnabled) { throw 'Disabled defaults regression.' }
     $cases = @(
         @{ SPRING_PROFILES_ACTIVE = 'docker' }, @{ CHEN_RAG_QDRANT_COLLECTION = '' },
         @{ CHEN_RAG_QDRANT_COLLECTION = 'chen_platform_help_v1' },
@@ -241,7 +233,8 @@ if ($SelfTest) {
     Test-Configuration $enabledRag | Out-Null
     $selfTestRoot = Join-Path ([IO.Path]::GetTempPath()) ('chen-release-config-' + [Guid]::NewGuid().ToString('N'))
     $control = New-Item -ItemType Directory -Path (Join-Path $selfTestRoot 'control')
-    $trust = New-Item -ItemType Directory -Path (Join-Path $selfTestRoot 'trust')
+    $budget = New-Item -ItemType Directory -Path (Join-Path $selfTestRoot 'budget')
+    [IO.File]::WriteAllText((Join-Path $budget.FullName 'provider-attempts.ledger'), "CHEN_RELEASE_HTTP_BUDGET_V1|synthetic|64|20`n", [Text.UTF8Encoding]::new($false))
     try {
         $ArtifactPath = Join-Path $selfTestRoot 'synthetic.jar'
         $zip = [IO.Compression.ZipFile]::Open($ArtifactPath, [IO.Compression.ZipArchiveMode]::Create)
@@ -255,32 +248,29 @@ if ($SelfTest) {
         $manifestPath = Join-Path $control.FullName 'manifest.json'
         function Write-SyntheticInputs {
             $manifest | ConvertTo-Json | Set-Content -LiteralPath $manifestPath -Encoding utf8NoBOM
-            $grant = @{ approver = 'synthetic-reviewer'; operator = 'synthetic-operator'; environment = 'synthetic'
+            $record = @{ schemaVersion = 1; operationId = 'synthetic-operation'; operator = 'synthetic-operator'; environment = 'synthetic'
                 manifestSha256 = (Get-FileHash -LiteralPath $manifestPath).Hash.ToLowerInvariant()
-                expiresAt = [DateTimeOffset]::UtcNow.AddHours(1).ToString('o'); maxEmbeddingRequests = 0
-                allowedOperation = $manifest['operation'] }
-            $payload = [Text.Encoding]::UTF8.GetBytes(($grant | ConvertTo-Json -Compress))
-            @{ payload = [Convert]::ToBase64String($payload).TrimEnd('=').Replace('+', '-').Replace('/', '_')
-                signature = [Convert]::ToBase64String([byte[]]::new(64)).TrimEnd('=').Replace('+', '-').Replace('/', '_') } |
-                ConvertTo-Json | Set-Content -LiteralPath (Join-Path $control.FullName 'approval.json') -Encoding utf8NoBOM
+                maxEmbeddingRequests = 0; allowedOperation = $manifest['operation']; confirmed = $true }
+            $record | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $control.FullName 'operation.json') -Encoding utf8NoBOM
         }
         Write-SyntheticInputs
-        # Synthetic public bytes only; the backend must still verify a real signature and trust anchor.
-        $spki = [Convert]::FromHexString('302A300506032B6570032100' + ('00' * 32))
-        Set-Content -LiteralPath (Join-Path $trust.FullName 'release-public.pem') -Encoding ascii -Value (
-            "-----BEGIN PUBLIC KEY-----`n" + [Convert]::ToBase64String($spki) + "`n-----END PUBLIC KEY-----")
         $enabled = $baseline.Clone()
         $enabled['CHEN_RAG_ENABLED'] = 'true'; $enabled['CHEN_RAG_RELEASE_ENABLED'] = 'true'
         $enabled['CHEN_RELEASE_NEW_COLLECTION_CONFIRMED'] = 'true'
-        $enabled['CHEN_RELEASE_CONTROL_DIRECTORY'] = $control.FullName; $enabled['CHEN_RELEASE_TRUST_DIRECTORY'] = $trust.FullName
+        $enabled['CHEN_RELEASE_CONTROL_DIRECTORY'] = $control.FullName
+        $enabled['CHEN_RELEASE_BUDGET_DIRECTORY'] = $budget.FullName
+        $enabled['CHEN_RAG_RELEASE_BUDGET_ID'] = 'synthetic'
+        $enabled['CHEN_RAG_RELEASE_BUDGET_LEDGER_PATH'] = '/budget/provider-attempts.ledger'
         $enabled['CHEN_RAG_RELEASE_OPERATOR'] = 'synthetic-operator'; $enabled['CHEN_RAG_RELEASE_ENVIRONMENT'] = 'synthetic'
-        $enabled['CHEN_RAG_RELEASE_MANIFEST_PATH'] = '/release/manifest.json'; $enabled['CHEN_RAG_RELEASE_APPROVAL_PATH'] = '/release/approval.json'
-        $enabled['CHEN_RAG_RELEASE_PUBLIC_KEY_PATH'] = '/trust/release-public.pem'; $enabled['CHEN_RAG_RELEASE_ARTIFACT_PATH'] = '/app/app.jar'
+        $enabled['CHEN_RAG_RELEASE_MANIFEST_PATH'] = '/release/manifest.json'; $enabled['CHEN_RAG_RELEASE_OPERATION_PATH'] = '/release/operation.json'
+        $enabled['CHEN_RAG_RELEASE_ARTIFACT_PATH'] = '/app/app.jar'
         Test-Configuration $enabled | Out-Null
         $fileCases = @(
             @{ CHEN_RAG_ENABLED = 'false' }, @{ CHEN_RAG_RELEASE_RECOVERY_ENABLED = 'true' },
-            @{ CHEN_RELEASE_NEW_COLLECTION_CONFIRMED = 'false' }, @{ CHEN_RELEASE_TRUST_DIRECTORY = $control.FullName },
-            @{ CHEN_RAG_RELEASE_PUBLIC_KEY_PATH = '/release/release-public.pem' },
+            @{ CHEN_RELEASE_BUDGET_DIRECTORY = (Join-Path $selfTestRoot 'missing-budget') },
+            @{ CHEN_RAG_RELEASE_BUDGET_ID = 'changed' }, @{ CHEN_RAG_RELEASE_BUDGET_LEDGER_PATH = '/budget/wrong' },
+            @{ CHEN_RELEASE_NEW_COLLECTION_CONFIRMED = 'false' }, @{ CHEN_RAG_RELEASE_OPERATOR = 'wrong-operator' },
+            @{ CHEN_RAG_RELEASE_OPERATION_PATH = '/release/wrong-operation.json' },
             @{ CHEN_RAG_RELEASE_ENVIRONMENT = 'wrong' }, @{ CHEN_RELEASE_CONTROL_DIRECTORY = (Join-Path $selfTestRoot 'missing') }
         )
         foreach ($case in $fileCases) {
@@ -289,22 +279,52 @@ if ($SelfTest) {
             try { Test-Configuration $values | Out-Null } catch { $rejected = $true }
             if (-not $rejected) { throw 'An invalid release path or mode was accepted.' }
         }
+        $operationPath = Join-Path $control.FullName 'operation.json'
+        $recordCases = @(
+            @{ confirmed = $false }, @{ confirmed = 'true' }, @{ schemaVersion = 2 }, @{ schemaVersion = '1' },
+            @{ operationId = 'a' * 81 }, @{ operationId = '非ASCII' }, @{ manifestSha256 = '0' * 64 },
+            @{ operator = 'wrong-operator' }, @{ environment = 'wrong' }, @{ allowedOperation = 'RECOVER' },
+            @{ maxEmbeddingRequests = -1 }, @{ maxEmbeddingRequests = '1' }, @{ unexpected = 'denied' }
+        )
+        foreach ($case in $recordCases) {
+            Write-SyntheticInputs
+            $record = Get-Content -LiteralPath $operationPath -Raw | ConvertFrom-Json -AsHashtable
+            foreach ($name in $case.Keys) { $record[$name] = $case[$name] }
+            $record | ConvertTo-Json | Set-Content -LiteralPath $operationPath -Encoding utf8NoBOM
+            $rejected = $false
+            try { Test-Configuration $enabled | Out-Null } catch { $rejected = $true }
+            if (-not $rejected) { throw 'An invalid or unconfirmed operation record was accepted.' }
+        }
+        Write-SyntheticInputs
+        Remove-Item -LiteralPath $operationPath
+        $rejected = $false
+        try { Test-Configuration $enabled | Out-Null } catch { $rejected = $true }
+        if (-not $rejected) { throw 'Write mode accepted a missing operation record.' }
         $enabled['CHEN_RAG_RELEASE_ENABLED'] = 'false'; $enabled['CHEN_RAG_RELEASE_RECOVERY_ENABLED'] = 'true'
         $enabled['CHEN_RELEASE_NEW_COLLECTION_CONFIRMED'] = 'false'
+        $enabled.Remove('CHEN_RAG_RELEASE_OPERATION_PATH')
         Test-Configuration $enabled | Out-Null
+        if (Test-Path -LiteralPath $operationPath) { throw 'Read-only precheck unexpectedly created an operation record.' }
         $enabled['CHEN_RAG_RELEASE_RECOVERY_ENABLED'] = 'false'; $enabled['CHEN_RAG_RELEASE_ENABLED'] = 'true'
+        $enabled['CHEN_RAG_RELEASE_OPERATION_PATH'] = '/release/operation.json'
         foreach ($operation in @('RECOVER', 'REVOKE')) {
             $manifest['operation'] = $operation; $manifest['createCollection'] = $false; $manifest['initializeEmptyCatalog'] = $false
             Write-SyntheticInputs
             Test-Configuration $enabled | Out-Null
         }
+        $record = Get-Content -LiteralPath $operationPath -Raw | ConvertFrom-Json -AsHashtable
+        $record['maxEmbeddingRequests'] = 1
+        $record | ConvertTo-Json | Set-Content -LiteralPath $operationPath -Encoding utf8NoBOM
+        $rejected = $false
+        try { Test-Configuration $enabled | Out-Null } catch { $rejected = $true }
+        if (-not $rejected) { throw 'REVOKE accepted a nonzero embedding budget.' }
         $enabled['CHEN_RAG_RELEASE_ENABLED'] = 'false'; $enabled['CHEN_RAG_RELEASE_RECOVERY_ENABLED'] = 'true'
         $rejected = $false
         try { Test-Configuration $enabled | Out-Null } catch { $rejected = $true }
         if (-not $rejected) { throw 'REVOKE receipt was accepted for read-only recovery.' }
         $existing = $baseline.Clone(); $existing['CHEN_RELEASE_PROJECT_NAME'] = 'chen-stack'
         Test-Configuration $existing $true | Out-Null
-        [pscustomobject]@{ Result = 'SELF_TEST_PASS'; Checks = $cases.Count + $fileCases.Count + 9; ExternalCalls = 0 }
+        [pscustomobject]@{ Result = 'SELF_TEST_PASS'; Checks = $cases.Count + $fileCases.Count + $recordCases.Count + 12; ExternalCalls = 0 }
     } finally {
         $resolved = [IO.Path]::GetFullPath($selfTestRoot)
         $temporaryRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
@@ -321,8 +341,9 @@ if (-not $PSBoundParameters.ContainsKey('Configuration')) {
         'CHEN_RAG_ENABLED', 'CHEN_RAG_RELEASE_ENABLED', 'CHEN_RAG_RELEASE_RECOVERY_ENABLED', 'CHEN_RAG_QDRANT_HOST', 'CHEN_RAG_QDRANT_GRPC_PORT',
         'CHEN_RAG_QDRANT_TLS', 'CHEN_RAG_QDRANT_API_KEY', 'CHEN_RAG_QDRANT_COLLECTION',
         'CHEN_RAG_EMBEDDING_API_KEY', 'SPRING_AI_OPENAI_API_KEY', 'CHEN_RAG_RELEASE_MANIFEST_PATH',
-        'CHEN_RAG_RELEASE_APPROVAL_PATH', 'CHEN_RAG_RELEASE_PUBLIC_KEY_PATH', 'CHEN_RAG_RELEASE_OPERATOR',
-        'CHEN_RAG_RELEASE_ENVIRONMENT', 'CHEN_RAG_RELEASE_ARTIFACT_PATH', 'CHEN_RELEASE_CONTROL_DIRECTORY', 'CHEN_RELEASE_TRUST_DIRECTORY')) {
+        'CHEN_RAG_RELEASE_OPERATION_PATH', 'CHEN_RAG_RELEASE_OPERATOR',
+        'CHEN_RAG_RELEASE_ENVIRONMENT', 'CHEN_RAG_RELEASE_ARTIFACT_PATH', 'CHEN_RELEASE_CONTROL_DIRECTORY',
+        'CHEN_RELEASE_BUDGET_DIRECTORY', 'CHEN_RAG_RELEASE_BUDGET_ID', 'CHEN_RAG_RELEASE_BUDGET_LEDGER_PATH')) {
         $Configuration[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
     }
 }

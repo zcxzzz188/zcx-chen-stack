@@ -40,7 +40,9 @@ public record PublicationManifest(int schemaVersion, String gitCommit, String ar
             .enable(JsonParser.Feature.STRICT_DUPLICATE_DETECTION)
             .enable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
             .enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS)
-            .enable(DeserializationFeature.FAIL_ON_NULL_FOR_PRIMITIVES);
+            .enable(DeserializationFeature.FAIL_ON_NULL_FOR_PRIMITIVES)
+            .disable(DeserializationFeature.ACCEPT_FLOAT_AS_INT)
+            .disable(com.fasterxml.jackson.databind.MapperFeature.ALLOW_COERCION_OF_SCALARS);
 
     public PublicationManifest {
         resourceSha256 = resourceSha256 == null ? null : Map.copyOf(resourceSha256);
@@ -148,7 +150,7 @@ public record PublicationManifest(int schemaVersion, String gitCommit, String ar
             require(value != null, "PUBLICATION_JSON_INVALID");
             return value;
         } catch (java.io.IOException | IllegalArgumentException exception) {
-            // 不把审批正文、资源内容或原始 Jackson 异常带到日志。
+            // 不把运维操作记录、资源内容或原始Jackson异常带到日志。
             throw new SecurityException("PUBLICATION_JSON_INVALID");
         }
     }

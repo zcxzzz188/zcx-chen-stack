@@ -31,15 +31,15 @@ services:
         condition: service_healthy
     volumes:
       - type: bind
-        source: ${CHEN_RELEASE_CONTROL_DIRECTORY:?Select the approved manifest and approval directory}
+        source: ${CHEN_RELEASE_CONTROL_DIRECTORY:?Select the controlled manifest and operation directory}
         target: /release
         read_only: true
         bind:
           create_host_path: false
       - type: bind
-        source: ${CHEN_RELEASE_TRUST_DIRECTORY:?Select the independently controlled trust directory}
-        target: /trust
-        read_only: true
+        source: ${CHEN_RELEASE_BUDGET_DIRECTORY:?Select the persistent operation budget directory}
+        target: /budget
+        read_only: false
         bind:
           create_host_path: false
     environment:
@@ -86,8 +86,11 @@ services:
       CHEN_RAG_RELEASE_ENABLED: ${CHEN_RAG_RELEASE_ENABLED:-false}
       CHEN_RAG_RELEASE_RECOVERY_ENABLED: ${CHEN_RAG_RELEASE_RECOVERY_ENABLED:-false}
       CHEN_RAG_RELEASE_MANIFEST_PATH: /release/manifest.json
-      CHEN_RAG_RELEASE_APPROVAL_PATH: /release/approval.json
-      CHEN_RAG_RELEASE_PUBLIC_KEY_PATH: /trust/release-public.pem
+      CHEN_RAG_RELEASE_OPERATION_PATH: /release/operation.json
+      CHEN_RAG_RELEASE_BUDGET_LEDGER_PATH: /budget/provider-attempts.ledger
+      CHEN_RAG_RELEASE_BUDGET_ID: ${CHEN_RAG_RELEASE_BUDGET_ID:?Select the unchanged budget ID for this release run}
+      CHEN_RAG_RELEASE_MAX_EMBEDDING_HTTP_ATTEMPTS: 64
+      CHEN_RAG_RELEASE_MAX_CHAT_HTTP_ATTEMPTS: 20
       CHEN_RAG_RELEASE_OPERATOR: ${CHEN_RAG_RELEASE_OPERATOR:-}
       CHEN_RAG_RELEASE_ENVIRONMENT: ${CHEN_RAG_RELEASE_ENVIRONMENT:?Identify the approved target environment}
       CHEN_RAG_RELEASE_ARTIFACT_PATH: /app/app.jar

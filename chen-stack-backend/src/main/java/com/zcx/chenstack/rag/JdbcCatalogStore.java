@@ -8,7 +8,7 @@ import javax.sql.DataSource;
 import java.sql.*;
 import java.util.*;
 
-/** 单后端实例MySQL权威状态；默认不补种，首次导入仅由显式签名 bootstrap 执行。 */
+/** 单后端实例MySQL权威状态；默认不补种，首次导入仅由受控本地 bootstrap 执行。 */
 public final class JdbcCatalogStore implements AutoCloseable {
     private static final ObjectMapper JSON = new ObjectMapper().findAndRegisterModules()
             .configure(SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS, true)
@@ -178,8 +178,9 @@ public final class JdbcCatalogStore implements AutoCloseable {
         }
     }
 
-    record ReleaseOperation(String id, String manifestHash, String approvalHash, String environment,
-            String operator, String approver, String type, String status, long expectedGeneration,
+    // 兼容旧schema：approval_sha256存操作记录原始Hash，approver_id存授权模式，均不是签名证明。
+    record ReleaseOperation(String id, String manifestHash, String operationHash, String environment,
+            String operator, String authorizationMode, String type, String status, long expectedGeneration,
             Long appliedGeneration, String appliedSnapshotHash, String collection, long maxEmbeddingRequests,
             long embeddingRequests, boolean targetInitialized, String indexAuthority, Long indexEpoch, String error) {}
 
@@ -198,11 +199,11 @@ public final class JdbcCatalogStore implements AutoCloseable {
         finally { rollback(); }
     }
 
-    synchronized ReleaseReceipt completedReceipt(String manifestHash, String approvalHash) {
+    synchronized ReleaseReceipt completedReceipt(String manifestHash) {
         requireUnchanged();
         try (PreparedStatement query = connection.prepareStatement(
-                "SELECT operation_id FROM rag_release_operation WHERE manifest_sha256=? AND approval_sha256=? AND status='COMPLETED'")) {
-            query.setString(1, manifestHash); query.setString(2, approvalHash);
+                "SELECT operation_id FROM rag_release_operation WHERE manifest_sha256=? AND approver_id='CONTROLLED_OPERATOR' AND status='COMPLETED'")) {
+            query.setString(1, manifestHash);
             String id;
             try (ResultSet result = query.executeQuery()) {
                 if (!result.next()) throw new IllegalStateException("RECOVERY_COMPLETED_RECEIPT_REQUIRED");
@@ -219,7 +220,12 @@ public final class JdbcCatalogStore implements AutoCloseable {
                     while (result.next()) {
                         long micros = result.getLong(2);
                         java.time.Instant time = java.time.Instant.ofEpochSecond(micros / 1_000_000, micros % 1_000_000 * 1000);
-                        if ("VALIDATED".equals(result.getString(1)) && validated == null) validated = time;
+                        if ("VALIDATED".equals(result.getString(1)) && validated == null) {
+                            if (!"LOCAL_OPERATOR_AND_SCOPE_VERIFIED".equals(result.getString(3))) {
+                                throw new IllegalStateException("RECOVERY_CONTROLLED_OPERATION_REQUIRED");
+                            }
+                            validated = time;
+                        }
                         if ("COMPLETED".equals(result.getString(1))) {
                             completed = time;
                             String code = result.getString(3);
@@ -256,9 +262,13 @@ public final class JdbcCatalogStore implements AutoCloseable {
             requireOwner();
             ReleaseOperation previous = operation(requested.id());
             if (previous != null) {
-                if (!previous.manifestHash().equals(requested.manifestHash()) || !previous.approvalHash().equals(requested.approvalHash())
-                        || !previous.environment().equals(requested.environment()) || !previous.operator().equals(requested.operator())) {
-                    throw new IllegalStateException("RELEASE_APPROVAL_REPLAY");
+                if (!previous.manifestHash().equals(requested.manifestHash()) || !previous.operationHash().equals(requested.operationHash())
+                        || !previous.environment().equals(requested.environment()) || !previous.operator().equals(requested.operator())
+                        || !previous.authorizationMode().equals(requested.authorizationMode()) || !previous.type().equals(requested.type())
+                        || previous.expectedGeneration() != requested.expectedGeneration()
+                        || !previous.collection().equals(requested.collection())
+                        || previous.maxEmbeddingRequests() != requested.maxEmbeddingRequests()) {
+                    throw new IllegalStateException("RELEASE_OPERATION_REPLAY");
                 }
                 connection.commit();
                 return previous;
@@ -274,12 +284,12 @@ public final class JdbcCatalogStore implements AutoCloseable {
 
     private void insertOperation(ReleaseOperation requested) throws SQLException {
         try (PreparedStatement insert = connection.prepareStatement("INSERT INTO rag_release_operation(operation_id,manifest_sha256,approval_sha256,environment,operator_id,approver_id,operation_type,status,expected_generation,target_collection,max_embedding_requests,embedding_requests,target_initialized,created_at,updated_at) VALUES(?,?,?,?,?,?,?,'VALIDATED',?,?,?,0,0,CURRENT_TIMESTAMP(6),CURRENT_TIMESTAMP(6))")) {
-            insert.setString(1, requested.id()); insert.setString(2, requested.manifestHash()); insert.setString(3, requested.approvalHash());
-            insert.setString(4, requested.environment()); insert.setString(5, requested.operator()); insert.setString(6, requested.approver());
+            insert.setString(1, requested.id()); insert.setString(2, requested.manifestHash()); insert.setString(3, requested.operationHash());
+            insert.setString(4, requested.environment()); insert.setString(5, requested.operator()); insert.setString(6, requested.authorizationMode());
             insert.setString(7, requested.type()); insert.setLong(8, requested.expectedGeneration());
             insert.setString(9, requested.collection()); insert.setLong(10, requested.maxEmbeddingRequests()); insert.executeUpdate();
         }
-        appendEvent(requested.id(), "VALIDATED", state.generation(), "SIGNATURE_AND_SCOPE_VERIFIED");
+        appendEvent(requested.id(), "VALIDATED", state.generation(), "LOCAL_OPERATOR_AND_SCOPE_VERIFIED");
     }
 
     synchronized void checkpoint(String id, String status, boolean initialized, String authority, Long epoch) {

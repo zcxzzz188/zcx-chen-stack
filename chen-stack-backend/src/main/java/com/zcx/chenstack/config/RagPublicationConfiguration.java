@@ -1,67 +1,56 @@
 package com.zcx.chenstack.config;
 
-import com.zcx.chenstack.rag.CatalogLifecycle;
-import com.zcx.chenstack.rag.KnowledgeCatalog;
-import com.zcx.chenstack.rag.KnowledgeDocument;
-import com.zcx.chenstack.rag.PublicationAuthorization;
-import com.zcx.chenstack.rag.PublicationBuildIdentity;
-import com.zcx.chenstack.rag.PublicationManifest;
-import com.zcx.chenstack.rag.RagKnowledgeService;
-import com.zcx.chenstack.rag.RagPublicationExecutor;
-import com.zcx.chenstack.rag.RagPublicationRecovery;
+import com.zcx.chenstack.rag.*;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.security.KeyFactory;
-import java.security.PublicKey;
-import java.security.spec.X509EncodedKeySpec;
-import java.time.Instant;
-import java.util.Base64;
 import java.util.List;
-import java.util.regex.Pattern;
 
 @Configuration(proxyBeanMethods = false)
 @EnableConfigurationProperties(RagPublicationProperties.class)
 public class RagPublicationConfiguration {
-    private static final Pattern PUBLIC_KEY = Pattern.compile(
-            "\\A-----BEGIN PUBLIC KEY-----\\s+([A-Za-z0-9+/=\\s]+)-----END PUBLIC KEY-----\\s*\\z");
+    @Bean
+    public ReleaseProviderBudget releaseProviderBudget(RagPublicationProperties release) {
+        return new ReleaseProviderBudget(release.getBudgetLedgerPath(), release.getBudgetId(),
+                release.getMaxEmbeddingHttpAttempts(), release.getMaxChatHttpAttempts());
+    }
 
     public record Prepared(PublicationManifest manifest, PublicationAuthorization.Grant grant,
-                           String approvalHash, List<KnowledgeDocument> drafts) {
+                           String operationHash, List<KnowledgeDocument> drafts) {
         public Prepared { drafts = List.copyOf(drafts); }
     }
 
     @Bean
     @ConditionalOnProperty(prefix = "chen.rag.release", name = "enabled", havingValue = "true")
-    public Prepared preparedPublication(RagPublicationProperties release, RagProperties rag) {
+    public Prepared preparedPublication(RagPublicationProperties release, RagProperties rag,
+                                        RagPublicationCommand.Invocation invocation) {
         try {
             rag.validate();
-            if (!release.isEnabled() || release.isRecoveryEnabled() || !rag.isEnabled() || rag.getEmbeddingApiKey() == null || rag.getEmbeddingApiKey().isBlank()) {
-                throw new SecurityException("PUBLICATION_REQUIRES_DURABLE_RAG");
+            if (invocation == null || !invocation.localOnly() || !release.isEnabled() || release.isRecoveryEnabled()
+                    || !rag.isEnabled() || rag.getEmbeddingApiKey() == null || rag.getEmbeddingApiKey().isBlank()) {
+                throw new SecurityException("PUBLICATION_REQUIRES_LOCAL_OPERATOR_COMMAND");
             }
             byte[] manifestBytes = input(release.getManifestPath(), 65_536);
-            byte[] approvalBytes = input(release.getApprovalPath(), 16_384);
-            PublicKey key = publicKey(input(release.getPublicKeyPath(), 8_192));
+            byte[] operationBytes = input(release.getOperationPath(), 8_192);
             PublicationManifest manifest = PublicationManifest.parse(manifestBytes);
-            var grant = PublicationAuthorization.verify(approvalBytes, manifestBytes, key, release.getOperator(),
-                    release.getEnvironment(), manifest.operation(), Instant.now());
+            var grant = PublicationAuthorization.verify(operationBytes, manifestBytes, release.getOperator(),
+                    release.getEnvironment(), manifest.operation());
             if (release.getArtifactPath() == null || release.getArtifactPath().isBlank()) {
                 throw new SecurityException("PUBLICATION_ARTIFACT_REQUIRED");
             }
             var identity = PublicationBuildIdentity.read(Path.of(release.getArtifactPath()));
             String embedding = KnowledgeCatalog.hash(rag.getEmbeddingBaseUrl() + "|" + rag.getEmbeddingModel() + "|1024|chunk-v1");
-            // 此处只校验构建与资源；真实数据库代际必须由执行器再读取，不能信任清单值。
+            // 资源来自实际运行包；真实数据库前提由执行器重新核对。
             var runtime = new PublicationManifest.RuntimeIdentity(identity.gitCommit(), identity.artifactSha256(),
                     release.getEnvironment(), rag.getCollection(), embedding,
                     manifest.expectedGeneration(), manifest.expectedSnapshotSha256());
             var drafts = manifest.validateResources(runtime, identity.resources());
-            return new Prepared(manifest, grant, PublicationManifest.sha256(approvalBytes), drafts);
+            return new Prepared(manifest, grant, PublicationManifest.sha256(operationBytes), drafts);
         } catch (Exception exception) {
             throw new SecurityException("PUBLICATION_PRECHECK_REJECTED");
         }
@@ -71,7 +60,7 @@ public class RagPublicationConfiguration {
     @ConditionalOnProperty(prefix = "chen.rag.release", name = "enabled", havingValue = "true")
     public ApplicationRunner publicationRunner(Prepared prepared, CatalogLifecycle lifecycle, RagKnowledgeService knowledge) {
         return arguments -> new RagPublicationExecutor(lifecycle, knowledge, prepared.manifest(), prepared.grant(),
-                prepared.approvalHash(), prepared.drafts()).execute();
+                prepared.operationHash(), prepared.drafts()).execute();
     }
 
     @Bean
@@ -83,15 +72,13 @@ public class RagPublicationConfiguration {
         return arguments -> {
             try {
                 byte[] manifestBytes = input(release.getManifestPath(), 65_536);
-                byte[] approvalBytes = input(release.getApprovalPath(), 16_384);
-                PublicKey key = publicKey(input(release.getPublicKeyPath(), 8_192));
                 var identity = PublicationBuildIdentity.read(Path.of(release.getArtifactPath()));
                 var runtime = new PublicationManifest.RuntimeIdentity(identity.gitCommit(), identity.artifactSha256(),
                         release.getEnvironment(), rag.getCollection(),
                         KnowledgeCatalog.hash(rag.getEmbeddingBaseUrl() + "|" + rag.getEmbeddingModel() + "|1024|chunk-v1"),
                         lifecycle.snapshot().epoch(), "UNUSED_READ_ONLY_RECOVERY");
-                RagPublicationRecovery.restore(lifecycle, knowledge, manifestBytes, approvalBytes, key,
-                        release.getOperator(), release.getEnvironment(), runtime, identity.resources());
+                RagPublicationRecovery.restore(lifecycle, knowledge, manifestBytes, release.getOperator(),
+                        release.getEnvironment(), runtime, identity.resources());
             } catch (Exception error) {
                 throw new SecurityException("PUBLICATION_READ_ONLY_RECOVERY_REJECTED");
             }
@@ -112,17 +99,6 @@ public class RagPublicationConfiguration {
             }
         } catch (Exception exception) {
             throw new SecurityException("PUBLICATION_INPUT_INVALID");
-        }
-    }
-
-    static PublicKey publicKey(byte[] bytes) {
-        try {
-            var match = PUBLIC_KEY.matcher(new String(bytes, StandardCharsets.US_ASCII));
-            if (!match.matches()) throw new SecurityException("PUBLICATION_PUBLIC_KEY_INVALID");
-            byte[] encoded = Base64.getDecoder().decode(match.group(1).replaceAll("\\s", ""));
-            return KeyFactory.getInstance("Ed25519").generatePublic(new X509EncodedKeySpec(encoded));
-        } catch (Exception exception) {
-            throw new SecurityException("PUBLICATION_PUBLIC_KEY_INVALID");
         }
     }
 }

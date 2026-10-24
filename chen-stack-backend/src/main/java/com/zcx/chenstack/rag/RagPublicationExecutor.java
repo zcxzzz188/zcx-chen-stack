@@ -1,7 +1,6 @@
 package com.zcx.chenstack.rag;
 
 import javax.sql.DataSource;
-import java.time.Instant;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -11,36 +10,36 @@ public final class RagPublicationExecutor {
     private final RagKnowledgeService knowledge;
     private final PublicationManifest manifest;
     private final PublicationAuthorization.Grant grant;
-    private final String approvalHash;
+    private final String operationHash;
     private final List<KnowledgeDocument> drafts;
 
     public RagPublicationExecutor(CatalogLifecycle lifecycle, RagKnowledgeService knowledge,
-            PublicationManifest manifest, PublicationAuthorization.Grant grant, String approvalHash,
+            PublicationManifest manifest, PublicationAuthorization.Grant grant, String operationHash,
             List<KnowledgeDocument> validatedDrafts) {
         this.lifecycle = lifecycle; this.knowledge = knowledge; this.manifest = manifest;
-        this.grant = grant; this.approvalHash = approvalHash; this.drafts = List.copyOf(validatedDrafts);
+        this.grant = grant; this.operationHash = operationHash; this.drafts = List.copyOf(validatedDrafts);
     }
 
-    /** Only a verified bootstrap receipt may initialize already-migrated, genuinely empty authority tables. */
+    /** Only an explicitly confirmed local operation may initialize migrated, genuinely empty authority tables. */
     public static KnowledgeCatalog initialize(DataSource dataSource, List<KnowledgeDocument> allDrafts,
-            PublicationManifest manifest, PublicationAuthorization.Grant grant, String approvalHash) {
+            PublicationManifest manifest, PublicationAuthorization.Grant grant, String operationHash) {
         PublicationManifest.require(manifest.initializeEmptyCatalog() && manifest.expectedGeneration() == 0
                 && "EMPTY".equals(manifest.expectedSnapshotSha256()), "RELEASE_BOOTSTRAP_NOT_APPROVED");
-        JdbcCatalogStore.initializeApproved(dataSource, allDrafts, operation(manifest, grant, approvalHash));
+        JdbcCatalogStore.initializeApproved(dataSource, allDrafts, operation(manifest, grant, operationHash));
         JdbcCatalogStore store = JdbcCatalogStore.open(dataSource);
         try { return KnowledgeCatalog.restore(store); }
         catch (RuntimeException error) { store.close(); throw error; }
     }
 
     public static KnowledgeCatalog openOrInitialize(DataSource dataSource, List<KnowledgeDocument> allDrafts,
-            PublicationManifest manifest, PublicationAuthorization.Grant grant, String approvalHash) {
+            PublicationManifest manifest, PublicationAuthorization.Grant grant, String operationHash) {
         boolean empty;
         try (var connection = dataSource.getConnection(); var statement = connection.createStatement();
              var result = statement.executeQuery("SELECT (SELECT COUNT(*) FROM rag_catalog_state)+(SELECT COUNT(*) FROM rag_source_state)+(SELECT COUNT(*) FROM rag_release_operation)")) {
             if (!result.next()) throw new IllegalStateException("RELEASE_SCHEMA_CHECK_FAILED");
             empty = result.getLong(1) == 0;
         } catch (java.sql.SQLException error) { throw new IllegalStateException("RELEASE_SCHEMA_MIGRATION_REQUIRED", error); }
-        if (empty) return initialize(dataSource, allDrafts, manifest, grant, approvalHash);
+        if (empty) return initialize(dataSource, allDrafts, manifest, grant, operationHash);
         JdbcCatalogStore store = JdbcCatalogStore.open(dataSource);
         try { return KnowledgeCatalog.restore(store); }
         catch (RuntimeException error) { store.close(); throw error; }
@@ -51,15 +50,18 @@ public final class RagPublicationExecutor {
         if (!lifecycle.beginPublication()) throw new IllegalStateException("RELEASE_ALREADY_RUNNING");
         boolean recorded = false;
         try {
-            PublicationManifest.require(grant.expiresAt().isAfter(Instant.now())
-                    && grant.allowedOperation() == manifest.operation()
-                    && grant.environment().equals(manifest.environment()), "RELEASE_APPROVAL_EXPIRED_OR_MISMATCH");
+            PublicationAuthorization.requireGrant(grant, grant.operator(), manifest.environment(), manifest.operation());
             KnowledgeCatalog before = lifecycle.snapshot();
             validateSources(before);
-            JdbcCatalogStore.ReleaseOperation previous = store.operation(grant.approvalId());
+            JdbcCatalogStore.ReleaseOperation previous = store.operation(grant.operationId());
             if (previous != null) {
                 PublicationManifest.require(previous.manifestHash().equals(grant.manifestSha256())
-                        && previous.approvalHash().equals(approvalHash), "RELEASE_OPERATION_ID_REUSED");
+                        && previous.operationHash().equals(operationHash)
+                        && PublicationAuthorization.MODE.equals(previous.authorizationMode())
+                        && previous.operator().equals(grant.operator()) && previous.environment().equals(grant.environment())
+                        && previous.type().equals(manifest.operation().name()) && previous.collection().equals(manifest.collection())
+                        && previous.expectedGeneration() == manifest.expectedGeneration()
+                        && previous.maxEmbeddingRequests() == grant.maxEmbeddingRequests(), "RELEASE_OPERATION_ID_REUSED");
             }
             Long applied = previous == null ? null : previous.appliedGeneration();
             if (applied != null) {
@@ -78,7 +80,7 @@ public final class RagPublicationExecutor {
                     "RELEASE_COMPLETED_USE_READ_ONLY_RECOVERY");
 
             knowledge.blockPublication();
-            store.prepareOperation(operation(manifest, grant, approvalHash));
+            store.prepareOperation(operation(manifest, grant, operationHash));
             recorded = true;
             String owner = KnowledgeCatalog.hash("chen-release-v1|" + manifest.environment() + "|" + manifest.collection()
                     + "|" + store.databaseIdentityHash());
@@ -86,37 +88,35 @@ public final class RagPublicationExecutor {
                 knowledge.preparePublicationTarget(manifest.createCollection(), owner);
             }
             if (applied == null && manifest.operation() != PublicationManifest.Operation.RECOVER) {
-                store.checkpoint(grant.approvalId(), "VALIDATED", manifest.operation() != PublicationManifest.Operation.REVOKE, null, null);
+                store.checkpoint(grant.operationId(), "VALIDATED", manifest.operation() != PublicationManifest.Operation.REVOKE, null, null);
                 if (manifest.operation() == PublicationManifest.Operation.PUBLISH) {
                     PublicationManifest.require(drafts.stream().noneMatch(d -> "DOCUMENT_REVIEWED".equals(before.source(d.sourceId()).reviewStatus())),
                             "RELEASE_ALREADY_PUBLISHED_USE_RECOVER");
                     lifecycle.publish(drafts.stream().map(d -> new KnowledgeDocument(d.sourceId(), d.title(), d.text(), d.version(),
                             d.sourceType(), d.sourceUrl(), "PUBLIC", "DOCUMENT_REVIEWED", d.updatedAt(), d.keywords())).toList(),
-                            before.epoch(), grant.approvalId());
-                } else lifecycle.revokeApproved(manifest.revokeSourceId(), before.epoch(), grant.approvalId());
+                            before.epoch(), grant.operationId());
+                } else lifecycle.revokeApproved(manifest.revokeSourceId(), before.epoch(), grant.operationId());
             }
             if (manifest.operation() == PublicationManifest.Operation.REVOKE) knowledge.preparePublicationTarget(false, owner);
-            store.checkpoint(grant.approvalId(), "INDEXING", true, null, null);
+            store.checkpoint(grant.operationId(), "INDEXING", true, null, null);
             if (manifest.operation() == PublicationManifest.Operation.REVOKE) {
                 knowledge.deleteSource(manifest.revokeSourceId());
-                store.checkpoint(grant.approvalId(), "REVOKED", true, null, null);
+                store.checkpoint(grant.operationId(), "REVOKED", true, null, null);
                 return result("REVOKED");
             }
             knowledge.publicationBudget(() -> {
-                if (!grant.expiresAt().isAfter(Instant.now())) throw new SecurityException("RELEASE_APPROVAL_EXPIRED");
-                store.reserveEmbedding(grant.approvalId());
+                store.reserveEmbedding(grant.operationId());
             });
             knowledge.syncReviewed(false);
             String indexHash = knowledge.verifyPublicationIndex();
             KnowledgeCatalog verified = lifecycle.snapshot();
-            PublicationManifest.require(grant.expiresAt().isAfter(Instant.now()), "RELEASE_APPROVAL_EXPIRED");
-            store.checkpoint(grant.approvalId(), "COMPLETED", true, lifecycle.authorityId(), verified.epoch(), indexHash);
+            store.checkpoint(grant.operationId(), "COMPLETED", true, lifecycle.authorityId(), verified.epoch(), indexHash);
             knowledge.confirmPublication(verified);
             return result("COMPLETED");
         } catch (RuntimeException error) {
             knowledge.blockPublication();
             if (recorded) {
-                try { store.failOperation(grant.approvalId(), "RELEASE_FAILED_CLOSED"); }
+                try { store.failOperation(grant.operationId(), "RELEASE_FAILED_CLOSED"); }
                 catch (RuntimeException auditError) { error.addSuppressed(auditError); }
             }
             throw error;
@@ -146,13 +146,15 @@ public final class RagPublicationExecutor {
     }
 
     private Map<String, Object> result(String status) {
-        return Map.of("operationId", grant.approvalId(), "status", status, "generation", lifecycle.snapshot().epoch());
+        return Map.of("operationId", grant.operationId(), "status", status, "generation", lifecycle.snapshot().epoch());
     }
 
     private static JdbcCatalogStore.ReleaseOperation operation(PublicationManifest manifest,
-            PublicationAuthorization.Grant grant, String approvalHash) {
-        return new JdbcCatalogStore.ReleaseOperation(grant.approvalId(), grant.manifestSha256(), approvalHash,
-                grant.environment(), grant.operator(), grant.approver(), manifest.operation().name(), "VALIDATED",
+            PublicationAuthorization.Grant grant, String operationHash) {
+        PublicationAuthorization.requireGrant(grant, grant.operator(), manifest.environment(), manifest.operation());
+        PublicationManifest.require(PublicationManifest.validHash(operationHash), "RELEASE_OPERATION_HASH_INVALID");
+        return new JdbcCatalogStore.ReleaseOperation(grant.operationId(), grant.manifestSha256(), operationHash,
+                grant.environment(), grant.operator(), PublicationAuthorization.MODE, manifest.operation().name(), "VALIDATED",
                 manifest.expectedGeneration(), null, null, manifest.collection(), grant.maxEmbeddingRequests(),
                 0, false, null, null, null);
     }

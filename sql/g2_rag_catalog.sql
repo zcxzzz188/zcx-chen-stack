@@ -23,6 +23,8 @@ CREATE TABLE IF NOT EXISTS rag_source_state (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 
 -- Release operations and events are audit/idempotency records, not another knowledge Catalog.
+-- Legacy names remain schema-compatible: approval_sha256 is the raw local operation-record hash;
+-- approver_id stores CONTROLLED_OPERATOR, not a signature, signer or cryptographic approval.
 CREATE TABLE IF NOT EXISTS rag_release_operation (
     operation_id VARCHAR(80) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
     manifest_sha256 CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,

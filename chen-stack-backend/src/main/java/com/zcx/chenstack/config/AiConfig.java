@@ -1,6 +1,7 @@
 package com.zcx.chenstack.config;
 
 import com.zcx.chenstack.domain.constants.AiPromptConstants;
+import com.zcx.chenstack.rag.ReleaseProviderBudget;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.ai.chat.memory.MessageWindowChatMemory;
@@ -44,7 +45,7 @@ public class AiConfig {
      * 使用自定义配置连接 DeepSeek API
      */
     @Bean
-    public OpenAiChatModel openAiChatModel() {
+    public OpenAiChatModel openAiChatModel(ReleaseProviderBudget budget) {
         if (maxTokens == null || maxTokens < 1 || maxTokens > 393216) {
             throw new IllegalArgumentException("spring.ai.openai.chat.options.max-tokens 必须为 1 到 393216 的整数");
         }
@@ -53,6 +54,10 @@ public class AiConfig {
                 .baseUrl(baseUrl)
                 .completionsPath(completionsPath)
                 .apiKey(apiKey)
+                .restClientBuilder(org.springframework.web.client.RestClient.builder()
+                        .requestInterceptor(budget.restInterceptor(ReleaseProviderBudget.Kind.CHAT)))
+                .webClientBuilder(org.springframework.web.reactive.function.client.WebClient.builder()
+                        .filter(budget.streamFilter(ReleaseProviderBudget.Kind.CHAT)))
                 .build();
 
         // 创建聊天选项（使用新的 API 方式）

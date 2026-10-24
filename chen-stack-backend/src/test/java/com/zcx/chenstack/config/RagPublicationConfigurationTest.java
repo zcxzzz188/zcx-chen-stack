@@ -12,12 +12,8 @@ import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.security.KeyPair;
-import java.security.KeyPairGenerator;
-import java.security.Signature;
 import java.time.Instant;
 import java.util.ArrayList;
-import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -34,10 +30,9 @@ class RagPublicationConfigurationTest {
     private static final String ARTIFACT = "a".repeat(64);
 
     private record Fixture(RagPublicationProperties release, RagProperties rag,
-                           PublicationBuildIdentity.Identity identity, PublicationManifest manifest, byte[] approval) { }
+                           PublicationBuildIdentity.Identity identity, PublicationManifest manifest, byte[] operation) { }
 
     private Fixture fixture() throws Exception {
-        KeyPair key = KeyPairGenerator.getInstance("Ed25519").generateKeyPair();
         List<String> ids = new ArrayList<>(PublicationManifest.userSourceIds());
         ids.add("help-history"); for (int i = 0; i < 12; i++) ids.add("help-admin-synthetic-" + i);
         var documents = ids.stream().map(id -> new KnowledgeDocument(id, "合成标题", "合成事实", "synthetic-1", "PLATFORM_HELP",
@@ -54,23 +49,16 @@ class RagPublicationConfigurationTest {
                 PublicationManifest.userSourceIds().stream().map(id -> new PublicationManifest.Topic(id, "synthetic-1",
                         KnowledgeCatalog.hash("合成事实"))).toList());
         byte[] raw = JSON.writeValueAsBytes(manifest);
-        var grant = new PublicationAuthorization.Grant("synthetic-approval", "reviewer-a", "executor-b", "isolated",
-                PublicationManifest.sha256(raw), Instant.now().plusSeconds(3_600), 3, manifest.operation());
-        byte[] payload = JSON.writeValueAsBytes(grant);
-        Signature signer = Signature.getInstance("Ed25519"); signer.initSign(key.getPrivate()); signer.update(payload);
-        byte[] approval = JSON.writeValueAsBytes(Map.of("payload", Base64.getUrlEncoder().withoutPadding().encodeToString(payload),
-                "signature", Base64.getUrlEncoder().withoutPadding().encodeToString(signer.sign())));
+        var grant = new PublicationAuthorization.Grant(1, "synthetic-operation", "executor-b", "isolated",
+                PublicationManifest.sha256(raw), 3, manifest.operation(), true);
+        byte[] operation = JSON.writeValueAsBytes(grant);
         RagPublicationProperties release = new RagPublicationProperties(); release.setEnabled(true);
         release.setOperator("executor-b"); release.setEnvironment("isolated");
         release.setManifestPath(directory.resolve("manifest.json").toString());
-        release.setApprovalPath(directory.resolve("approval.json").toString());
-        release.setPublicKeyPath(directory.resolve("public.pem").toString());
+        release.setOperationPath(directory.resolve("operation.json").toString());
         release.setArtifactPath(directory.resolve("running.jar").toString());
-        Files.write(Path.of(release.getManifestPath()), raw); Files.write(Path.of(release.getApprovalPath()), approval);
-        String pem = "-----BEGIN PUBLIC KEY-----\n" + Base64.getEncoder().encodeToString(key.getPublic().getEncoded())
-                + "\n-----END PUBLIC KEY-----\n";
-        Files.writeString(Path.of(release.getPublicKeyPath()), pem, StandardCharsets.US_ASCII);
-        return new Fixture(release, rag, new PublicationBuildIdentity.Identity(GIT, ARTIFACT, resources), manifest, approval);
+        Files.write(Path.of(release.getManifestPath()), raw); Files.write(Path.of(release.getOperationPath()), operation);
+        return new Fixture(release, rag, new PublicationBuildIdentity.Identity(GIT, ARTIFACT, resources), manifest, operation);
     }
 
     @Test void defaultAndExplicitDisabledConfigurationsRegisterNoExecutionBeansOrInputReads() {
@@ -88,13 +76,13 @@ class RagPublicationConfigurationTest {
         }
     }
 
-    @Test void precheckReturnsOnlySignedValidatedDraftsWithoutDatabaseOrIndexDependencies() throws Exception {
+    @Test void localCommandPrecheckReturnsOnlyValidatedDraftsWithoutDatabaseOrIndexDependencies() throws Exception {
         var fixture = fixture();
         try (var build = mockStatic(PublicationBuildIdentity.class)) {
             build.when(() -> PublicationBuildIdentity.read(any())).thenReturn(fixture.identity());
-            var prepared = new RagPublicationConfiguration().preparedPublication(fixture.release(), fixture.rag());
+            var prepared = new RagPublicationConfiguration().preparedPublication(fixture.release(), fixture.rag(), new RagPublicationCommand.Invocation(true));
             assertEquals(fixture.manifest(), prepared.manifest());
-            assertEquals(PublicationManifest.sha256(fixture.approval()), prepared.approvalHash());
+            assertEquals(PublicationManifest.sha256(fixture.operation()), prepared.operationHash());
             assertEquals(39, prepared.drafts().size());
             assertTrue(prepared.drafts().stream().allMatch(d -> "NOT_PUBLISHED".equals(d.visibility())
                     && "CONTENT_REVIEW_REQUIRED".equals(d.reviewStatus())));
@@ -103,11 +91,47 @@ class RagPublicationConfigurationTest {
         }
     }
 
-    @Test void badApprovalFailsBeforeArtifactInspectionAndSanitizesRawInputErrors() throws Exception {
-        var fixture = fixture(); Files.writeString(Path.of(fixture.release().getApprovalPath()), "PRIVATE_SENTINEL");
+    @Test void missingOrNonLocalCommandCapabilityRejectsWritesBeforeReadingArtifacts() throws Exception {
+        var fixture = fixture();
+        var config = new RagPublicationConfiguration();
+        try (var build = mockStatic(PublicationBuildIdentity.class)) {
+            assertThrows(SecurityException.class, () -> config.preparedPublication(fixture.release(), fixture.rag(), null));
+            assertThrows(SecurityException.class, () -> config.preparedPublication(fixture.release(), fixture.rag(),
+                    new RagPublicationCommand.Invocation(false)));
+            build.verifyNoInteractions();
+        }
+    }
+
+    @Test void ordinarySpringServiceCannotEnablePublicationWithoutLocalCommandCapability() throws Exception {
+        var fixture = fixture();
+        try (var build = mockStatic(PublicationBuildIdentity.class);
+             var executors = mockConstruction(RagPublicationExecutor.class)) {
+            new ApplicationContextRunner().withUserConfiguration(RagPublicationConfiguration.class)
+                    .withBean(RagProperties.class, fixture::rag)
+                    .withBean(CatalogLifecycle.class, () -> mock(CatalogLifecycle.class))
+                    .withBean(RagKnowledgeService.class, () -> mock(RagKnowledgeService.class))
+                    .withPropertyValues("chen.rag.release.enabled=true",
+                            "chen.rag.release.manifest-path=" + fixture.release().getManifestPath(),
+                            "chen.rag.release.operation-path=" + fixture.release().getOperationPath(),
+                            "chen.rag.release.artifact-path=" + fixture.release().getArtifactPath(),
+                            "chen.rag.release.operator=executor-b", "chen.rag.release.environment=isolated")
+                    .run(application -> assertThat(application).hasFailed());
+            build.verifyNoInteractions();
+            assertTrue(executors.constructed().isEmpty());
+        }
+    }
+
+    @Test void ordinaryComponentScanCannotDiscoverTheLocalCommandCapability() {
+        var scanner = new org.springframework.context.annotation.ClassPathScanningCandidateComponentProvider(true);
+        assertTrue(scanner.findCandidateComponents("com.zcx.chenstack.rag").stream()
+                .noneMatch(bean -> RagPublicationCommand.class.getName().equals(bean.getBeanClassName())));
+    }
+
+    @Test void badOperationFailsBeforeArtifactInspectionAndSanitizesRawInputErrors() throws Exception {
+        var fixture = fixture(); Files.writeString(Path.of(fixture.release().getOperationPath()), "PRIVATE_SENTINEL");
         try (var build = mockStatic(PublicationBuildIdentity.class)) {
             SecurityException failure = assertThrows(SecurityException.class,
-                    () -> new RagPublicationConfiguration().preparedPublication(fixture.release(), fixture.rag()));
+                    () -> new RagPublicationConfiguration().preparedPublication(fixture.release(), fixture.rag(), new RagPublicationCommand.Invocation(true)));
             assertEquals("PUBLICATION_PRECHECK_REJECTED", failure.getMessage()); assertNull(failure.getCause());
             build.verifyNoInteractions();
         }
@@ -118,23 +142,25 @@ class RagPublicationConfigurationTest {
         try (var build = mockStatic(PublicationBuildIdentity.class)) {
             build.when(() -> PublicationBuildIdentity.read(any())).thenReturn(new PublicationBuildIdentity.Identity(
                     "8".repeat(40), ARTIFACT, fixture.identity().resources()));
-            assertThrows(SecurityException.class, () -> new RagPublicationConfiguration().preparedPublication(fixture.release(), fixture.rag()));
+            assertThrows(SecurityException.class, () -> new RagPublicationConfiguration().preparedPublication(fixture.release(), fixture.rag(), new RagPublicationCommand.Invocation(true)));
             fixture.rag().setEnabled(false);
-            assertThrows(SecurityException.class, () -> new RagPublicationConfiguration().preparedPublication(fixture.release(), fixture.rag()));
+            assertThrows(SecurityException.class, () -> new RagPublicationConfiguration().preparedPublication(fixture.release(), fixture.rag(), new RagPublicationCommand.Invocation(true)));
         }
     }
 
-    @Test void boundsInputFilesAndRejectsDirectoriesMissingFilesAndPrivateKeyEnvelopes() throws Exception {
+    @Test void boundsInputFilesAndRejectsDirectoriesMissingFilesAndLegacySignatureEnvelopes() throws Exception {
         Path file = directory.resolve("bounded"); Files.write(file, new byte[65]);
         assertThrows(SecurityException.class, () -> RagPublicationConfiguration.input(file.toString(), 64));
         assertThrows(SecurityException.class, () -> RagPublicationConfiguration.input(directory.toString(), 64));
         assertThrows(SecurityException.class, () -> RagPublicationConfiguration.input(directory.resolve("missing").toString(), 64));
         assertThrows(SecurityException.class, () -> RagPublicationConfiguration.input("", 64));
-        assertThrows(SecurityException.class, () -> RagPublicationConfiguration.publicKey(
-                "-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----".getBytes(StandardCharsets.US_ASCII)));
-        var rsa = KeyPairGenerator.getInstance("RSA").generateKeyPair().getPublic();
-        assertThrows(SecurityException.class, () -> RagPublicationConfiguration.publicKey(("-----BEGIN PUBLIC KEY-----\n"
-                + Base64.getEncoder().encodeToString(rsa.getEncoded()) + "\n-----END PUBLIC KEY-----").getBytes(StandardCharsets.US_ASCII)));
+        var fixture = fixture();
+        Files.writeString(Path.of(fixture.release().getOperationPath()), "{\"payload\":\"e30\",\"signature\":\"legacy\"}");
+        try (var build = mockStatic(PublicationBuildIdentity.class)) {
+            assertThrows(SecurityException.class, () -> new RagPublicationConfiguration().preparedPublication(
+                    fixture.release(), fixture.rag(), new RagPublicationCommand.Invocation(true)));
+            build.verifyNoInteractions();
+        }
     }
 
     @Test void runnerDelegatesExactlyOnceWithPreparedInputs() throws Exception {
@@ -142,10 +168,10 @@ class RagPublicationConfigurationTest {
         try (var build = mockStatic(PublicationBuildIdentity.class)) {
             build.when(() -> PublicationBuildIdentity.read(any())).thenReturn(fixture.identity());
             var config = new RagPublicationConfiguration();
-            var prepared = config.preparedPublication(fixture.release(), fixture.rag());
+            var prepared = config.preparedPublication(fixture.release(), fixture.rag(), new RagPublicationCommand.Invocation(true));
             CatalogLifecycle lifecycle = mock(CatalogLifecycle.class); RagKnowledgeService knowledge = mock(RagKnowledgeService.class);
             try (var executors = mockConstruction(RagPublicationExecutor.class, (executor, context) -> {
-                assertEquals(List.of(lifecycle, knowledge, prepared.manifest(), prepared.grant(), prepared.approvalHash(),
+                assertEquals(List.of(lifecycle, knowledge, prepared.manifest(), prepared.grant(), prepared.operationHash(),
                         prepared.drafts()), context.arguments());
             })) {
                 config.publicationRunner(prepared, lifecycle, knowledge).run(new DefaultApplicationArguments());
@@ -158,14 +184,16 @@ class RagPublicationConfigurationTest {
         var fixture = fixture();
         var config = new RagPublicationConfiguration();
         fixture.release().setRecoveryEnabled(true);
-        assertThrows(SecurityException.class, () -> config.preparedPublication(fixture.release(), fixture.rag()));
+        assertThrows(SecurityException.class, () -> config.preparedPublication(fixture.release(), fixture.rag(), new RagPublicationCommand.Invocation(true)));
         assertThrows(SecurityException.class, () -> config.readOnlyRecoveryRunner(fixture.release(), fixture.rag(), null, null));
         fixture.release().setEnabled(false); fixture.rag().setEnabled(false);
         assertThrows(SecurityException.class, () -> config.readOnlyRecoveryRunner(fixture.release(), fixture.rag(), null, null));
     }
 
-    @Test void recoveryRunnerPassesOriginalBytesAndTrustedRuntimeWithoutCreatingWriteExecutor() throws Exception {
+    @Test void recoveryRunnerRequiresNoOperationRecordAndCreatesNoWriteExecutor() throws Exception {
         var fixture = fixture(); fixture.release().setEnabled(false); fixture.release().setRecoveryEnabled(true);
+        Files.delete(Path.of(fixture.release().getOperationPath()));
+        fixture.release().setOperationPath(directory.resolve("never-read-operation.json").toString());
         var lifecycle = new KnowledgeCatalog(List.of()).lifecycle();
         RagKnowledgeService knowledge = mock(RagKnowledgeService.class);
         try (var build = mockStatic(PublicationBuildIdentity.class);
@@ -176,8 +204,8 @@ class RagPublicationConfigurationTest {
             recovery.verifyNoInteractions();
             runner.run(new DefaultApplicationArguments());
             recovery.verify(() -> RagPublicationRecovery.restore(eq(lifecycle), eq(knowledge),
-                    eq(Files.readAllBytes(Path.of(fixture.release().getManifestPath()))), eq(fixture.approval()), any(),
-                    eq("executor-b"), eq("isolated"), any(), eq(fixture.identity().resources())), times(1));
+                    eq(Files.readAllBytes(Path.of(fixture.release().getManifestPath()))), eq("executor-b"), eq("isolated"),
+                    any(), eq(fixture.identity().resources())), times(1));
             assertTrue(executors.constructed().isEmpty());
         } finally { lifecycle.close(); }
     }

@@ -1,18 +1,17 @@
 package com.zcx.chenstack.rag;
 
-import java.security.PublicKey;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 
-/** 正常重启只读恢复；新发布、索引修复及版本升级仍走限时签批执行器。 */
+/** 正常重启只信任受控运维完成的持久记录；不读操作文件、不写目录、不调用Embedding。 */
 public final class RagPublicationRecovery {
     private RagPublicationRecovery() { }
 
     public static Map<String, Object> restore(CatalogLifecycle lifecycle, RagKnowledgeService knowledge,
-            byte[] manifestBytes, byte[] approvalBytes, PublicKey trustedKey, String operator, String environment,
+            byte[] manifestBytes, String operator, String environment,
             PublicationManifest.RuntimeIdentity runtime, Map<String, byte[]> resources) {
         if (!lifecycle.beginPublication()) throw new IllegalStateException("RELEASE_ALREADY_RUNNING");
         knowledge.blockPublication();
@@ -20,17 +19,20 @@ public final class RagPublicationRecovery {
             PublicationManifest manifest = PublicationManifest.parse(manifestBytes);
             List<KnowledgeDocument> drafts = manifest.validateResources(runtime, resources);
             JdbcCatalogStore store = lifecycle.store();
-            var receipt = store.completedReceipt(PublicationManifest.sha256(manifestBytes), PublicationManifest.sha256(approvalBytes));
-            var grant = PublicationAuthorization.verify(approvalBytes, manifestBytes, trustedKey, operator, environment,
-                    manifest.operation(), receipt.validatedAt());
+            var receipt = store.completedReceipt(PublicationManifest.sha256(manifestBytes));
             var operation = receipt.operation();
             KnowledgeCatalog catalog = lifecycle.snapshot();
-            PublicationManifest.require(manifest.operation() != PublicationManifest.Operation.REVOKE
-                    && receipt.completedAt().isBefore(grant.expiresAt()) && !receipt.completedAt().isAfter(Instant.now())
-                    && operation.id().equals(grant.approvalId()) && operation.type().equals(manifest.operation().name())
+            PublicationManifest.require(PublicationManifest.safeText(operator, 128)
+                    && PublicationManifest.validEnvironment(environment) && environment.equals(manifest.environment())
+                    && manifest.operation() != PublicationManifest.Operation.REVOKE
+                    && !receipt.completedAt().isAfter(Instant.now())
+                    && operation.id() != null && operation.id().matches("[A-Za-z0-9._-]{1,80}")
+                    && PublicationManifest.validHash(operation.operationHash())
+                    && operation.type().equals(manifest.operation().name())
                     && operation.environment().equals(environment) && operation.operator().equals(operator)
-                    && operation.approver().equals(grant.approver()) && operation.collection().equals(manifest.collection())
-                    && operation.maxEmbeddingRequests() == grant.maxEmbeddingRequests()
+                    && PublicationAuthorization.MODE.equals(operation.authorizationMode())
+                    && operation.collection().equals(manifest.collection())
+                    && operation.maxEmbeddingRequests() >= 0 && operation.maxEmbeddingRequests() <= Integer.MAX_VALUE
                     && operation.expectedGeneration() == manifest.expectedGeneration()
                     && catalog.epoch() == (manifest.operation() == PublicationManifest.Operation.PUBLISH
                         ? Math.incrementExact(manifest.expectedGeneration()) : manifest.expectedGeneration())
