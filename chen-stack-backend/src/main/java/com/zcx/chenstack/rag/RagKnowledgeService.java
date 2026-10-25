@@ -108,6 +108,19 @@ public class RagKnowledgeService implements AutoCloseable {
         }
     }
 
+    /** 执行器已验证旧索引完整摘要；只编码新块，其余向量仅更新目录绑定。 */
+    synchronized void syncReviewedIncremental(Set<String> previousChunkIds) {
+        requireReady();
+        KnowledgeCatalog catalog = lifecycle.snapshot();
+        List<Document> current = catalog.chunks();
+        List<Document> changed = current.stream().filter(d -> !previousChunkIds.contains(d.getId())).toList();
+        List<Document> retained = current.stream().filter(d -> previousChunkIds.contains(d.getId())).toList();
+        index.upsert(changed);
+        index.rebindCatalog(retained);
+        index.deleteObsoleteChunks(changed);
+        catalog.requireCurrent();
+    }
+
     /** 仅清理已在权威生命周期撤销的索引副本；删除失败不恢复来源授权。 */
     public synchronized void deleteSource(String sourceId) {
         requireReady();

@@ -49,7 +49,7 @@ public record PublicationManifest(int schemaVersion, String gitCommit, String ar
         topics = topics == null ? null : List.copyOf(topics);
     }
 
-    public enum Operation { PUBLISH, RECOVER, REVOKE }
+    public enum Operation { PUBLISH, UPDATE, RECOVER, REVOKE }
 
     public record Topic(String sourceId, String version, String textSha256) { }
 
@@ -73,6 +73,8 @@ public record PublicationManifest(int schemaVersion, String gitCommit, String ar
                 "PUBLICATION_SNAPSHOT_INVALID");
         require(!initializeEmptyCatalog || expectedGeneration == 0 && "EMPTY".equals(expectedSnapshotSha256),
                 "PUBLICATION_SNAPSHOT_INVALID");
+        require(operation != Operation.UPDATE || !initializeEmptyCatalog && !createCollection && expectedGeneration > 0,
+                "PUBLICATION_UPDATE_REQUIRES_EXISTING_TARGET");
         require(runtime != null && gitCommit.equals(runtime.buildGitCommit())
                 && artifactSha256.equals(runtime.artifactSha256()) && environment.equals(runtime.environment())
                 && collection.equals(runtime.collection()) && embeddingSignature.equals(runtime.embeddingSignature()),

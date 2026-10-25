@@ -35,6 +35,7 @@ public final class RagPublicationRecovery {
                     && operation.maxEmbeddingRequests() >= 0 && operation.maxEmbeddingRequests() <= Integer.MAX_VALUE
                     && operation.expectedGeneration() == manifest.expectedGeneration()
                     && catalog.epoch() == (manifest.operation() == PublicationManifest.Operation.PUBLISH
+                        || manifest.operation() == PublicationManifest.Operation.UPDATE
                         ? Math.incrementExact(manifest.expectedGeneration()) : manifest.expectedGeneration())
                     && operation.embeddingRequests() >= 0 && operation.embeddingRequests() <= operation.maxEmbeddingRequests()
                     && operation.targetInitialized() && operation.indexAuthority() != null

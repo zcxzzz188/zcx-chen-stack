@@ -1038,6 +1038,97 @@ class PublicationIntegrationIT {
         } catch (IOException error) { return "COMMAND_LOG_UNAVAILABLE"; }
     }
 
+    @Test void incrementalUpdatePreservesExistingVectorsAndRestartsWithoutEmbedding() throws Exception {
+        List<KnowledgeDocument> originalDrafts = drafts;
+        Map<String, byte[]> originalResources = resources;
+        try (Fixture f = fixture()) {
+            execute(f, input(f, PublicationManifest.Operation.PUBLISH, 20, null));
+            List<Document> retained = f.catalog().chunks().stream()
+                    .filter(d -> !"help-article-manage".equals(d.getMetadata().get("source_id"))).toList();
+            List<String> ids = retained.stream().map(Document::getId).toList();
+            JsonNode vectors = qdrant("POST", "/collections/" + f.collection + "/points",
+                    Map.of("ids", ids, "with_vector", true, "with_payload", true)).path("result");
+            Map<String, JsonNode> oldVectors = new HashMap<>();
+            vectors.forEach(point -> oldVectors.put(point.path("id").asText(), point.path("vector")));
+            int calls = f.model.calls.get();
+            reviseArticleDraft("review-v2");
+            OperationInput update = input(f, PublicationManifest.Operation.UPDATE, 1, null);
+            assertEquals("COMPLETED", execute(f, update).get("status"));
+            assertEquals(calls + 1, f.model.calls.get());
+            assertEquals(2, f.catalog().epoch());
+            assertEquals(39, f.catalog().documents().stream().filter(d -> "PUBLIC".equals(d.visibility())).count());
+            assertEquals(1, f.store.operation(update.grant.operationId()).embeddingRequests());
+            assertTrue(f.knowledge.retrieveByTitle("Synthetic help-article-manage").context().contains("article review revision"));
+            JsonNode after = qdrant("POST", "/collections/" + f.collection + "/points",
+                    Map.of("ids", ids, "with_vector", true, "with_payload", true)).path("result");
+            assertEquals(ids.size(), after.size());
+            after.forEach(point -> {
+                assertEquals(oldVectors.get(point.path("id").asText()), point.path("vector"));
+                assertEquals("2", point.path("payload").path("catalog_epoch").asText());
+            });
+            assertEquals("COMPLETED", execute(f, update).get("status"));
+            assertEquals(calls + 1, f.model.calls.get());
+            long events = scalar(f.source, "SELECT COUNT(*) FROM rag_release_event");
+            try (Fixture restarted = reopen(f)) {
+                assertEquals("READ_ONLY_RECOVERED", restore(restarted, update).get("status"));
+                assertReady(restarted);
+                assertTrue(restarted.knowledge.retrieveByTitle("Synthetic help-article-manage").context().contains("article review revision"));
+                assertEquals(0, restarted.model.calls.get());
+                assertEquals(events, scalar(restarted.source, "SELECT COUNT(*) FROM rag_release_event"));
+            }
+        } finally { drafts = originalDrafts; resources = originalResources; }
+    }
+
+    @Test void incrementalUpdateRejectsNoChangeSameVersionDriftAndDamagedIndexBeforeEmbedding() throws Exception {
+        List<KnowledgeDocument> originalDrafts = drafts;
+        Map<String, byte[]> originalResources = resources;
+        try (Fixture f = fixture()) {
+            execute(f, input(f, PublicationManifest.Operation.PUBLISH, 20, null));
+            int calls = f.model.calls.get();
+            long events = scalar(f.source, "SELECT COUNT(*) FROM rag_release_event");
+            assertThrows(SecurityException.class, () -> execute(f, input(f, PublicationManifest.Operation.UPDATE, 1, null)));
+            reviseArticleDraft(originalDrafts.stream().filter(d -> "help-article-manage".equals(d.sourceId())).findFirst().orElseThrow().version());
+            assertThrows(SecurityException.class, () -> execute(f, input(f, PublicationManifest.Operation.UPDATE, 1, null)));
+            drafts = originalDrafts; resources = originalResources;
+            reviseArticleDraft("review-v2");
+            String point = f.catalog().chunks().getFirst().getId();
+            qdrant("POST", "/collections/" + f.collection + "/points/payload?wait=true",
+                    Map.of("points", List.of(point), "payload", Map.of("doc_content", "tampered")));
+            assertThrows(RuntimeException.class, () -> execute(f, input(f, PublicationManifest.Operation.UPDATE, 1, null)));
+            assertEquals(1, f.catalog().epoch());
+            assertEquals(calls, f.model.calls.get());
+            assertEquals(events, scalar(f.source, "SELECT COUNT(*) FROM rag_release_event"));
+            assertFalse(f.knowledge.publicationReady());
+        } finally { drafts = originalDrafts; resources = originalResources; }
+    }
+
+    @Test void incrementalUpdateFailureRemainsClosedAndCannotAutomaticallyReplayAppliedCatalog() throws Exception {
+        List<KnowledgeDocument> originalDrafts = drafts;
+        Map<String, byte[]> originalResources = resources;
+        try (Fixture f = fixture()) {
+            execute(f, input(f, PublicationManifest.Operation.PUBLISH, 20, null));
+            reviseArticleDraft("review-v2");
+            OperationInput update = input(f, PublicationManifest.Operation.UPDATE, 1, null);
+            f.model.failAt = f.model.calls.get() + 1;
+            assertThrows(RuntimeException.class, () -> execute(f, update));
+            assertEquals(2, f.catalog().epoch());
+            assertFalse(f.knowledge.publicationReady());
+            int calls = f.model.calls.get();
+            assertThrows(SecurityException.class, () -> execute(f, update));
+            assertEquals(calls, f.model.calls.get());
+            assertEquals(1, f.store.operation(update.grant.operationId()).embeddingRequests());
+            assertFalse(f.knowledge.publicationReady());
+        } finally { drafts = originalDrafts; resources = originalResources; }
+    }
+
+    private void reviseArticleDraft(String version) throws Exception {
+        drafts = drafts.stream().map(d -> "help-article-manage".equals(d.sourceId())
+                ? new KnowledgeDocument(d.sourceId(), d.title(), d.text() + " article review revision", version,
+                    d.sourceType(), d.sourceUrl(), d.visibility(), d.reviewStatus(), d.updatedAt(), d.keywords()) : d).toList();
+        resources = Map.of(PublicationManifest.PLATFORM_HELP_RESOURCE, JSON.writeValueAsBytes(drafts),
+                PublicationManifest.CAPABILITIES_RESOURCE, resources.get(PublicationManifest.CAPABILITIES_RESOURCE));
+    }
+
     private Fixture fixture() throws Exception {
         EmptyTarget target = emptyTarget();
         JdbcCatalogStore.initialize(target.source, drafts);

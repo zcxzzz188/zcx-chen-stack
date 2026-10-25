@@ -33,8 +33,11 @@ function Get-OperationRecord {
     if ($OperationId -cnotmatch '^[A-Za-z0-9._-]{1,80}$' -or $Operator -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,127}$' -or
         $Environment -cnotmatch '^[A-Za-z0-9._-]{1,80}$' -or $manifest.environment -cne $Environment -or
         $manifest.artifactSha256 -cne $ExpectedArtifactSha256 -or $manifest.gitCommit -cnotmatch '^[0-9a-f]{40}$' -or
-        $manifest.operation -cnotin @('PUBLISH','RECOVER','REVOKE') -or $MaxEmbeddingRequests -lt 0 -or
+        $manifest.operation -cnotin @('PUBLISH','UPDATE','RECOVER','REVOKE') -or $MaxEmbeddingRequests -lt 0 -or
         ($manifest.operation -ceq 'REVOKE' -and $MaxEmbeddingRequests -ne 0)) { throw 'Controlled operator, operation or budget is invalid.' }
+    if ($manifest.operation -ceq 'UPDATE' -and ($manifest.createCollection -or $manifest.initializeEmptyCatalog -or $MaxEmbeddingRequests -le 0)) {
+        throw 'UPDATE requires an existing target and a positive bounded embedding budget.'
+    }
     $zip=[IO.Compression.ZipFile]::OpenRead($ArtifactPath)
     try {
         $metadata=@($zip.Entries | Where-Object { $_.FullName -cin @('META-INF/chen-release-build.properties','BOOT-INF/classes/META-INF/chen-release-build.properties') })

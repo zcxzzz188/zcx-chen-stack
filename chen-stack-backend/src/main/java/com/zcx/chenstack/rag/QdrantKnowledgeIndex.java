@@ -149,6 +149,25 @@ public class QdrantKnowledgeIndex implements AutoCloseable {
         catch (Exception failure) { throw new RagFailure(RagFailure.Code.QDRANT_UNAVAILABLE); }
     }
 
+    /** 仅修改已核验保留块的目录元数据，不重写向量。 */
+    void rebindCatalog(List<Document> retained) {
+        if (retained.isEmpty()) return;
+        verify(false);
+        Map<String, JsonWithInt.Value> payload = new HashMap<>();
+        for (String field : List.of("catalog_authority", "catalog_epoch")) {
+            payload.put(field, JsonWithInt.Value.newBuilder()
+                    .setStringValue(retained.getFirst().getMetadata().get(field).toString()).build());
+        }
+        try {
+            client.setPayloadAsync(properties.getCollection(), payload,
+                    retained.stream().map(d -> id(UUID.fromString(d.getId()))).toList(), true, null, null)
+                    .get(properties.getQdrantTimeoutSeconds(), TimeUnit.SECONDS);
+        } catch (InterruptedException failure) {
+            Thread.currentThread().interrupt();
+            throw new RagFailure(RagFailure.Code.QDRANT_UNAVAILABLE);
+        } catch (Exception failure) { throw new RagFailure(RagFailure.Code.QDRANT_UNAVAILABLE); }
+    }
+
     /** 物理索引操作，不代表权威目录撤权；业务调用须经RagKnowledgeService校验。 */
     public void deleteSource(String sourceId) {
         verify(false);

@@ -82,6 +82,27 @@ public final class RagPublicationExecutor {
             PublicationManifest.require(previous == null || !"COMPLETED".equals(previous.status()),
                     "RELEASE_COMPLETED_USE_READ_ONLY_RECOVERY");
 
+            List<KnowledgeDocument> changed = List.of();
+            Set<String> retainedChunkIds = Set.of();
+            if (manifest.operation() == PublicationManifest.Operation.UPDATE) {
+                // shortcut: 增量写入中断后先核验现场，不自动重放已应用的目录变更。
+                PublicationManifest.require(applied == null, "RELEASE_UPDATE_PARTIAL_REQUIRES_REVIEW");
+                PublicationManifest.require(!manifest.createCollection() && !manifest.initializeEmptyCatalog()
+                        && grant.maxEmbeddingRequests() > 0, "RELEASE_UPDATE_INVALID");
+                changed = drafts.stream().filter(d -> !d.version().equals(before.source(d.sourceId()).version())).toList();
+                PublicationManifest.require(!changed.isEmpty(), "RELEASE_UPDATE_NO_CHANGES");
+                var receipt = store.latestCompletedReceipt(manifest.environment(), manifest.collection());
+                var indexed = receipt.operation();
+                PublicationManifest.require(indexed.operator().equals(grant.operator())
+                        && indexed.targetInitialized() && Objects.equals(indexed.indexEpoch(), before.epoch())
+                        && Objects.equals(indexed.appliedGeneration(), before.epoch())
+                        && store.snapshotHash().equals(indexed.appliedSnapshotHash()), "RELEASE_UPDATE_RECEIPT_MISMATCH");
+                PublicationManifest.require(receipt.indexHash().equals(
+                        knowledge.verifyPublicationIndex(indexed.indexAuthority(), indexed.indexEpoch())),
+                        "RELEASE_UPDATE_INDEX_DIGEST_MISMATCH");
+                retainedChunkIds = before.chunks().stream().map(org.springframework.ai.document.Document::getId).collect(Collectors.toSet());
+            }
+
             knowledge.blockPublication();
             store.prepareOperation(operation(manifest, grant, operationHash));
             recorded = true;
@@ -99,10 +120,10 @@ public final class RagPublicationExecutor {
                         && indexed.operator().equals(grant.operator())
                         && indexed.maxEmbeddingRequests() >= 0 && indexed.maxEmbeddingRequests() <= Integer.MAX_VALUE
                         && indexed.embeddingRequests() >= 0 && indexed.embeddingRequests() <= indexed.maxEmbeddingRequests()
-                        && before.epoch() == ("PUBLISH".equals(indexed.type())
+                        && before.epoch() == ("PUBLISH".equals(indexed.type()) || "UPDATE".equals(indexed.type())
                             ? Math.incrementExact(indexed.expectedGeneration()) : indexed.expectedGeneration())
                         && Objects.equals(indexed.indexEpoch(), before.epoch())
-                        && ("PUBLISH".equals(indexed.type()) || "RECOVER".equals(indexed.type()))
+                        && ("PUBLISH".equals(indexed.type()) || "UPDATE".equals(indexed.type()) || "RECOVER".equals(indexed.type()))
                         && PublicationManifest.validHash(indexed.operationHash())
                         && !receipt.completedAt().isAfter(java.time.Instant.now()), "RECOVERY_INDEX_RECEIPT_MISMATCH");
                 String indexHash = knowledge.verifyPublicationIndex(indexed.indexAuthority(), indexed.indexEpoch());
@@ -120,6 +141,10 @@ public final class RagPublicationExecutor {
                     lifecycle.publish(drafts.stream().map(d -> new KnowledgeDocument(d.sourceId(), d.title(), d.text(), d.version(),
                             d.sourceType(), d.sourceUrl(), "PUBLIC", "DOCUMENT_REVIEWED", d.updatedAt(), d.keywords())).toList(),
                             before.epoch(), grant.operationId());
+                } else if (manifest.operation() == PublicationManifest.Operation.UPDATE) {
+                    lifecycle.publish(changed.stream().map(d -> new KnowledgeDocument(d.sourceId(), d.title(), d.text(), d.version(),
+                            d.sourceType(), d.sourceUrl(), "PUBLIC", "DOCUMENT_REVIEWED", d.updatedAt(), d.keywords())).toList(),
+                            before.epoch(), grant.operationId());
                 } else lifecycle.revokeApproved(manifest.revokeSourceId(), before.epoch(), grant.operationId());
             }
             if (manifest.operation() == PublicationManifest.Operation.REVOKE) knowledge.preparePublicationTarget(false, owner);
@@ -132,7 +157,8 @@ public final class RagPublicationExecutor {
             knowledge.publicationBudget(() -> {
                 store.reserveEmbedding(grant.operationId());
             });
-            knowledge.syncReviewed(false);
+            if (manifest.operation() == PublicationManifest.Operation.UPDATE) knowledge.syncReviewedIncremental(retainedChunkIds);
+            else knowledge.syncReviewed(false);
             String indexHash = knowledge.verifyPublicationIndex();
             KnowledgeCatalog verified = lifecycle.snapshot();
             store.checkpoint(grant.operationId(), "COMPLETED", true, lifecycle.authorityId(), verified.epoch(), indexHash);
@@ -157,6 +183,11 @@ public final class RagPublicationExecutor {
         PublicationManifest.require(ids.equals(PublicationManifest.userSourceIds()) && drafts.size() == 39, "RELEASE_SCOPE_INVALID");
         for (KnowledgeDocument draft : drafts) {
             KnowledgeDocument actual = catalog.source(draft.sourceId());
+            if (manifest.operation() == PublicationManifest.Operation.UPDATE) {
+                PublicationManifest.require(actual != null && "PUBLIC".equals(actual.visibility())
+                        && "DOCUMENT_REVIEWED".equals(actual.reviewStatus()), "RELEASE_UPDATE_SOURCE_NOT_PUBLISHED");
+                if (!actual.version().equals(draft.version())) continue;
+            }
             PublicationManifest.require(actual != null && actual.version().equals(draft.version())
                     && KnowledgeCatalog.normalize(actual.text()).equals(KnowledgeCatalog.normalize(draft.text()))
                     && Objects.equals(actual.title(), draft.title()) && Objects.equals(actual.sourceType(), draft.sourceType())

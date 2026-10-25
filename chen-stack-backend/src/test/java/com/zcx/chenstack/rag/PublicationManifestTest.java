@@ -154,6 +154,15 @@ class PublicationManifestTest {
         assertThrows(SecurityException.class, () -> change(empty, "expectedSnapshotSha256", SNAPSHOT).validateResources(runtime, resources));
     }
 
+    @Test void incrementalUpdateCannotInitializeOrCreateCollection() throws Exception {
+        var resources = resources(drafts());
+        var update = change(change(manifest(resources), "operation", "UPDATE"), "createCollection", false);
+        assertEquals(39, update.validate(runtime(), resources).size());
+        assertThrows(SecurityException.class, () -> change(update, "createCollection", true).validate(runtime(), resources));
+        assertThrows(SecurityException.class, () -> change(update, "initializeEmptyCatalog", true).validate(runtime(), resources));
+        assertThrows(SecurityException.class, () -> change(update, "expectedGeneration", 0).validateResources(runtime(), resources));
+    }
+
     @Test void revokeOnlyTargetsTheApproved39AndCannotInitializeOrCreateCollection() throws Exception {
         var resources = resources(drafts()); var base = manifest(resources);
         var revoke = change(change(base, "operation", "REVOKE"), "revokeSourceId", IDS.getFirst());

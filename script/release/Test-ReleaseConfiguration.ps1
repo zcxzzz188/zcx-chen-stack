@@ -97,7 +97,7 @@ function Test-ReleaseFiles([hashtable]$Values, [bool]$Recovery) {
     $utf8 = [Text.UTF8Encoding]::new($false, $true)
     try { $manifest = $utf8.GetString($raw) | ConvertFrom-Json -AsHashtable -ErrorAction Stop }
     catch { throw 'Manifest is not valid UTF-8 JSON.' }
-    if ($manifest['operation'] -cnotin @('PUBLISH', 'RECOVER', 'REVOKE') -or
+    if ($manifest['operation'] -cnotin @('PUBLISH', 'UPDATE', 'RECOVER', 'REVOKE') -or
         $manifest['createCollection'] -isnot [bool] -or $manifest['initializeEmptyCatalog'] -isnot [bool]) {
         throw 'Manifest operation and collection/bootstrap flags are required.'
     }
@@ -108,12 +108,15 @@ function Test-ReleaseFiles([hashtable]$Values, [bool]$Recovery) {
     $fresh = Read-Boolean $Values 'CHEN_RELEASE_NEW_COLLECTION_CONFIRMED'
     $creates = -not $Recovery -and $manifest['operation'] -cne 'REVOKE' -and $manifest['createCollection']
     if ($fresh -ne $creates) { throw 'Fresh-target confirmation must match controlled collection creation; read-only recovery and revocation use an existing target.' }
-    if ($Recovery -and $manifest['operation'] -cnotin @('PUBLISH', 'RECOVER')) {
-        throw 'Read-only restart recovery requires the completed PUBLISH or RECOVER receipt.'
+    if ($Recovery -and $manifest['operation'] -cnotin @('PUBLISH', 'UPDATE', 'RECOVER')) {
+        throw 'Read-only restart recovery requires the completed PUBLISH, UPDATE or RECOVER receipt.'
     }
     if (-not $Recovery -and $manifest['operation'] -ceq 'REVOKE' -and
         ($manifest['createCollection'] -or $manifest['initializeEmptyCatalog'])) {
         throw 'REVOKE cannot initialize the Catalog or create a collection.'
+    }
+    if ($manifest['operation'] -ceq 'UPDATE' -and ($manifest['createCollection'] -or $manifest['initializeEmptyCatalog'])) {
+        throw 'UPDATE must preserve the existing Catalog and collection.'
     }
     $manifestHash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($raw)).ToLowerInvariant()
     $operationHash = $null
@@ -133,7 +136,8 @@ function Test-ReleaseFiles([hashtable]$Values, [bool]$Recovery) {
             $record['confirmed'] -isnot [bool] -or -not $record['confirmed'] -or
             $record['maxEmbeddingRequests'] -isnot [long] -and $record['maxEmbeddingRequests'] -isnot [int] -or
             $record['maxEmbeddingRequests'] -lt 0 -or $record['maxEmbeddingRequests'] -gt [int]::MaxValue -or
-            ($manifest['operation'] -ceq 'REVOKE' -and $record['maxEmbeddingRequests'] -ne 0)) {
+            ($manifest['operation'] -ceq 'REVOKE' -and $record['maxEmbeddingRequests'] -ne 0) -or
+            ($manifest['operation'] -ceq 'UPDATE' -and $record['maxEmbeddingRequests'] -le 0)) {
             throw 'Operation record is unconfirmed or differs from the raw Manifest and deployment identities.'
         }
         $operationHash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($operationBytes)).ToLowerInvariant()
@@ -286,7 +290,7 @@ if ($SelfTest) {
             $manifest | ConvertTo-Json | Set-Content -LiteralPath $manifestPath -Encoding utf8NoBOM
             $record = @{ schemaVersion = 1; operationId = 'synthetic-operation'; operator = 'synthetic-operator'; environment = 'synthetic'
                 manifestSha256 = (Get-FileHash -LiteralPath $manifestPath).Hash.ToLowerInvariant()
-                maxEmbeddingRequests = 0; allowedOperation = $manifest['operation']; confirmed = $true }
+                maxEmbeddingRequests = $(if ($manifest['operation'] -ceq 'UPDATE') { 1 } else { 0 }); allowedOperation = $manifest['operation']; confirmed = $true }
             $record | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $control.FullName 'operation.json') -Encoding utf8NoBOM
         }
         Write-SyntheticInputs
@@ -389,7 +393,7 @@ if ($SelfTest) {
         if (Test-Path -LiteralPath $operationPath) { throw 'Read-only precheck unexpectedly created an operation record.' }
         $enabled['CHEN_RAG_RELEASE_RECOVERY_ENABLED'] = 'false'; $enabled['CHEN_RAG_RELEASE_ENABLED'] = 'true'
         $enabled['CHEN_RAG_RELEASE_OPERATION_PATH'] = '/release/operation.json'
-        foreach ($operation in @('RECOVER', 'REVOKE')) {
+        foreach ($operation in @('UPDATE', 'RECOVER', 'REVOKE')) {
             $manifest['operation'] = $operation; $manifest['createCollection'] = $false; $manifest['initializeEmptyCatalog'] = $false
             Write-SyntheticInputs
             Test-Configuration $enabled | Out-Null
@@ -406,7 +410,7 @@ if ($SelfTest) {
         if (-not $rejected) { throw 'REVOKE receipt was accepted for read-only recovery.' }
         $existing = $baseline.Clone(); $existing['CHEN_RELEASE_PROJECT_NAME'] = 'chen-stack'
         Test-Configuration $existing $true | Out-Null
-        [pscustomobject]@{ Result = 'SELF_TEST_PASS'; Checks = $cases.Count + $fileCases.Count + $recordCases.Count + $budgetCases.Count + 15; ExternalCalls = 0 }
+        [pscustomobject]@{ Result = 'SELF_TEST_PASS'; Checks = $cases.Count + $fileCases.Count + $recordCases.Count + $budgetCases.Count + 16; ExternalCalls = 0 }
     } finally {
         $resolved = [IO.Path]::GetFullPath($selfTestRoot)
         $temporaryRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
