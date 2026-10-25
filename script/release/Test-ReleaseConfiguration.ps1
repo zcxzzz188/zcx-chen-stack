@@ -43,6 +43,42 @@ function Test-ReleaseFiles([hashtable]$Values, [bool]$Recovery) {
         -not $ledger.EndsWith("`n") -or $ledger.Contains("`r")) {
         throw 'Budget header, fixed 64/20 limits or complete record boundary differs; do not reset the ledger.'
     }
+    $configuredChatLimit = [string]$Values['CHEN_RAG_RELEASE_MAX_CHAT_HTTP_ATTEMPTS']
+    if ([string]::IsNullOrWhiteSpace($configuredChatLimit)) { $configuredChatLimit = '20' }
+    if ($configuredChatLimit -cnotmatch '^(20|100)$') { throw 'The release Chat limit must be 20 or explicitly extended to 100.' }
+    $effectiveChatLimit = 20
+    $embeddingUsed = 0; $chatUsed = 0; $sequence = 0
+    $lines = $ledger.Split("`n")
+    for ($index = 1; $index -lt $lines.Length - 1; $index++) {
+        $fields = $lines[$index].Split('|')
+        if (($fields.Length -ne 4 -and $fields.Length -ne 8) -or
+            $fields[0] -cnotmatch '^[1-9][0-9]{0,2}$' -or
+            $fields[2] -cnotmatch '^[0-9]{1,2}$' -or $fields[3] -cnotmatch '^[0-9]{1,3}$') {
+            throw 'Budget record structure is invalid.'
+        }
+        $sequence++
+        if ($fields.Length -eq 8) {
+            $auditTime = [DateTime]::MinValue
+            if ($fields[1] -cne 'CHAT_LIMIT' -or $effectiveChatLimit -ne 20 -or
+                $fields[4] -cne '20' -or $fields[5] -cne '100' -or
+                $fields[7] -cnotmatch '^[A-Za-z0-9._-]{1,80}$' -or
+                $fields[6] -cnotmatch '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?Z$' -or
+                -not [DateTime]::TryParseExact($fields[6].Substring(0, 19), "yyyy-MM-dd'T'HH:mm:ss",
+                    [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::AssumeUniversal, [ref]$auditTime)) {
+                throw 'Budget Chat extension audit is invalid.'
+            }
+            $effectiveChatLimit = 100
+        } elseif ($fields[1] -ceq 'EMBEDDING') { $embeddingUsed++ }
+        elseif ($fields[1] -ceq 'CHAT') { $chatUsed++ }
+        else { throw 'Budget request kind is invalid.' }
+        if ([int]$fields[0] -ne $sequence -or [int]$fields[2] -ne $embeddingUsed -or
+            [int]$fields[3] -ne $chatUsed -or $embeddingUsed -gt 64 -or $chatUsed -gt $effectiveChatLimit) {
+            throw 'Budget sequence, cumulative counts or effective limits are invalid.'
+        }
+    }
+    if ($effectiveChatLimit -ne [int]$configuredChatLimit) {
+        throw 'Configured Chat limit differs from the audited budget; do not reset the ledger.'
+    }
     $directory = [string]$Values['CHEN_RELEASE_CONTROL_DIRECTORY']
     if (-not [IO.Path]::IsPathFullyQualified($directory) -or -not (Test-Path -LiteralPath $directory -PathType Container)) {
         throw 'CHEN_RELEASE_CONTROL_DIRECTORY must name an existing absolute host directory.'
@@ -265,6 +301,52 @@ if ($SelfTest) {
         $enabled['CHEN_RAG_RELEASE_MANIFEST_PATH'] = '/release/manifest.json'; $enabled['CHEN_RAG_RELEASE_OPERATION_PATH'] = '/release/operation.json'
         $enabled['CHEN_RAG_RELEASE_ARTIFACT_PATH'] = '/app/app.jar'
         Test-Configuration $enabled | Out-Null
+        $ledgerPath = Join-Path $budget.FullName 'provider-attempts.ledger'
+        $ledgerHeader = "CHEN_RELEASE_HTTP_BUDGET_V1|synthetic|64|20`n"
+        $legacyRecords = [Text.StringBuilder]::new($ledgerHeader)
+        for ($count = 1; $count -le 6; $count++) { [void]$legacyRecords.Append("$count|EMBEDDING|$count|0`n") }
+        for ($count = 1; $count -le 20; $count++) { [void]$legacyRecords.Append("$($count + 6)|CHAT|6|$count`n") }
+        $legacyLedger = $legacyRecords.ToString()
+        $auditRecord = "27|CHAT_LIMIT|6|20|20|100|2026-10-25T00:00:00.123456789Z|synthetic-operator`n"
+        $expandedLedger = $legacyLedger + $auditRecord + "28|CHAT|6|21`n"
+        [IO.File]::WriteAllText($ledgerPath, $legacyLedger, [Text.UTF8Encoding]::new($false))
+        Test-Configuration $enabled | Out-Null
+        $enabled['CHEN_RAG_RELEASE_MAX_CHAT_HTTP_ATTEMPTS'] = '20'
+        Test-Configuration $enabled | Out-Null
+        $enabled['CHEN_RAG_RELEASE_MAX_CHAT_HTTP_ATTEMPTS'] = '100'
+        [IO.File]::WriteAllText($ledgerPath, $expandedLedger, [Text.UTF8Encoding]::new($false))
+        Test-Configuration $enabled | Out-Null
+        $overChatLimit = [Text.StringBuilder]::new($legacyLedger + $auditRecord)
+        for ($count = 21; $count -le 101; $count++) { [void]$overChatLimit.Append("$($count + 7)|CHAT|6|$count`n") }
+        $overEmbeddingLimit = [Text.StringBuilder]::new($legacyLedger + $auditRecord)
+        for ($count = 7; $count -le 65; $count++) { [void]$overEmbeddingLimit.Append("$($count + 21)|EMBEDDING|$count|20`n") }
+        $budgetCases = @(
+            @{ Limit = '100'; Ledger = $legacyLedger },
+            @{ Limit = '100'; Ledger = $expandedLedger.Replace('|64|20', '|64|100') },
+            @{ Limit = '20'; Ledger = $expandedLedger },
+            @{ Limit = '101'; Ledger = $expandedLedger },
+            @{ Limit = '100'; Ledger = $expandedLedger.Replace('27|CHAT_LIMIT', '28|CHAT_LIMIT') },
+            @{ Limit = '100'; Ledger = $expandedLedger.Replace('|20|100|', '|19|100|') },
+            @{ Limit = '100'; Ledger = $expandedLedger.Replace('|20|100|', '|20|99|') },
+            @{ Limit = '100'; Ledger = $expandedLedger.Replace('synthetic-operator', '') },
+            @{ Limit = '100'; Ledger = $expandedLedger.Replace('2026-10-25', '2026-02-30') },
+            @{ Limit = '100'; Ledger = $expandedLedger.Replace('CHAT_LIMIT|6|20', 'CHAT_LIMIT|7|20') },
+            @{ Limit = '100'; Ledger = $expandedLedger.Replace('CHAT_LIMIT|6|20', 'CHAT_LIMIT|6|21') },
+            @{ Limit = '100'; Ledger = $expandedLedger.Replace('28|CHAT|6|21', '28|CHAT|6|22') },
+            @{ Limit = '100'; Ledger = $legacyLedger + $auditRecord + $auditRecord.Replace('27|CHAT_LIMIT', '28|CHAT_LIMIT') },
+            @{ Limit = '100'; Ledger = $legacyLedger + "27|CHAT|6|21`n" + $auditRecord.Replace('27|CHAT_LIMIT|6|20', '28|CHAT_LIMIT|6|21') },
+            @{ Limit = '100'; Ledger = $overChatLimit.ToString() },
+            @{ Limit = '100'; Ledger = $overEmbeddingLimit.ToString() }
+        )
+        foreach ($case in $budgetCases) {
+            $enabled['CHEN_RAG_RELEASE_MAX_CHAT_HTTP_ATTEMPTS'] = $case.Limit
+            [IO.File]::WriteAllText($ledgerPath, $case.Ledger, [Text.UTF8Encoding]::new($false))
+            $rejected = $false
+            try { Test-Configuration $enabled | Out-Null } catch { $rejected = $true }
+            if (-not $rejected) { throw 'An unaudited, corrupt or over-budget Chat extension was accepted.' }
+        }
+        [IO.File]::WriteAllText($ledgerPath, $ledgerHeader, [Text.UTF8Encoding]::new($false))
+        $enabled.Remove('CHEN_RAG_RELEASE_MAX_CHAT_HTTP_ATTEMPTS')
         $fileCases = @(
             @{ CHEN_RAG_ENABLED = 'false' }, @{ CHEN_RAG_RELEASE_RECOVERY_ENABLED = 'true' },
             @{ CHEN_RELEASE_BUDGET_DIRECTORY = (Join-Path $selfTestRoot 'missing-budget') },
@@ -324,7 +406,7 @@ if ($SelfTest) {
         if (-not $rejected) { throw 'REVOKE receipt was accepted for read-only recovery.' }
         $existing = $baseline.Clone(); $existing['CHEN_RELEASE_PROJECT_NAME'] = 'chen-stack'
         Test-Configuration $existing $true | Out-Null
-        [pscustomobject]@{ Result = 'SELF_TEST_PASS'; Checks = $cases.Count + $fileCases.Count + $recordCases.Count + 12; ExternalCalls = 0 }
+        [pscustomobject]@{ Result = 'SELF_TEST_PASS'; Checks = $cases.Count + $fileCases.Count + $recordCases.Count + $budgetCases.Count + 15; ExternalCalls = 0 }
     } finally {
         $resolved = [IO.Path]::GetFullPath($selfTestRoot)
         $temporaryRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
@@ -343,7 +425,8 @@ if (-not $PSBoundParameters.ContainsKey('Configuration')) {
         'CHEN_RAG_EMBEDDING_API_KEY', 'SPRING_AI_OPENAI_API_KEY', 'CHEN_RAG_RELEASE_MANIFEST_PATH',
         'CHEN_RAG_RELEASE_OPERATION_PATH', 'CHEN_RAG_RELEASE_OPERATOR',
         'CHEN_RAG_RELEASE_ENVIRONMENT', 'CHEN_RAG_RELEASE_ARTIFACT_PATH', 'CHEN_RELEASE_CONTROL_DIRECTORY',
-        'CHEN_RELEASE_BUDGET_DIRECTORY', 'CHEN_RAG_RELEASE_BUDGET_ID', 'CHEN_RAG_RELEASE_BUDGET_LEDGER_PATH')) {
+        'CHEN_RELEASE_BUDGET_DIRECTORY', 'CHEN_RAG_RELEASE_BUDGET_ID', 'CHEN_RAG_RELEASE_BUDGET_LEDGER_PATH',
+        'CHEN_RAG_RELEASE_MAX_CHAT_HTTP_ATTEMPTS')) {
         $Configuration[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
     }
 }

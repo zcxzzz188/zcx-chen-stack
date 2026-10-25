@@ -5,6 +5,22 @@ const pagePaths = new Map([
   ['OPEN_ARTICLE_MANAGE', '/creation/articlemanage'], ['OPEN_COMMENT_MANAGE', '/creation/commentmanage'],
 ])
 const actions = new Set([...pagePaths.keys(), 'OPEN_MY_PROFILE'])
+const errorMessages = Object.freeze({
+  LOCAL_BUDGET_EXHAUSTED: '智能客服当前模型调用额度已用尽，请联系管理员增加额度后再试。',
+  MODEL_RATE_LIMITED: '模型服务请求受到限流，暂时不可用，请稍后重试。',
+  MODEL_BALANCE_INSUFFICIENT: '模型服务商余额不足，暂时不可用，请联系管理员处理。',
+  MODEL_TIMEOUT: '智能客服响应超时，请稍后重试。',
+  MODEL_NETWORK_ERROR: '模型服务网络连接异常，请稍后重试。',
+  MODEL_SERVICE_ERROR: '模型服务暂时不可用，请稍后重试；具体原因请联系管理员检查。',
+  KNOWLEDGE_UNAVAILABLE: '知识查询服务暂时不可用，当前无法确认相关知识。',
+  SSE_INCOMPLETE: '智能客服响应异常，回答未完成，请稍后重试。',
+  SERVICE_UNAVAILABLE: '智能客服服务暂时不可用，请稍后重试。',
+})
+
+export function customerServiceError(errorCode) {
+  const code = typeof errorCode === 'string' && Object.hasOwn(errorMessages, errorCode) ? errorCode : 'SERVICE_UNAVAILABLE'
+  return Object.assign(new Error(errorMessages[code]), { errorCode: code })
+}
 
 export function navigationTarget(action, authorizedArticle, currentUserId) {
   if (pagePaths.has(action)) return { path: pagePaths.get(action) }
@@ -24,6 +40,7 @@ export function validateCustomerServiceEvent(event) {
     throw new Error('未知客服事件')
   }
   if (event.text != null && typeof event.text !== 'string') throw new Error('客服文本无效')
+  if (event.errorCode != null && (typeof event.errorCode !== 'string' || !Object.hasOwn(errorMessages, event.errorCode))) throw new Error('客服错误码无效')
   if (event.type === 'KNOWLEDGE_STATUS' && !['SUPPORTED', 'NOT_SUPPORTED', 'UNKNOWN'].includes(event.supportStatus)) throw new Error('知识状态无效')
   if (event.type === 'NAVIGATION_ACTION' && !actions.has(event.action)) throw new Error('客服动作无效')
   if (event.type === 'ARTICLE_SELECTION' || event.type === 'EMPTY_RESULT') {
@@ -53,19 +70,21 @@ export function createCustomerServiceDecoder(onEvent) {
       while ((match = /\r?\n\r?\n/.exec(buffer))) {
         const frame = buffer.slice(0, match.index)
         buffer = buffer.slice(match.index + match[0].length)
-        if (frame.length > 65536) throw new Error('客服事件过大')
+        if (frame.length > 65536) throw customerServiceError('SSE_INCOMPLETE')
         const data = frame.split(/\r?\n/).filter(line => line.startsWith('data:'))
           .map(line => line.slice(5).trimStart()).join('\n')
         if (!data) continue
-        if (finished) throw new Error('客服结束后收到额外事件')
-        const event = validateCustomerServiceEvent(JSON.parse(data))
+        if (finished) throw customerServiceError('SSE_INCOMPLETE')
+        let event
+        try { event = validateCustomerServiceEvent(JSON.parse(data)) }
+        catch { throw customerServiceError('SSE_INCOMPLETE') }
         if (event.type === 'DONE') finished = true
         onEvent(event)
       }
-      if (buffer.length > 65536) throw new Error('客服事件过大')
+      if (buffer.length > 65536) throw customerServiceError('SSE_INCOMPLETE')
     },
     finish() {
-      if (buffer.trim() || !finished) throw new Error('客服连接中断，回答未完成')
+      if (buffer.trim() || !finished) throw customerServiceError('SSE_INCOMPLETE')
     },
   }
 }

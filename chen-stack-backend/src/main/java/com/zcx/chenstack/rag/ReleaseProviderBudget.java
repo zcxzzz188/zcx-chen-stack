@@ -11,6 +11,11 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.time.Instant;
+import java.time.format.DateTimeParseException;
+import java.util.HexFormat;
 import java.util.Map;
 
 /** 本轮运维费用账本；发送前落盘，失败或UNKNOWN不退款，目录ACL由可信运维账户维护。 */
@@ -22,17 +27,21 @@ public final class ReleaseProviderBudget {
     private final int chatLimit;
 
     public ReleaseProviderBudget(String ledgerPath, String budgetId, int embeddingLimit, int chatLimit) {
+        this(ledgerPath, budgetId, embeddingLimit, chatLimit, true);
+    }
+
+    private ReleaseProviderBudget(String ledgerPath, String budgetId, int embeddingLimit, int chatLimit, boolean checkLedger) {
         if ((ledgerPath == null || ledgerPath.isBlank()) && (budgetId == null || budgetId.isBlank())) {
             path = null; header = null; this.embeddingLimit = 0; this.chatLimit = 0;
             return;
         }
         if (ledgerPath == null || !Path.of(ledgerPath).isAbsolute() || budgetId == null
                 || !budgetId.matches("[A-Za-z0-9._-]{1,80}") || embeddingLimit < 0 || embeddingLimit > 64
-                || chatLimit < 0 || chatLimit > 20) throw new SecurityException("RELEASE_BUDGET_CONFIGURATION_INVALID");
+                || chatLimit < 0 || chatLimit > 100) throw new SecurityException("RELEASE_BUDGET_CONFIGURATION_INVALID");
         path = Path.of(ledgerPath);
         this.embeddingLimit = embeddingLimit; this.chatLimit = chatLimit;
-        header = "CHEN_RELEASE_HTTP_BUDGET_V1|" + budgetId + "|" + embeddingLimit + "|" + chatLimit;
-        snapshot(); // 不自动创建缺失账本，避免重启/路径拼错重置费用。
+        header = "CHEN_RELEASE_HTTP_BUDGET_V1|" + budgetId + "|" + embeddingLimit + "|";
+        if (checkLedger) snapshot(); // 不自动创建缺失账本，避免重启/路径拼错重置费用。
     }
 
     public boolean configured() { return path != null; }
@@ -45,11 +54,53 @@ public final class ReleaseProviderBudget {
         return (request, next) -> Mono.defer(() -> { reserve(kind); return next.exchange(request); });
     }
 
-    public synchronized void reserve(Kind kind) { access(kind); }
+    public synchronized void reserve(Kind kind) { access(kind, 0, null, null); }
 
-    public synchronized Map<String, Long> snapshot() { return access(null); }
+    public synchronized Map<String, Long> snapshot() { return access(null, 0, null, null); }
 
-    private Map<String, Long> access(Kind kind) {
+    /** 只检查发送所需余量，不预扣；真正发送仍须逐次 reserve。 */
+    public synchronized void checkChatCapacity(int minimumAttempts) {
+        if (minimumAttempts < 1 || minimumAttempts > 100) {
+            throw new SecurityException("RELEASE_BUDGET_CAPACITY_CHECK_INVALID");
+        }
+        access(null, minimumAttempts, null, null);
+    }
+
+    /** 运维显式扩容；原头、请求字节及累计计数不变，目录 ACL 仍是操作授权边界。 */
+    public static Map<String, Long> extendChatLimit(String ledgerPath, String budgetId, int embeddingLimit,
+            int expectedOldLimit, int newLimit, String operator, String expectedLedgerSha256) {
+        if (expectedOldLimit != 20 || newLimit != 100 || !validOperator(operator)
+                || expectedLedgerSha256 == null || !expectedLedgerSha256.matches("[a-fA-F0-9]{64}")) {
+            throw new SecurityException("RELEASE_BUDGET_EXTENSION_INVALID");
+        }
+        ReleaseProviderBudget budget = new ReleaseProviderBudget(ledgerPath, budgetId, embeddingLimit, expectedOldLimit, false);
+        if (!budget.configured()) throw new SecurityException("RELEASE_BUDGET_LEDGER_REQUIRED");
+        return budget.access(null, 0, operator, expectedLedgerSha256);
+    }
+
+    public static void main(String[] args) {
+        if (args.length == 5 && "inspect".equals(args[0])) {
+            int embeddingLimit = Integer.parseInt(args[3]);
+            int chatLimit = Integer.parseInt(args[4]);
+            Map<String, Long> counts = new ReleaseProviderBudget(args[1], args[2], embeddingLimit, chatLimit).snapshot();
+            System.out.println("CHAT_USED=" + counts.get("chat") + " CHAT_LIMIT=" + chatLimit
+                    + " CHAT_REMAINING=" + (chatLimit - counts.get("chat"))
+                    + " EMBEDDING_USED=" + counts.get("embedding") + " EMBEDDING_LIMIT=" + embeddingLimit);
+            return;
+        }
+        if (args.length != 8 || !"extend-chat".equals(args[0])) {
+            throw new IllegalArgumentException("extend-chat <absoluteLedgerPath> <budgetId> <embeddingLimit> <expectedOldLimit> <newLimit> <operator> <expectedLedgerSha256>");
+        }
+        Map<String, Long> counts = extendChatLimit(args[1], args[2], Integer.parseInt(args[3]),
+                Integer.parseInt(args[4]), Integer.parseInt(args[5]), args[6], args[7]);
+        System.out.println("RELEASE_CHAT_BUDGET_EXTENDED chatLimit=100 embeddingUsed=" + counts.get("embedding") + " chatUsed=" + counts.get("chat"));
+    }
+
+    private static boolean validOperator(String operator) {
+        return operator != null && operator.matches("[A-Za-z0-9._-]{1,80}");
+    }
+
+    private Map<String, Long> access(Kind kind, int minimumChatAttempts, String operator, String expectedLedgerSha256) {
         if (path == null) return Map.of("embedding", 0L, "chat", 0L);
         if (!Files.isRegularFile(path)) throw new SecurityException("RELEASE_BUDGET_LEDGER_REQUIRED");
         try (FileChannel channel = FileChannel.open(path, StandardOpenOption.READ, StandardOpenOption.WRITE);
@@ -60,39 +111,65 @@ public final class ReleaseProviderBudget {
             String text = new String(bytes.array(), StandardCharsets.US_ASCII);
             if (!text.endsWith("\n") || text.indexOf('\r') >= 0) throw new SecurityException("RELEASE_BUDGET_LEDGER_INVALID");
             String[] lines = text.split("\n", -1);
-            if (!header.equals(lines[0])) throw new SecurityException("RELEASE_BUDGET_ID_OR_LIMIT_MISMATCH");
+            if (!lines[0].startsWith(header)) throw new SecurityException("RELEASE_BUDGET_ID_OR_LIMIT_MISMATCH");
+            String initialLimit = lines[0].substring(header.length());
+            if (!initialLimit.matches("0|[1-9][0-9]?") || Integer.parseInt(initialLimit) > 20) {
+                throw new SecurityException("RELEASE_BUDGET_LEDGER_INVALID");
+            }
+            int effectiveChatLimit = Integer.parseInt(initialLimit);
             long embedding = 0, chat = 0, sequence = 0;
             for (int i = 1; i < lines.length - 1; i++) {
                 String[] fields = lines[i].split("\\|", -1);
-                if (fields.length != 4 || !fields[0].matches("[1-9][0-9]{0,2}")
-                        || !fields[2].matches("[0-9]{1,2}") || !fields[3].matches("[0-9]{1,2}")) {
+                if ((fields.length != 4 && fields.length != 8) || !fields[0].matches("[1-9][0-9]{0,2}")
+                        || !fields[2].matches("[0-9]{1,2}") || !fields[3].matches("[0-9]{1,3}")) {
                     throw new SecurityException("RELEASE_BUDGET_LEDGER_INVALID");
                 }
                 sequence++;
-                switch (fields[1]) {
-                    case "EMBEDDING" -> embedding++;
-                    case "CHAT" -> chat++;
-                    default -> throw new SecurityException("RELEASE_BUDGET_LEDGER_INVALID");
+                if (fields.length == 8) {
+                    if (!"CHAT_LIMIT".equals(fields[1]) || effectiveChatLimit != 20
+                            || !"20".equals(fields[4]) || !"100".equals(fields[5]) || !validOperator(fields[7])) {
+                        throw new SecurityException("RELEASE_BUDGET_LEDGER_INVALID");
+                    }
+                    Instant.parse(fields[6]);
+                    effectiveChatLimit = 100;
+                } else {
+                    switch (fields[1]) {
+                        case "EMBEDDING" -> embedding++;
+                        case "CHAT" -> chat++;
+                        default -> throw new SecurityException("RELEASE_BUDGET_LEDGER_INVALID");
+                    }
                 }
                 if (Long.parseLong(fields[0]) != sequence || Long.parseLong(fields[2]) != embedding
-                        || Long.parseLong(fields[3]) != chat || embedding > embeddingLimit || chat > chatLimit) {
+                        || Long.parseLong(fields[3]) != chat || embedding > embeddingLimit || chat > effectiveChatLimit) {
                     throw new SecurityException("RELEASE_BUDGET_LEDGER_INVALID");
                 }
+            }
+            if (effectiveChatLimit != chatLimit) throw new SecurityException("RELEASE_BUDGET_ID_OR_LIMIT_MISMATCH");
+            if (chatLimit - chat < minimumChatAttempts) throw new SecurityException("RELEASE_PROVIDER_HTTP_BUDGET_EXHAUSTED");
+            if (operator != null) {
+                String actualHash = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes.array()));
+                if (!actualHash.equalsIgnoreCase(expectedLedgerSha256)) throw new SecurityException("RELEASE_BUDGET_LEDGER_HASH_MISMATCH");
+                append(channel, (sequence + 1) + "|CHAT_LIMIT|" + embedding + "|" + chat + "|20|100|" + Instant.now() + "|" + operator + "\n");
             }
             if (kind != null) {
                 if (kind == Kind.EMBEDDING && embedding >= embeddingLimit || kind == Kind.CHAT && chat >= chatLimit) {
                     throw new SecurityException("RELEASE_PROVIDER_HTTP_BUDGET_EXHAUSTED");
                 }
                 if (kind == Kind.EMBEDDING) embedding++; else chat++;
-                byte[] record = ((sequence + 1) + "|" + kind + "|" + embedding + "|" + chat + "\n").getBytes(StandardCharsets.US_ASCII);
-                channel.position(channel.size());
-                ByteBuffer append = ByteBuffer.wrap(record);
-                while (append.hasRemaining()) channel.write(append);
-                channel.force(true);
+                append(channel, (sequence + 1) + "|" + kind + "|" + embedding + "|" + chat + "\n");
             }
             return Map.of("embedding", embedding, "chat", chat);
-        } catch (IOException | java.nio.channels.OverlappingFileLockException error) {
+        } catch (DateTimeParseException error) {
+            throw new SecurityException("RELEASE_BUDGET_LEDGER_INVALID");
+        } catch (IOException | NoSuchAlgorithmException | java.nio.channels.OverlappingFileLockException error) {
             throw new SecurityException("RELEASE_BUDGET_PERSISTENCE_FAILED_CLOSED");
         }
+    }
+
+    private static void append(FileChannel channel, String record) throws IOException {
+        channel.position(channel.size());
+        ByteBuffer bytes = ByteBuffer.wrap(record.getBytes(StandardCharsets.US_ASCII));
+        while (bytes.hasRemaining()) channel.write(bytes);
+        channel.force(true);
     }
 }

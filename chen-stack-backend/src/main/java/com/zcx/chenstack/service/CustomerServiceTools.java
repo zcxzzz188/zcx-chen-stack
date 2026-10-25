@@ -43,7 +43,8 @@ public final class CustomerServiceTools {
                     + "真实卡片已准备，将随完整回答展示，请用户点击目标卡片的编辑按钮，不要索取ID或标题。卡片仅含标题和发布/审核状态，不提供写作日期，也没有按标题、正文或日期筛选的能力。";
             return directReply;
         } catch (RuntimeException error) {
-            pending.add(CustomerServiceEvent.state("ERROR_STATE", "暂时无法查询文章，请点击重试。", "RETRY_ARTICLES", null));
+            pending.add(CustomerServiceEvent.failure(CustomerServiceError.SERVICE_UNAVAILABLE.name(),
+                    "暂时无法查询文章，请点击重试。", "RETRY_ARTICLES"));
             directReply = "文章查询失败，可以点击重试；当前没有可用的查询结果。";
             return directReply;
         }
@@ -72,6 +73,12 @@ public final class CustomerServiceTools {
     }
     public void knowledgeStatus(String status) {
         pending.add(CustomerServiceEvent.state("KNOWLEDGE_STATUS", null, null, status));
+    }
+
+    public void knowledgeUnavailable() {
+        CustomerServiceError failure = CustomerServiceError.KNOWLEDGE_UNAVAILABLE;
+        pending.add(new CustomerServiceEvent("KNOWLEDGE_STATUS", failure.description(), null,
+                null, null, null, null, "UNKNOWN", failure.name()));
     }
 
     public static boolean promisesNavigation(String reply) { return NAVIGATION_PROMISE.matcher(reply).find(); }

@@ -9,6 +9,7 @@ import com.zcx.chenstack.service.AiUsageService;
 import com.zcx.chenstack.service.EditableArticleService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.memory.MessageWindowChatMemory;
 import org.springframework.ai.chat.messages.AssistantMessage;
@@ -26,6 +27,8 @@ import reactor.core.publisher.Flux;
 
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
@@ -384,6 +387,86 @@ class ProductRagAnswerServiceTest {
         assertThrows(RuntimeException.class, () -> run("越权工具请求", "unknown-tool"));
         verifyNoInteractions(articles);
         assertTrue(memory.get("7:unknown-tool").isEmpty());
+    }
+
+    @Test void insufficientChatBudgetFailsBeforeClassifierOrDailyQuotaReservation(@TempDir Path directory) throws Exception {
+        for (int used : new int[]{19, 20}) {
+            Path ledger = directory.resolve("budget-" + used + ".ledger");
+            Files.writeString(ledger, "CHEN_RELEASE_HTTP_BUDGET_V1|synthetic|0|20\n");
+            var budget = new ReleaseProviderBudget(ledger.toString(), "synthetic", 0, 20);
+            for (int i = 0; i < used; i++) budget.reserve(ReleaseProviderBudget.Kind.CHAT);
+            byte[] before = Files.readAllBytes(ledger);
+            service = new ProductRagAnswerService(knowledge, ChatClient.create(model), memory, budget);
+            AiUsageService quota = mock(AiUsageService.class);
+            var stream = new CustomerServiceOrchestrator(service, articles, quota);
+            var reply = stream.chat("你好", "preflight", 7).collectList().block(Duration.ofSeconds(5));
+            assertEquals(List.of("ERROR_STATE", "DONE"), reply.stream().map(CustomerServiceEvent::type).toList());
+            assertEquals("LOCAL_BUDGET_EXHAUSTED", reply.getFirst().errorCode());
+            assertArrayEquals(before, Files.readAllBytes(ledger));
+            assertTrue(memory.get("7:preflight").isEmpty());
+            verifyNoInteractions(quota, articles);
+        }
+        verify(model, never()).stream(any(Prompt.class));
+    }
+
+    @Test void knowledgeFailureHasAnExplicitWarningWhileRecoveredAnswerStillFinishes() {
+        when(knowledge.retrieve(anyString())).thenThrow(new RagFailure(RagFailure.Code.QDRANT_UNAVAILABLE));
+        respond = prompt -> prompts.size() == 1
+                ? Flux.just(tools(call("searchPlatformHelp", "{\"query\":\"保存草稿\"}")))
+                : Flux.just(text("知识查询暂不可用，当前不能确认操作规则。", "stop"));
+        AiUsageService quota = mock(AiUsageService.class);
+        when(quota.tryReserveUsage(7)).thenReturn(true);
+        var reply = new CustomerServiceOrchestrator(service, articles, quota).chat("怎么保存草稿", "knowledge-fail", 7)
+                .collectList().block(Duration.ofSeconds(8));
+        assertEquals("DONE", reply.getLast().type());
+        assertTrue(reply.stream().anyMatch(event -> "KNOWLEDGE_STATUS".equals(event.type())
+                && "KNOWLEDGE_UNAVAILABLE".equals(event.errorCode()) && event.text().contains("知识查询服务暂时不可用")));
+        assertTrue(reply.stream().noneMatch(event -> "ERROR_STATE".equals(event.type()) || "LOCAL_BUDGET_EXHAUSTED".equals(event.errorCode())));
+        assertFalse(reply.toString().contains("参考资料"));
+    }
+
+    @Test void lastChatSlotOnlyCompletesScopeThenBlocksAnswerBeforeHttp(@TempDir Path directory) throws Exception {
+        Path ledger = directory.resolve("attempts.ledger");
+        Files.writeString(ledger, "CHEN_RELEASE_HTTP_BUDGET_V1|synthetic|0|20\n");
+        var budget = new ReleaseProviderBudget(ledger.toString(), "synthetic", 0, 20);
+        for (int i = 0; i < 19; i++) budget.reserve(ReleaseProviderBudget.Kind.CHAT);
+        List<String> requests = new CopyOnWriteArrayList<>();
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/chat/completions", exchange -> {
+            requests.add(new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
+            byte[] body = ("data: {\"id\":\"scope-only\",\"object\":\"chat.completion.chunk\",\"created\":1,"
+                    + "\"model\":\"fixture\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\","
+                    + "\"content\":\"USER_HELP\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n").getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().set("Content-Type", "text/event-stream");
+            exchange.sendResponseHeaders(200, body.length);
+            exchange.getResponseBody().write(body); exchange.close();
+        });
+        server.start();
+        try {
+            OpenAiChatModel loopback = OpenAiChatModel.builder().openAiApi(OpenAiApi.builder()
+                            .baseUrl("http://127.0.0.1:" + server.getAddress().getPort()).completionsPath("/chat/completions")
+                            .apiKey("offline-fixture-only")
+                            .webClientBuilder(org.springframework.web.reactive.function.client.WebClient.builder()
+                                    .filter(budget.streamFilter(ReleaseProviderBudget.Kind.CHAT))).build())
+                    .defaultOptions(OpenAiChatOptions.builder().model("fixture").build())
+                    .retryTemplate(RetryTemplate.builder().maxAttempts(1).build()).build();
+            service = new ProductRagAnswerService(knowledge, ChatClient.create(loopback), memory);
+            AiUsageService quota = mock(AiUsageService.class);
+            when(quota.tryReserveUsage(7)).thenReturn(true);
+            var stream = new CustomerServiceOrchestrator(service, articles, quota);
+            for (int i = 0; i < 2; i++) {
+                var reply = stream.chat("你好", "last-slot", 7).collectList().block(Duration.ofSeconds(8));
+                assertEquals(List.of("ERROR_STATE", "DONE"), reply.stream().map(CustomerServiceEvent::type).toList());
+                assertEquals("LOCAL_BUDGET_EXHAUSTED", reply.getFirst().errorCode());
+                assertEquals(1, requests.size());
+                assertEquals(Map.of("embedding", 0L, "chat", 20L), budget.snapshot());
+                assertTrue(memory.get("7:last-slot").isEmpty());
+            }
+            String request = requests.getFirst();
+            assertTrue(request.contains("你是用户端客服的请求范围分类器"));
+            verifyNoInteractions(articles);
+            verify(knowledge, never()).retrieve(anyString());
+        } finally { server.stop(0); }
     }
 
     @Test void realSpringAiLoopbackSseExecutesToolThenMakesSecondModelRequest() throws Exception {

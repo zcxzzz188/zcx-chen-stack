@@ -25,10 +25,8 @@ public class CustomerServiceOrchestrator {
                             () -> usage.tryReserveUsage(authenticatedUserId), tools))
                     .subscribeOn(Schedulers.boundedElastic())
                     .subscribe(part -> sink.next(CustomerServiceEvent.text(part)), error -> {
-                        String messageText = error instanceof java.util.concurrent.TimeoutException
-                                ? "这次回答用时较长，请稍后重试，或把问题说得更具体一些。"
-                                : "这次回答未能完成，请重试。";
-                        sink.next(CustomerServiceEvent.state("ERROR_STATE", messageText, null, null));
+                        CustomerServiceError failure = CustomerServiceError.classify(error);
+                        sink.next(CustomerServiceEvent.failure(failure.name(), failure.description(), null));
                         sink.next(CustomerServiceEvent.state("DONE", null, null, null));
                         sink.complete();
                     }, () -> {
@@ -38,4 +36,5 @@ public class CustomerServiceOrchestrator {
             sink.onDispose(subscription::dispose);
         });
     }
+
 }

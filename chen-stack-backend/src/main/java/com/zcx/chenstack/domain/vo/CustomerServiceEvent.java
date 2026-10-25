@@ -7,7 +7,11 @@ import java.util.List;
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public record CustomerServiceEvent(String type, String text, String action,
                                    List<EditableArticle> articles, Integer page,
-                                   Integer pageSize, Boolean hasMore, String supportStatus) {
+                                   Integer pageSize, Boolean hasMore, String supportStatus, String errorCode) {
+    public CustomerServiceEvent(String type, String text, String action, List<EditableArticle> articles,
+                                Integer page, Integer pageSize, Boolean hasMore, String supportStatus) {
+        this(type, text, action, articles, page, pageSize, hasMore, supportStatus, null);
+    }
     public record EditableArticle(Integer articleId, String title, Integer editStatus,
                                   Integer examineStatus, boolean canEdit) {}
 
@@ -17,5 +21,9 @@ public record CustomerServiceEvent(String type, String text, String action,
 
     public static CustomerServiceEvent state(String type, String text, String action, String supportStatus) {
         return new CustomerServiceEvent(type, text, action, null, null, null, null, supportStatus);
+    }
+
+    public static CustomerServiceEvent failure(String errorCode, String text, String action) {
+        return new CustomerServiceEvent("ERROR_STATE", text, action, null, null, null, null, null, errorCode);
     }
 }

@@ -1,6 +1,7 @@
 import request from '@/utils/Request'
 import { GetJwt, SetJwt } from '@/utils/Auth'
 import { sameJwtAccount } from '@/utils/JwtSession'
+import { customerServiceError } from '@/components/CustomerService/customerServiceProtocol'
 
 const configuredCustomerServiceTimeout = Number(import.meta.env.VITE_AI_CHAT_TIMEOUT_MS)
 export const CUSTOMER_SERVICE_TIMEOUT_MS =
@@ -106,9 +107,15 @@ export function customerServiceChat(message, chatId, signal, mode = 'chat', stru
     if (refreshedToken && GetJwt() === token) {
       SetJwt(refreshedToken)
     }
-    if (!response.ok || response.headers?.get?.('content-type')?.toLowerCase().includes('json')) {
+    const contentType = response.headers?.get?.('content-type')?.toLowerCase() || ''
+    if (!response.ok || contentType.includes('json') || (structured && !contentType.includes('text/event-stream'))) {
+      let errorCode
+      if (response.status !== 401 && contentType.includes('json')) {
+        try { errorCode = (await response.json())?.errorCode } catch {}
+      }
       try { await response.body?.cancel() } catch {}
-      throw new Error(response.status === 401 ? '请先登录后再与小辰聊天' : '客服暂时无法响应，请稍后重试')
+      if (response.status === 401) throw new Error('请先登录后再与小辰聊天')
+      throw customerServiceError(errorCode)
     }
     return response
   })

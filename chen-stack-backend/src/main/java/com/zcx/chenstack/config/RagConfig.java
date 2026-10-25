@@ -24,8 +24,9 @@ import java.util.List;
 public class RagConfig {
     @Bean
     public ProductRagAnswerService productRagAnswerService(RagKnowledgeService knowledge,
-            org.springframework.ai.openai.OpenAiChatModel model, org.springframework.ai.chat.memory.ChatMemory memory) {
-        return new ProductRagAnswerService(knowledge, org.springframework.ai.chat.client.ChatClient.create(model), memory);
+            org.springframework.ai.openai.OpenAiChatModel model, org.springframework.ai.chat.memory.ChatMemory memory,
+            ReleaseProviderBudget budget) {
+        return new ProductRagAnswerService(knowledge, org.springframework.ai.chat.client.ChatClient.create(model), memory, budget);
     }
 
     @Bean

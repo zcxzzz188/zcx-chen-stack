@@ -53,4 +53,18 @@ describe('客服协议与动作边界', () => {
       expect(validateCustomerServiceEvent({ type: 'KNOWLEDGE_STATUS', supportStatus }).supportStatus).toBe(supportStatus)
     }
   })
+
+  it('保留可选安全错误码并拒绝非字符串与未知错误码', () => {
+    const event = { type: 'ERROR_STATE', errorCode: 'MODEL_TIMEOUT', text: '智能客服响应超时，请稍后重试。' }
+    expect(validateCustomerServiceEvent(event)).toEqual(event)
+    expect(validateCustomerServiceEvent({ type: 'ERROR_STATE', text: '旧协议安全提示' }).text).toBe('旧协议安全提示')
+    for (const errorCode of [7, {}, 'UNKNOWN_SECRET']) {
+      expect(() => validateCustomerServiceEvent({ type: 'ERROR_STATE', errorCode })).toThrow()
+    }
+  })
+
+  it('缺 DONE 和 JSON 解析错误携带安全协议错误码', () => {
+    expect(() => createCustomerServiceDecoder(() => {}).finish()).toThrow(expect.objectContaining({ errorCode: 'SSE_INCOMPLETE' }))
+    expect(() => createCustomerServiceDecoder(() => {}).push('data: {raw-secret}\n\n')).toThrow(expect.objectContaining({ errorCode: 'SSE_INCOMPLETE' }))
+  })
 })

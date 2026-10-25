@@ -9,10 +9,20 @@ import org.junit.jupiter.api.io.TempDir;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import java.nio.charset.StandardCharsets;
+import java.nio.channels.FileChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
+import java.security.MessageDigest;
 import java.time.Duration;
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HexFormat;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -50,7 +60,173 @@ class ReleaseProviderBudgetTest {
         }
         assertThrows(SecurityException.class, () -> new ReleaseProviderBudget("relative", "synthetic", 64, 20));
         assertThrows(SecurityException.class, () -> new ReleaseProviderBudget(file.toString(), "synthetic", 65, 20));
-        assertThrows(SecurityException.class, () -> new ReleaseProviderBudget(file.toString(), "synthetic", 64, 21));
+        assertThrows(SecurityException.class, () -> new ReleaseProviderBudget(file.toString(), "synthetic", 64, 101));
+    }
+
+    private String sha256(Path file) throws Exception {
+        return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(Files.readAllBytes(file)));
+    }
+
+    @Test void exhaustedLegacyBudgetRejectsPreflightWithoutChangingLedger() throws Exception {
+        var budget = budget(64, 20);
+        for (int i = 0; i < 20; i++) budget.reserve(ReleaseProviderBudget.Kind.CHAT);
+        Path file = directory.resolve("attempts.ledger");
+        byte[] original = Files.readAllBytes(file);
+        assertEquals("RELEASE_PROVIDER_HTTP_BUDGET_EXHAUSTED",
+                assertThrows(SecurityException.class, () -> budget.checkChatCapacity(1)).getMessage());
+        assertThrows(SecurityException.class, () -> budget.reserve(ReleaseProviderBudget.Kind.CHAT));
+        assertThrows(SecurityException.class, () -> budget.checkChatCapacity(0));
+        assertThrows(SecurityException.class, () -> budget.checkChatCapacity(101));
+        assertArrayEquals(original, Files.readAllBytes(file));
+    }
+
+    @Test void explicitExtensionPreservesHistoryCountsAndEmbeddingLimitAcrossRestart() throws Exception {
+        var legacy = budget(64, 20);
+        for (int i = 0; i < 6; i++) legacy.reserve(ReleaseProviderBudget.Kind.EMBEDDING);
+        for (int i = 0; i < 20; i++) legacy.reserve(ReleaseProviderBudget.Kind.CHAT);
+        Path file = directory.resolve("attempts.ledger");
+        byte[] original = Files.readAllBytes(file);
+        assertThrows(SecurityException.class, () -> new ReleaseProviderBudget(file.toString(), "synthetic", 64, 100));
+
+        assertEquals(Map.of("embedding", 6L, "chat", 20L), ReleaseProviderBudget.extendChatLimit(
+                file.toString(), "synthetic", 64, 20, 100, "synthetic-operator", sha256(file)));
+        byte[] expanded = Files.readAllBytes(file);
+        assertArrayEquals(original, Arrays.copyOf(expanded, original.length));
+        String[] audit = new String(expanded, original.length, expanded.length - original.length,
+                StandardCharsets.US_ASCII).stripTrailing().split("\\|", -1);
+        assertArrayEquals(new String[]{"27", "CHAT_LIMIT", "6", "20", "20", "100"}, Arrays.copyOf(audit, 6));
+        assertDoesNotThrow(() -> Instant.parse(audit[6]));
+        assertEquals("synthetic-operator", audit[7]);
+
+        var reopened = new ReleaseProviderBudget(file.toString(), "synthetic", 64, 100);
+        reopened.checkChatCapacity(80);
+        assertThrows(SecurityException.class, () -> reopened.checkChatCapacity(81));
+        assertArrayEquals(expanded, Files.readAllBytes(file));
+        assertThrows(SecurityException.class, () -> new ReleaseProviderBudget(file.toString(), "synthetic", 64, 20));
+        reopened.reserve(ReleaseProviderBudget.Kind.CHAT);
+        for (int i = 6; i < 64; i++) reopened.reserve(ReleaseProviderBudget.Kind.EMBEDDING);
+        assertThrows(SecurityException.class, () -> reopened.reserve(ReleaseProviderBudget.Kind.EMBEDDING));
+        assertEquals(Map.of("embedding", 64L, "chat", 21L),
+                new ReleaseProviderBudget(file.toString(), "synthetic", 64, 100).snapshot());
+    }
+
+    @Test void extensionRejectsChangedHashInvalidAuthorizationAndRepeatWithoutWriting() throws Exception {
+        budget(64, 20);
+        Path file = directory.resolve("attempts.ledger");
+        String expectedHash = sha256(file);
+        Files.writeString(file, "1|CHAT|0|1\n", java.nio.file.StandardOpenOption.APPEND);
+        byte[] original = Files.readAllBytes(file);
+        assertEquals("RELEASE_BUDGET_LEDGER_HASH_MISMATCH", assertThrows(SecurityException.class,
+                () -> ReleaseProviderBudget.extendChatLimit(file.toString(), "synthetic", 64, 20, 100,
+                        "synthetic-operator", expectedHash)).getMessage());
+        String currentHash = sha256(file);
+        assertThrows(SecurityException.class, () -> ReleaseProviderBudget.extendChatLimit(
+                file.toString(), "synthetic", 64, 19, 100, "synthetic-operator", currentHash));
+        assertThrows(SecurityException.class, () -> ReleaseProviderBudget.extendChatLimit(
+                file.toString(), "synthetic", 64, 20, 99, "synthetic-operator", currentHash));
+        assertThrows(SecurityException.class, () -> ReleaseProviderBudget.extendChatLimit(
+                file.toString(), "synthetic", 64, 20, 100, "operator|injection", currentHash));
+        assertThrows(SecurityException.class, () -> ReleaseProviderBudget.extendChatLimit(
+                file.toString(), "synthetic", 63, 20, 100, "synthetic-operator", currentHash));
+        assertArrayEquals(original, Files.readAllBytes(file));
+
+        ReleaseProviderBudget.main(new String[]{"extend-chat", file.toString(), "synthetic", "64", "20", "100",
+                "synthetic-operator", currentHash});
+        byte[] expanded = Files.readAllBytes(file);
+        String expandedHash = sha256(file);
+        assertThrows(SecurityException.class, () -> ReleaseProviderBudget.extendChatLimit(
+                file.toString(), "synthetic", 64, 20, 100, "synthetic-operator", expandedHash));
+        assertArrayEquals(expanded, Files.readAllBytes(file));
+    }
+
+    @Test void replayRejectsTamperedAuditAndOverBudgetRecordsBeforeExtension() throws Exception {
+        Path file = directory.resolve("attempts.ledger");
+        String header = "CHEN_RELEASE_HTTP_BUDGET_V1|synthetic|64|20\n";
+        String audit = "1|CHAT_LIMIT|0|0|20|100|2026-10-25T00:00:00Z|synthetic-operator\n";
+        for (String invalid : new String[]{
+                audit.replace("|20|100|", "|19|100|"), audit.replace("|20|100|", "|20|99|"),
+                audit.replace("CHAT_LIMIT|0|0", "CHAT_LIMIT|0|1"),
+                audit.replace("2026-10-25T00:00:00Z", "invalid"),
+                audit.replace("synthetic-operator", ""), audit + audit.replace("1|CHAT_LIMIT", "2|CHAT_LIMIT")}) {
+            Files.writeString(file, header + invalid);
+            assertThrows(SecurityException.class, () -> new ReleaseProviderBudget(file.toString(), "synthetic", 64, 100));
+        }
+        StringBuilder records = new StringBuilder(header);
+        for (int i = 1; i <= 21; i++) records.append(i).append("|CHAT|0|").append(i).append('\n');
+        records.append("22|CHAT_LIMIT|0|21|20|100|2026-10-25T00:00:00Z|synthetic-operator\n");
+        Files.writeString(file, records);
+        assertThrows(SecurityException.class, () -> new ReleaseProviderBudget(file.toString(), "synthetic", 64, 100));
+        Files.writeString(file, header.replace("|64|20", "|64|100"));
+        assertThrows(SecurityException.class, () -> new ReleaseProviderBudget(file.toString(), "synthetic", 64, 100));
+    }
+
+    @Test void singleInstanceExpandedBudgetAllowsExactlyOneHundredCumulativeRequests() throws Exception {
+        var legacy = budget(64, 20);
+        for (int i = 0; i < 20; i++) legacy.reserve(ReleaseProviderBudget.Kind.CHAT);
+        Path file = directory.resolve("attempts.ledger");
+        ReleaseProviderBudget.extendChatLimit(file.toString(), "synthetic", 64, 20, 100, "synthetic-operator", sha256(file));
+        var expanded = new ReleaseProviderBudget(file.toString(), "synthetic", 64, 100);
+        for (int i = 20; i < 100; i++) expanded.reserve(ReleaseProviderBudget.Kind.CHAT);
+        assertEquals(Map.of("embedding", 0L, "chat", 100L), expanded.snapshot());
+        assertThrows(SecurityException.class, () -> expanded.checkChatCapacity(1));
+        assertThrows(SecurityException.class, () -> expanded.reserve(ReleaseProviderBudget.Kind.CHAT));
+        assertEquals(100L, new ReleaseProviderBudget(file.toString(), "synthetic", 64, 100).snapshot().get("chat"));
+    }
+
+    @Test void contendingInstancesFailClosedWithoutWritingOrExtending() throws Exception {
+        var first = budget(64, 20);
+        Path file = directory.resolve("attempts.ledger");
+        var second = new ReleaseProviderBudget(file.toString(), "synthetic", 64, 20);
+        byte[] original = Files.readAllBytes(file);
+        String expectedHash = sha256(file);
+        try (var channel = FileChannel.open(file, StandardOpenOption.READ, StandardOpenOption.WRITE);
+             var lock = channel.lock()) {
+            assertEquals("RELEASE_BUDGET_PERSISTENCE_FAILED_CLOSED", assertThrows(SecurityException.class,
+                    () -> first.reserve(ReleaseProviderBudget.Kind.CHAT)).getMessage());
+            assertThrows(SecurityException.class, () -> second.reserve(ReleaseProviderBudget.Kind.CHAT));
+            assertThrows(SecurityException.class, () -> second.checkChatCapacity(1));
+            assertThrows(SecurityException.class, () -> ReleaseProviderBudget.extendChatLimit(
+                    file.toString(), "synthetic", 64, 20, 100, "synthetic-operator", expectedHash));
+        }
+        assertArrayEquals(original, Files.readAllBytes(file));
+        assertEquals(Map.of("embedding", 0L, "chat", 0L), second.snapshot());
+    }
+
+    @Test void concurrentInstancesCannotReserveBeyondExpandedCumulativeLimit() throws Exception {
+        var legacy = budget(64, 20);
+        for (int i = 0; i < 20; i++) legacy.reserve(ReleaseProviderBudget.Kind.CHAT);
+        Path file = directory.resolve("attempts.ledger");
+        ReleaseProviderBudget.extendChatLimit(file.toString(), "synthetic", 64, 20, 100, "synthetic-operator", sha256(file));
+        ReleaseProviderBudget[] budgets = {
+                new ReleaseProviderBudget(file.toString(), "synthetic", 64, 100),
+                new ReleaseProviderBudget(file.toString(), "synthetic", 64, 100)};
+        AtomicInteger reserved = new AtomicInteger();
+        CountDownLatch start = new CountDownLatch(1);
+        try (var executor = Executors.newFixedThreadPool(8)) {
+            var tasks = new ArrayList<Future<?>>();
+            for (int worker = 0; worker < 8; worker++) {
+                ReleaseProviderBudget budget = budgets[worker % budgets.length];
+                tasks.add(executor.submit(() -> {
+                    try { start.await(); }
+                    catch (InterruptedException error) { Thread.currentThread().interrupt(); throw new AssertionError(error); }
+                    for (int i = 0; i < 100; i++) {
+                        try { budget.reserve(ReleaseProviderBudget.Kind.CHAT); reserved.incrementAndGet(); }
+                        catch (SecurityException error) {
+                            assertTrue(error.getMessage().equals("RELEASE_PROVIDER_HTTP_BUDGET_EXHAUSTED")
+                                    || error.getMessage().equals("RELEASE_BUDGET_PERSISTENCE_FAILED_CLOSED"));
+                        }
+                    }
+                }));
+            }
+            start.countDown();
+            for (Future<?> task : tasks) task.get();
+        }
+        assertTrue(reserved.get() <= 80);
+        assertEquals(20L + reserved.get(), budgets[0].snapshot().get("chat"));
+        while (reserved.get() < 80) { budgets[0].reserve(ReleaseProviderBudget.Kind.CHAT); reserved.incrementAndGet(); }
+        assertEquals(100L, new ReleaseProviderBudget(file.toString(), "synthetic", 64, 100).snapshot().get("chat"));
+        assertThrows(SecurityException.class, () -> budgets[1].reserve(ReleaseProviderBudget.Kind.CHAT));
+        assertEquals(0L, budgets[0].snapshot().get("embedding"));
     }
 
     @Test void zeroBudgetBlocksTransportAndDisabledDefaultHasNoFileDependency() throws Exception {

@@ -138,7 +138,8 @@
               <span v-else class="bubble-text">{{ msg.content }}</span>
             </div>
             <CustomerServiceCards v-for="(event, eventIndex) in msg.events || []" :key="eventIndex" :event="event" @navigate="dialogVisible = false" />
-            <div v-if="msg.incomplete" class="message-time incomplete-indicator">回答未完成</div>
+            <div v-if="msg.knowledgeWarning" role="status" class="message-time knowledge-warning" style="color: var(--el-color-warning)">{{ msg.knowledgeWarning }}</div>
+            <div v-if="msg.incomplete" :data-error-code="msg.errorCode" class="message-time incomplete-indicator">回答未完成<span v-if="msg.errorReason && msg.content !== msg.errorReason">：{{ msg.errorReason }}</span></div>
             <div class="message-time">{{ msg.time }}</div>
           </div>
         </div>
@@ -258,7 +259,7 @@ import { ref, nextTick, watch, computed, onMounted, onUnmounted } from 'vue'
 import { customerServiceEvents, CUSTOMER_SERVICE_TIMEOUT_MS } from '@/api/ai'
 import { useUserStore } from '@/stores/userStore'
 import CustomerServiceCards from './CustomerServiceCards.vue'
-import { createCustomerServiceDecoder } from './customerServiceProtocol'
+import { createCustomerServiceDecoder, customerServiceError } from './customerServiceProtocol'
 import { GetJwt } from '@/utils/Auth'
 import { sameJwtAccount } from '@/utils/JwtSession'
 import MarkdownIt from 'markdown-it'
@@ -387,10 +388,14 @@ const scrollToBottom = () => {
   })
 }
 
-const markIncomplete = (message, fallback) => {
+const markIncomplete = (message, reason, errorCode) => {
   message.events = []
   message.incomplete = true
-  if (!message.content.trim()) message.content = fallback
+  if (!message.errorReason) {
+    message.errorReason = reason
+    message.errorCode = errorCode
+  }
+  if (!message.content.trim()) message.content = message.errorReason
 }
 
 // 发送消息
@@ -449,7 +454,7 @@ const sendMessage = async () => {
       throw new Error('小辰暂时无法回答，请稍后重试')
     }
 
-    if (!response.body) throw new Error('响应流不可用')
+    if (!response.body) throw customerServiceError('SSE_INCOMPLETE')
     reader = response.body.getReader()
     const decoder = new TextDecoder()
 
@@ -471,10 +476,13 @@ const sendMessage = async () => {
     const structured = response.headers?.get?.('content-type')?.includes('text/event-stream')
     const protocol = structured ? createCustomerServiceDecoder(event => {
       const target = messageList.value[messageIndex]
+      if (target.incomplete && event.type !== 'ERROR_STATE') return
       if (event.type === 'TEXT') target.content += event.text || ''
-      else if (event.type === 'KNOWLEDGE_STATUS') target.supportStatus = event.supportStatus
-      else if (event.type === 'ERROR_STATE') {
-        markIncomplete(target, '这次回答未完成，请稍后重试。')
+      else if (event.type === 'KNOWLEDGE_STATUS') {
+        target.supportStatus = event.supportStatus
+        if (event.errorCode === 'KNOWLEDGE_UNAVAILABLE') target.knowledgeWarning = event.text || customerServiceError(event.errorCode).message
+      } else if (event.type === 'ERROR_STATE') {
+        markIncomplete(target, event.text || customerServiceError(event.errorCode).message, event.errorCode)
         if (event.action === 'RETRY_ARTICLES') target.events.push(event)
       } else if (event.type !== 'DONE') target.events.push(event)
     }) : null
@@ -504,21 +512,20 @@ const sendMessage = async () => {
       protocol.push(decoder.decode())
       protocol.finish()
     } else messageList.value[messageIndex].content += decoder.decode()
-    if (!messageList.value[messageIndex].content.trim() && !messageList.value[messageIndex].events.length) throw new Error('响应内容为空')
+    if (!messageList.value[messageIndex].content.trim() && !messageList.value[messageIndex].events.length) throw customerServiceError('SSE_INCOMPLETE')
   } catch (error) {
     if (!isCurrentRequest()) return
-    if (timedOut || error.name === 'TimeoutError') {
-      ElMessage.error('客服响应超时，请稍后重试')
-    } else if (error.name !== 'AbortError') {
-      ElMessage.error(error.message === '请先登录后再与小辰聊天' ? error.message : '发送消息失败，请稍后重试')
-    }
+    const failure = aiMessage?.errorReason ? { message: aiMessage.errorReason, errorCode: aiMessage.errorCode }
+      : customerServiceError(timedOut || error.name === 'TimeoutError' ? 'MODEL_TIMEOUT'
+        : error.name === 'TypeError' ? 'MODEL_NETWORK_ERROR' : error.errorCode)
+    if (error.name !== 'AbortError' || timedOut) ElMessage.error(error.message === '请先登录后再与小辰聊天' ? error.message : failure.message)
     if (error.message === '请先登录后再与小辰聊天') {
       messageList.value.push({ role: 'ai', content: '登录已失效，请重新登录后继续。', time: formatTime(),
         events: [{ type: 'NAVIGATION_ACTION', text: '去登录', action: 'OPEN_LOGIN' }] })
     }
-    if (aiMessage) markIncomplete(aiMessage, timedOut ? '客服响应超时，请稍后再试。' : '这次回答未完成，请稍后重试。')
+    if (aiMessage) markIncomplete(aiMessage, failure.message, failure.errorCode)
     else if (error.message !== '请先登录后再与小辰聊天') messageList.value.push({
-      role: 'ai', content: '这次回答未完成，请稍后重试。', events: [], incomplete: true, time: formatTime(),
+      role: 'ai', content: failure.message, errorReason: failure.message, errorCode: failure.errorCode, events: [], incomplete: true, time: formatTime(),
     })
   } finally {
     window.clearTimeout(timeoutId)

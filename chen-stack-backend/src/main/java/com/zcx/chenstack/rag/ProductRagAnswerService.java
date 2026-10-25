@@ -4,6 +4,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.zcx.chenstack.domain.constants.AiPromptConstants;
 import com.zcx.chenstack.service.CustomerServiceTools;
+import com.zcx.chenstack.service.CustomerServiceError;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.ai.chat.messages.AssistantMessage;
@@ -46,14 +47,21 @@ public final class ProductRagAnswerService {
     private final ChatClient client;
     private final ChatMemory memory;
     private final CustomerServiceScope scope;
+    private final ReleaseProviderBudget budget;
     private final ToolCallingManager toolManager = ToolCallingManager.builder().build();
     private final Set<String> activeConversations = ConcurrentHashMap.newKeySet();
 
     public ProductRagAnswerService(RagKnowledgeService knowledge, ChatClient client, ChatMemory memory) {
+        this(knowledge, client, memory, null);
+    }
+
+    public ProductRagAnswerService(RagKnowledgeService knowledge, ChatClient client, ChatMemory memory,
+                                   ReleaseProviderBudget budget) {
         this.knowledge = knowledge;
         this.client = client;
         this.memory = memory;
         this.scope = new CustomerServiceScope(client);
+        this.budget = budget;
     }
 
     public Flux<String> answer(String question, String chatId, Integer userId, BooleanSupplier reserveUsage) {
@@ -74,6 +82,8 @@ public final class ProductRagAnswerService {
             long started = System.nanoTime();
             HelpTools help = new HelpTools(tools, question);
             Flux<String> response = Flux.defer(() -> {
+                // 分类及首轮正文至少需要两次；后续工具轮仍由每次 HTTP 发送门禁原子扣减。
+                if (budget != null) budget.checkChatCapacity(2);
                 if (!reserveUsage.getAsBoolean()) return Flux.just("今日AI调用次数已达上限，请明天再试。");
                 return scope.permits(question, memory.get(memoryId)).flatMapMany(permitted -> {
                 if (!permitted) return Flux.just(CustomerServiceScope.REFUSAL);
@@ -127,7 +137,7 @@ public final class ProductRagAnswerService {
             // 每轮完成后才释放正文，避免展示工具调用前的猜测、截断或未执行承诺。
             return new MessageAggregator().aggregate(stream, complete::set).thenMany(Flux.defer(() -> {
                 ChatResponse reply = complete.get();
-                if (reply == null || reply.getResult() == null) return Flux.error(new IllegalStateException("客服未返回有效正文"));
+                if (reply == null || reply.getResult() == null) return Flux.error(CustomerServiceError.SSE_INCOMPLETE.exception());
                 var usage = reply.getMetadata().getUsage();
                 log.info("xiaochen model_round={} input_tokens={} output_tokens={}", round + 1,
                         usage.getPromptTokens(), usage.getCompletionTokens());
@@ -135,7 +145,7 @@ public final class ProductRagAnswerService {
                 if (reply.hasToolCalls()) {
                     if (!"tool_calls".equalsIgnoreCase(finish) || round >= MAX_MODEL_ROUNDS - 1
                             || reply.getResult().getOutput().getToolCalls().size() > MAX_TOOL_CALLS_PER_ROUND) {
-                        return Flux.error(new IllegalStateException("客服工具调用未完成"));
+                        return Flux.error(CustomerServiceError.SSE_INCOMPLETE.exception());
                     }
                     log.info("xiaochen tools={}", reply.getResult().getOutput().getToolCalls().stream()
                             .map(AssistantMessage.ToolCall::name).toList());
@@ -157,13 +167,13 @@ public final class ProductRagAnswerService {
                                 return round(next, options, help, round + 1);
                             });
                 }
-                if (!"stop".equalsIgnoreCase(finish)) return Flux.error(new IllegalStateException("客服回答未完成"));
+                if (!"stop".equalsIgnoreCase(finish)) return Flux.error(CustomerServiceError.SSE_INCOMPLETE.exception());
                 String text = reply.getResult().getOutput().getText();
                 if (text != null && CustomerServiceTools.promisesNavigation(text)) {
                     if (help.events == null) return Flux.error(new IllegalStateException("当前通道不能展示导航按钮"));
                     help.events.ensureReplyActions(text);
                 }
-                return text == null || text.isBlank() ? Flux.error(new IllegalStateException("客服未返回有效正文"))
+                return text == null || text.isBlank() ? Flux.error(CustomerServiceError.SSE_INCOMPLETE.exception())
                         : help.guard(Flux.just(text));
             }));
         });
@@ -210,6 +220,7 @@ public final class ProductRagAnswerService {
                         + "需要查找目录外表达或跨主题内容时使用searchPlatformHelp。必须取得相应正文才解释功能或限制。";
             } catch (RagFailure unavailable) {
                 log.warn("xiaochen directory unavailable: {}", unavailable.code());
+                if (events != null) events.knowledgeUnavailable();
                 return "当前已审核帮助目录暂不可用，不能据此推断任何平台功能存在或不存在。";
             }
         }
@@ -256,7 +267,7 @@ public final class ProductRagAnswerService {
                         : anchored ? "" : "本次只有语义候选，尚未确认与原问题为同一业务对象。请补读相符主题；用户所说对象仍不唯一时先澄清，不能把候选功能认定为用户正在问的功能。\n") + context(found);
             } catch (RagFailure error) {
                 log.warn("xiaochen knowledge unavailable: {}", error.code());
-                if (events != null) events.knowledgeStatus("UNKNOWN");
+                if (events != null) events.knowledgeUnavailable();
                 return "语义查询暂时不可用，请从当前已审核目录选择相符主题调用readPlatformHelp；必须取得正文才能确认规则。本人文章查询和页面引导工具仍可使用。";
             }
         }
@@ -292,7 +303,7 @@ public final class ProductRagAnswerService {
                 return context(found);
             } catch (RagFailure error) {
                 log.warn("xiaochen topic unavailable: {}", error.code());
-                if (events != null) events.knowledgeStatus("UNKNOWN");
+                if (events != null) events.knowledgeUnavailable();
                 return "该主题正文暂时不可用，不能仅凭标题推断规则；请依据其他已核实资料回答。";
             }
         }

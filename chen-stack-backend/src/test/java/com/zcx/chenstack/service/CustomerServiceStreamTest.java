@@ -122,6 +122,22 @@ class CustomerServiceStreamTest {
         verify(quota).tryReserveUsage(42);
     }
 
+    @Test void budgetFailureSurvivesWrappingWithoutExposingOtherSecurityErrors() {
+        for (Throwable error : List.of(
+                new IllegalStateException("INTERNAL_SECRET", new SecurityException("RELEASE_PROVIDER_HTTP_BUDGET_EXHAUSTED")),
+                new SecurityException("INTERNAL_SECRET"),
+                new IllegalStateException("RELEASE_PROVIDER_HTTP_BUDGET_EXHAUSTED"))) {
+            when(answers.answer(anyString(), anyString(), eq(42), any(BooleanSupplier.class), any(CustomerServiceTools.class)))
+                    .thenReturn(Flux.error(error));
+            var events = orchestrator.chat("你好", "same", 42).collectList().block(Duration.ofSeconds(5));
+            assertEquals(List.of("ERROR_STATE", "DONE"), events.stream().map(CustomerServiceEvent::type).toList());
+            assertEquals(error.getCause() != null, events.getFirst().text().contains("额度已用尽"));
+            assertEquals(error.getCause() != null ? "LOCAL_BUDGET_EXHAUSTED" : "SERVICE_UNAVAILABLE", events.getFirst().errorCode());
+            assertFalse(events.toString().contains("INTERNAL_SECRET"));
+            assertFalse(events.toString().contains("RELEASE_PROVIDER"));
+        }
+    }
+
     @Test void failedSseClearsSensitiveErrorsAndNextRequestFinishesNormally() {
         when(answers.answer(anyString(), anyString(), eq(42), any(BooleanSupplier.class), any(CustomerServiceTools.class)))
                 .thenReturn(Flux.concat(Flux.just("未完成片段"), Flux.error(new IllegalStateException("INTERNAL_SECRET"))),
@@ -140,7 +156,7 @@ class CustomerServiceStreamTest {
                 .thenReturn(Flux.just("恢复正常"));
         var failed = orchestrator.chat("问题", "same", 42).collectList().block(Duration.ofSeconds(5));
         assertEquals(List.of("ERROR_STATE", "DONE"), failed.stream().map(CustomerServiceEvent::type).toList());
-        assertEquals("这次回答未能完成，请重试。", failed.getFirst().text());
+        assertEquals("智能客服服务暂时不可用，请稍后重试。", failed.getFirst().text());
         assertFalse(failed.toString().contains("INTERNAL_SECRET"));
         var recovered = orchestrator.chat("重试", "same", 42).collectList().block(Duration.ofSeconds(5));
         assertEquals(List.of("TEXT", "DONE"), recovered.stream().map(CustomerServiceEvent::type).toList());
@@ -153,7 +169,8 @@ class CustomerServiceStreamTest {
                         Flux.error(new java.util.concurrent.TimeoutException("INTERNAL_TIMEOUT_DETAILS"))));
         var events = orchestrator.chat("等待", "same", 42).collectList().block(Duration.ofSeconds(5));
         assertEquals(List.of("TEXT", "ERROR_STATE", "DONE"), events.stream().map(CustomerServiceEvent::type).toList());
-        assertEquals("这次回答用时较长，请稍后重试，或把问题说得更具体一些。", events.get(1).text());
+        assertEquals("智能客服响应超时，请稍后重试。", events.get(1).text());
+        assertEquals("MODEL_TIMEOUT", events.get(1).errorCode());
         assertFalse(events.toString().contains("INTERNAL_TIMEOUT_DETAILS"));
     }
 

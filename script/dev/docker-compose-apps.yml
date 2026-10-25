@@ -52,6 +52,7 @@ services:
 
       # 百炼Embedding独立凭据；默认关闭，显式rag Profile才加载完整配置。
       CHEN_RAG_ENABLED: ${CHEN_RAG_ENABLED:-false}
+      CHEN_RAG_RELEASE_MAX_CHAT_HTTP_ATTEMPTS: ${CHEN_RAG_RELEASE_MAX_CHAT_HTTP_ATTEMPTS:-20}
       CHEN_RAG_EMBEDDING_API_KEY: ${CHEN_RAG_EMBEDDING_API_KEY:-}
       CHEN_RAG_EMBEDDING_BASE_URL: ${CHEN_RAG_EMBEDDING_BASE_URL:-https://ws-oy47ndolze5z0j6p.cn-beijing.maas.aliyuncs.com/compatible-mode/v1}
       CHEN_RAG_EMBEDDING_MODEL: ${CHEN_RAG_EMBEDDING_MODEL:-text-embedding-v4}

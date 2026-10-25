@@ -1,5 +1,7 @@
 package com.zcx.chenstack.rag;
 
+import com.zcx.chenstack.service.CustomerServiceError;
+
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.SystemMessage;
@@ -51,11 +53,11 @@ final class CustomerServiceScope {
         var reply = complete.get();
         if (reply == null || reply.getResult() == null || reply.hasToolCalls()
                 || !"stop".equalsIgnoreCase(reply.getResult().getMetadata().getFinishReason())) {
-            throw new IllegalStateException("客服请求范围未能确认");
+            throw CustomerServiceError.SSE_INCOMPLETE.exception();
         }
         String decision = reply.getResult().getOutput().getText();
         if (decision == null || !("USER_HELP".equals(decision.strip()) || "BACK_OFFICE".equals(decision.strip()))) {
-            throw new IllegalStateException("客服请求范围未能确认");
+            throw CustomerServiceError.SSE_INCOMPLETE.exception();
         }
         return "USER_HELP".equals(decision.strip());
         }));

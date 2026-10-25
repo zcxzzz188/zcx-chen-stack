@@ -22,3 +22,4 @@ chen:
     chat-timeout-seconds: 60
     release:
       recovery-enabled: ${CHEN_RAG_RELEASE_RECOVERY_ENABLED:false}
+      max-chat-http-attempts: ${CHEN_RAG_RELEASE_MAX_CHAT_HTTP_ATTEMPTS:20}
