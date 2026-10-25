@@ -1,6 +1,9 @@
 package com.zcx.chenstack.websocket;
 
 import cn.hutool.core.util.ObjectUtil;
+import com.zcx.chenstack.domain.entity.SysUser;
+import com.zcx.chenstack.domain.enums.StatusEnum;
+import com.zcx.chenstack.mapper.SysUserMapper;
 import com.zcx.chenstack.utils.JwtUtils;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
@@ -23,6 +26,9 @@ public class WebSocketHandshakeInterceptor implements HandshakeInterceptor {
     @Resource
     private JwtUtils jwtUtils;
 
+    @Resource
+    private SysUserMapper sysUserMapper;
+
     /**
      * 握手前处理
      */
@@ -43,8 +49,14 @@ public class WebSocketHandshakeInterceptor implements HandshakeInterceptor {
 
             // 验证 token 并获取用户ID
             Integer userId = jwtUtils.parseToken(token);
-            if (userId == null) {
+            if (userId == null || userId <= 0) {
                 log.error("WebSocket 握手失败：token 无效或已过期");
+                return false;
+            }
+
+            SysUser user = sysUserMapper.selectById(userId);
+            if (user == null || StatusEnum.DISABLE.getStatus().equals(user.getStatus())) {
+                log.warn("WebSocket 握手失败：账号不存在或已禁用");
                 return false;
             }
 
