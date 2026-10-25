@@ -14,6 +14,19 @@ const render = () => { wrapper = mount(Cards, { props: { event: selection() }, g
 beforeEach(() => { vi.clearAllMocks(); setActivePinia(createPinia()); store = useUserStore(); store.user = { id: 7 } })
 afterEach(() => wrapper?.unmount())
 
+it.each([
+  ['OPEN_ARTICLE_MANAGE', '去管理文章', '/creation/articlemanage'],
+  ['OPEN_MESSAGES', '去站内私信', '/message'],
+])('真实导航事件 %s 渲染可点击按钮并进入白名单页面', async (action, text, path) => {
+  wrapper = mount(Cards, { props: { event: { type: 'NAVIGATION_ACTION', action, text, supportStatus: 'SUPPORTED' } },
+    global: { stubs: { ElButton: { template: '<button><slot /></button>' } } } })
+  expect(wrapper.find('button').text()).toBe(text)
+  await wrapper.find('button').trigger('click')
+  await flushPromises()
+  expect(api.push).toHaveBeenCalledWith({ path })
+  expect(wrapper.emitted('navigate')).toHaveLength(1)
+})
+
 it('文章标题按纯文本显示，点击前复核授权并导航准确文章', async () => {
   api.getEditableArticle.mockResolvedValue({ data: article })
   render()

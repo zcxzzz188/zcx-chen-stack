@@ -47,6 +47,11 @@ public class RagKnowledgeService implements AutoCloseable {
         ReadAuthority verified = publicationVerified;
         return !lifecycle.durable() || verified != null && verified.catalog() == lifecycle.snapshot();
     }
+    boolean publicationMatches(String indexAuthority, Long indexEpoch) {
+        ReadAuthority verified = publicationVerified;
+        return verified != null && publicationReady() && Objects.equals(verified.indexAuthority(), indexAuthority)
+                && Objects.equals(verified.indexEpoch(), indexEpoch);
+    }
     void confirmPublication(KnowledgeCatalog catalog) { confirmPublication(catalog, lifecycle.authorityId(), catalog.epoch()); }
     void confirmPublication(KnowledgeCatalog catalog, String indexAuthority, long indexEpoch) {
         catalog.requireCurrent();
@@ -142,9 +147,26 @@ public class RagKnowledgeService implements AutoCloseable {
                     scores.merge(chunk.getId(), candidate.getScore(), Math::max);
                 }
             }
-            // 以真实语义相似度排序，词面命中数不能把低相关资料顶到操作说明之前。
+            Map<String, Double> lexical = lexicalScores(catalog, query);
+            // 仅在语义索引返回有效来源时补充定位；新增正文仍逐篇核验物理索引，空索引不得借目录绕过。
+            if (!verified.isEmpty()) {
+                Set<String> present = verified.values().stream().map(d -> (String) d.getMetadata().get("source_id")).collect(Collectors.toSet());
+                List<String> supplements = lexical.keySet().stream()
+                        .sorted(Comparator.comparingDouble((String id) -> lexical.get(id)).reversed())
+                        .limit(properties.getSourceTopK()).filter(id -> !present.contains(id)).toList();
+                for (String id : supplements) {
+                    KnowledgeEvidence found = retrieveByTitle(catalog.source(id).title());
+                    if (found.catalog() != catalog) throw new RagFailure(RagFailure.Code.INDEX_MISMATCH);
+                    for (Document chunk : found.chunks()) {
+                        verified.putIfAbsent(chunk.getId(), chunk);
+                        scores.putIfAbsent(chunk.getId(), 0.0);
+                    }
+                }
+            }
+            // 用完整问题与审校标题、主题词交叉排序，避免正文中的通用操作词吸走业务问题。
             List<String> ordered = verified.values().stream()
-                    .sorted(Comparator.comparingDouble((Document d) -> scores.get(d.getId())).reversed())
+                    .sorted(Comparator.comparingDouble((Document d) -> lexical.getOrDefault((String) d.getMetadata().get("source_id"), 0.0))
+                            .thenComparingDouble(d -> scores.get(d.getId())).reversed())
                     .map(doc -> (String) doc.getMetadata().get("source_id"))
                     .filter(Objects::nonNull).distinct().toList();
             // 任一chunk命中即选用该来源，但整篇释放：长文档不会因topK按chunk截断而只剩半条规则。
@@ -159,6 +181,71 @@ public class RagKnowledgeService implements AutoCloseable {
             lastOperation = Thread.currentThread().isInterrupted() ? "CANCELLED" : failure.code().name();
             throw failure;
         }
+    }
+
+    private Map<String, Double> lexicalScores(KnowledgeCatalog catalog, String query) {
+        String normalized = query.toLowerCase(Locale.ROOT);
+        String compact = normalized.replaceAll("(?:一|两|几|这|那)(?:篇|个|条)|(?:我|你|他|她)?自己的|(?:我|你|他|她)的", "");
+        Set<String> terms = queryTerms(normalized);
+        Map<String, String> texts = new LinkedHashMap<>();
+        for (String id : catalog.sourceIds()) {
+            KnowledgeDocument source = catalog.source(id);
+            if ("PUBLIC".equals(source.visibility()) && "DOCUMENT_REVIEWED".equals(source.reviewStatus()) && CustomerServiceScope.permitsSource(id)) {
+                texts.put(id, (source.title() + " " + String.join(" ", source.keywords() == null ? List.of() : source.keywords())).toLowerCase(Locale.ROOT));
+            }
+        }
+        Map<String, Double> result = new HashMap<>();
+        for (var entry : texts.entrySet()) {
+            KnowledgeDocument source = catalog.source(entry.getKey());
+            String title = source.title().toLowerCase(Locale.ROOT);
+            List<String> titleMatches = terms.stream().filter(title::contains).toList();
+            // 主题词按完整短语匹配，“审核未通过”不能碎配成“审核通过”。
+            List<String> keywordMatches = (source.keywords() == null ? List.<String>of() : source.keywords()).stream()
+                    .map(word -> word.toLowerCase(Locale.ROOT))
+                    .filter(word -> word.codePointCount(0, word.length()) >= 3)
+                    .filter(word -> normalized.contains(word) || containsKeyword(compact, word)).toList();
+            if (titleMatches.size() < 2 && keywordMatches.isEmpty()) continue;
+            Set<String> matched = new LinkedHashSet<>(titleMatches);
+            matched.addAll(keywordMatches);
+            double score = 0;
+            for (String term : matched) {
+                long frequency = texts.values().stream().filter(text -> text.contains(term)).count();
+                score += Math.log(1.0 + (double) texts.size() / frequency) * (keywordMatches.contains(term) ? 2 : 1);
+            }
+            result.put(entry.getKey(), score);
+        }
+        return result;
+    }
+
+    boolean hasTopicAnchor(KnowledgeEvidence evidence, String query) {
+        Map<String, Double> topics = lexicalScores(evidence.catalog(), query);
+        return evidence.chunks().stream().anyMatch(chunk -> topics.containsKey(chunk.getMetadata().get("source_id")));
+    }
+
+    private Set<String> queryTerms(String query) {
+        Set<String> terms = new LinkedHashSet<>();
+        var words = java.util.regex.Pattern.compile("[\\p{IsHan}]+|[\\p{L}\\p{N}]+").matcher(query);
+        while (words.find()) {
+            String word = words.group();
+            if (word.codePoints().allMatch(cp -> Character.UnicodeScript.of(cp) == Character.UnicodeScript.HAN)) {
+                int[] points = word.codePoints().toArray();
+                for (int i = 0; i + 1 < points.length; i++) terms.add(new String(points, i, 2));
+            } else if (word.length() > 1) terms.add(word);
+        }
+        return terms;
+    }
+
+    private boolean containsKeyword(String query, String keyword) {
+        if (query.contains(keyword)) return true;
+        int[] points = keyword.codePoints().toArray();
+        if (points.length < 4) return false;
+        // 容许短语内部省略一字，但否定字不能省略，避免把反义问题匹配到同一规则。
+        for (int i = 1; i + 1 < points.length; i++) {
+            if ("不未无没非否勿莫别".indexOf(points[i]) >= 0) continue;
+            String shorter = new String(points, 0, i) + new String(points, i + 1, points.length - i - 1);
+            if (query.contains(shorter)) return true;
+        }
+        return false;
     }
 
     /** 目录只用于选择主题；正文仍须通过物理索引、版本与来源校验。 */

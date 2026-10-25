@@ -10,9 +10,13 @@ import org.springframework.ai.tool.annotation.ToolParam;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.function.Consumer;
+import java.util.regex.Pattern;
 
 /** 每请求独立实例；私有结果仅在回答通过校验后发给当前 SSE，不进入模型和聊天历史。 */
 public final class CustomerServiceTools {
+    // shortcut: 识别明确的按钮承诺；出现新表达时补充模式与回归，页面动作始终限定在白名单内。
+    private static final Pattern NAVIGATION_PROMISE = Pattern.compile(
+            "(?:下方|下边|下面|这里|这儿|为你|给你|已(?:准备|提供|展示|显示))[^。！？\\n]{0,40}按钮|按钮[^。！？\\n]{0,20}(?:打开|进入|前往|跳转)");
     private final Integer userId;
     private final EditableArticleService articles;
     private final Consumer<CustomerServiceEvent> events;
@@ -46,13 +50,14 @@ public final class CustomerServiceTools {
     }
 
     public enum Destination {
-        LOGIN("去登录"), CREATE_ARTICLE("去写文章"), COLUMN_MANAGE("去管理专栏"),
-        SETTINGS("去个人设置"), SEARCH("去搜索"), ARTICLES("去文章广场"),
-        MESSAGES("去站内私信"), NOTIFICATIONS("去消息中心"),
-        ARTICLE_MANAGE("去管理文章"), COMMENT_MANAGE("去管理评论"), MY_PROFILE("去我的主页");
+        LOGIN("去登录", "登录"), CREATE_ARTICLE("去写文章", "写文章", "文章编辑器"), COLUMN_MANAGE("去管理专栏", "专栏管理", "管理专栏"),
+        SETTINGS("去个人设置", "个人设置"), SEARCH("去搜索", "搜索"), ARTICLES("去文章广场", "文章广场"),
+        MESSAGES("去站内私信", "私信", "会话列表"), NOTIFICATIONS("去消息中心", "消息中心"),
+        ARTICLE_MANAGE("去管理文章", "文章管理", "管理文章"), COMMENT_MANAGE("去管理评论", "评论管理", "管理评论"), MY_PROFILE("去我的主页", "本人主页", "我的主页");
 
         private final String text;
-        Destination(String text) { this.text = text; }
+        private final String[] pageNames;
+        Destination(String text, String... pageNames) { this.text = text; this.pageNames = pageNames; }
     }
 
     @Tool(description = "展示用户端真实页面导航按钮，由用户点击。仅提供入口，不保存、不发布、不删除，不操作后台或代替管理员授权。用户目标有对应入口时直接展示，并按已核验正文说明后续步骤。")
@@ -60,11 +65,31 @@ public final class CustomerServiceTools {
         if (destination == null) return "请明确要打开的页面。";
         String action = "OPEN_" + destination.name();
         String text = destination.text;
-        pending.add(CustomerServiceEvent.state("NAVIGATION_ACTION", text, action, "SUPPORTED"));
+        if (pending.stream().noneMatch(event -> action.equals(event.action()))) {
+            pending.add(CustomerServiceEvent.state("NAVIGATION_ACTION", text, action, "SUPPORTED"));
+        }
         return "已准备“" + text + "”按钮，将随完整回答展示，尚未修改任何业务数据。按钮仅提供入口，请仍依据帮助资料说明用户所问的操作步骤、必要字段、前提和审核限制；目标已明确时直接结束，不追加代办或查询提议。";
     }
     public void knowledgeStatus(String status) {
         pending.add(CustomerServiceEvent.state("KNOWLEDGE_STATUS", null, null, status));
+    }
+
+    public static boolean promisesNavigation(String reply) { return NAVIGATION_PROMISE.matcher(reply).find(); }
+
+    /** 历史中的按钮不属于本条消息，释放承诺前必须重新准备真实白名单动作。 */
+    public void ensureReplyActions(String reply) {
+        if (!promisesNavigation(reply)) return;
+        for (String sentence : reply.split("[。！？\\n]")) {
+            if (!promisesNavigation(sentence)) continue;
+            boolean matched = false;
+            for (Destination destination : Destination.values()) {
+                if (java.util.Arrays.stream(destination.pageNames).anyMatch(sentence::contains)) {
+                    showNavigation(destination);
+                    matched = true;
+                }
+            }
+            if (!matched) throw new IllegalStateException("客服导航入口未确认");
+        }
     }
 
     public void publishPending() {

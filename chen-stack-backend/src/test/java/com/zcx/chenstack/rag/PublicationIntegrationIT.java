@@ -182,6 +182,40 @@ class PublicationIntegrationIT {
         System.out.println("PUBLICATION_IT_HISTORY_SQL mapper=REAL_MYBATIS count=REAL_PAGINATION_INTERCEPTOR viewers=7,8,99 followRevocation=PASS");
     }
 
+    @Test void twoSyntheticAccountsCannotReadEachOthersEditableArticles() throws Exception {
+        EmptyTarget target = emptyTarget();
+        try (var connection = target.source.getConnection(); var statement = connection.createStatement()) {
+            statement.execute("""
+                    CREATE TABLE article(id INT PRIMARY KEY,user_id INT,title VARCHAR(80),tag VARCHAR(80),description TEXT,
+                    content TEXT,cover_url VARCHAR(200),read_count INT,like_count INT,comment_count INT,collect_count INT,
+                    examine_status INT,edit_status INT,visible_range INT,reprint_type INT,reprint_url VARCHAR(200),
+                    create_time DATETIME,update_time DATETIME,is_deleted TINYINT)
+                    """);
+            statement.executeUpdate("INSERT INTO article(id,user_id,title,content,edit_status,examine_status,is_deleted,update_time) VALUES (201,7,'OWNER_A_TITLE','OWNER_A_PRIVATE_BODY',1,0,0,NOW()),(202,8,'OWNER_B_TITLE','OWNER_B_PRIVATE_BODY',1,0,0,NOW())");
+        }
+        var configuration = new com.baomidou.mybatisplus.core.MybatisConfiguration();
+        configuration.setEnvironment(new org.apache.ibatis.mapping.Environment("quality-isolated",
+                new org.apache.ibatis.transaction.jdbc.JdbcTransactionFactory(), target.source));
+        var pagination = new com.baomidou.mybatisplus.extension.plugins.MybatisPlusInterceptor();
+        pagination.addInnerInterceptor(new PaginationInnerInterceptor(DbType.MYSQL));
+        configuration.addInterceptor(pagination);
+        configuration.addMapper(com.zcx.chenstack.mapper.ArticleMapper.class);
+        var factory = new com.baomidou.mybatisplus.core.MybatisSqlSessionFactoryBuilder().build(configuration);
+        try (var session = factory.openSession(true)) {
+            var service = new com.zcx.chenstack.service.EditableArticleService(session.getMapper(com.zcx.chenstack.mapper.ArticleMapper.class));
+            for (int user : List.of(7, 8)) {
+                int ownId = user == 7 ? 201 : 202;
+                int foreignId = user == 7 ? 202 : 201;
+                var cards = service.listForUser(user, 1, 5);
+                assertEquals(List.of(ownId), cards.articles().stream().map(com.zcx.chenstack.domain.vo.CustomerServiceEvent.EditableArticle::articleId).toList());
+                assertEquals(ownId, service.requireEditable(user, ownId).articleId());
+                assertThrows(com.zcx.chenstack.exception.BlogException.class, () -> service.requireEditable(user, foreignId));
+                assertThrows(com.zcx.chenstack.exception.BlogException.class, () -> service.loadForUser(user, foreignId));
+                assertFalse(JSON.writeValueAsString(cards).contains("PRIVATE_BODY"));
+            }
+        }
+    }
+
     @Test void validPublicationPersistsExactly39ApprovedSources() throws Exception {
         try (Fixture f = fixture()) {
             OperationInput input = input(f, PublicationManifest.Operation.PUBLISH, 20, null);
@@ -404,6 +438,96 @@ class PublicationIntegrationIT {
             if (changeMode) sql(f.source, "UPDATE rag_release_operation SET approver_id='LEGACY_ED25519'");
             else sql(f.source, "UPDATE rag_release_event SET details_code='SIGNATURE_AND_SCOPE_VERIFIED' WHERE event_type='VALIDATED'");
             try (Fixture restarted = reopen(f)) { assertRestoreRejected(restarted, input); }
+        }
+    }
+
+    @Test void zeroEmbeddingUpgradeReusesPhysicalIndexAndRestartsWithNewArtifactIdentity() throws Exception {
+        try (Fixture f = fixture()) {
+            OperationInput published = input(f, PublicationManifest.Operation.PUBLISH, 20, null);
+            execute(f, published);
+            String snapshot = f.store.snapshotHash();
+            var originalReceipt = f.store.completedReceipt(published.grant.manifestSha256());
+            int calls = f.model.calls.get();
+            OperationInput upgrade = zeroEmbeddingUpgrade(f);
+            assertThrows(SecurityException.class, () -> published.manifest.validate(upgradeIdentity(f, upgrade), resources));
+            assertEquals("COMPLETED", execute(f, upgrade).get("status"));
+            assertEquals(calls, f.model.calls.get());
+            assertEquals(1, f.catalog().epoch());
+            assertEquals(snapshot, f.store.snapshotHash());
+            assertEquals(39, f.catalog().documents().stream().filter(d -> "DOCUMENT_REVIEWED".equals(d.reviewStatus())).count());
+            var upgradedReceipt = f.store.completedReceipt(upgrade.grant.manifestSha256());
+            assertEquals(originalReceipt.indexHash(), upgradedReceipt.indexHash());
+            assertEquals(originalReceipt.operation().indexAuthority(), upgradedReceipt.operation().indexAuthority());
+            assertEquals(0, upgradedReceipt.operation().embeddingRequests());
+            try (Fixture restarted = reopen(f)) {
+                long events = scalar(restarted.source, "SELECT COUNT(*) FROM rag_release_event");
+                assertEquals("READ_ONLY_RECOVERED", RagPublicationRecovery.restore(restarted.lifecycle, restarted.knowledge,
+                        upgrade.bytes, OPERATOR, ENVIRONMENT, upgradeIdentity(restarted, upgrade), resources).get("status"));
+                assertReady(restarted);
+                assertEquals("COMPLETED", execute(restarted, upgrade).get("status"));
+                assertEquals(events, scalar(restarted.source, "SELECT COUNT(*) FROM rag_release_event"));
+                assertEquals(0, restarted.model.calls.get());
+                assertEquals(snapshot, restarted.store.snapshotHash());
+            }
+        }
+    }
+
+    @Test void zeroEmbeddingUpgradeCannotRepairMissingPhysicalChunks() throws Exception {
+        try (Fixture f = fixture()) {
+            execute(f, input(f, PublicationManifest.Operation.PUBLISH, 20, null));
+            String snapshot = f.store.snapshotHash();
+            int calls = f.model.calls.get();
+            qdrant("POST", "/collections/" + f.collection + "/points/delete?wait=true",
+                    Map.of("points", List.of(f.catalog().chunks().getFirst().getId())));
+            OperationInput upgrade = zeroEmbeddingUpgrade(f);
+            assertThrows(RuntimeException.class, () -> execute(f, upgrade));
+            assertRecoveryRequired(f);
+            assertEquals(calls, f.model.calls.get());
+            assertEquals(snapshot, f.store.snapshotHash());
+            assertEquals(0, f.store.operation(upgrade.grant.operationId()).embeddingRequests());
+        }
+    }
+
+    @Test void zeroEmbeddingUpgradeRequiresExistingTrustedReceiptAndCannotInitialize() throws Exception {
+        try (Fixture f = fixture()) {
+            OperationInput published = input(f, PublicationManifest.Operation.PUBLISH, 20, null);
+            execute(f, published);
+            int calls = f.model.calls.get();
+            String snapshot = f.store.snapshotHash();
+            sql(f.source, "UPDATE rag_release_event SET details_code='LEGACY_OR_FORGED' WHERE event_type='VALIDATED'");
+            assertThrows(RuntimeException.class, () -> execute(f, zeroEmbeddingUpgrade(f)));
+            assertRecoveryRequired(f);
+            assertEquals(calls, f.model.calls.get());
+            assertEquals(snapshot, f.store.snapshotHash());
+        }
+        try (Fixture f = fixture()) {
+            PublicationManifest base = manifest(f, PublicationManifest.Operation.RECOVER, null);
+            PublicationManifest creating = new PublicationManifest(base.schemaVersion(), base.gitCommit(), base.artifactSha256(),
+                    base.environment(), base.collection(), base.embeddingSignature(), base.resourceSha256(), base.expectedGeneration(),
+                    base.expectedSnapshotSha256(), base.operation(), null, false, true, base.topics());
+            OperationInput confirmed = operationInput(creating, 0);
+            OperationInput invalid = new OperationInput(creating, confirmed.bytes, confirmed.operationBytes, confirmed.grant,
+                    base.validate(identity(f), resources));
+            long events = scalar(f.source, "SELECT COUNT(*) FROM rag_release_event");
+            assertThrows(SecurityException.class, () -> execute(f, invalid));
+            assertEquals(events, scalar(f.source, "SELECT COUNT(*) FROM rag_release_event"));
+            assertEquals(0, f.model.calls.get());
+        }
+    }
+
+    @Test void zeroEmbeddingRecoveryCannotBootstrapBeforeExecutorStarts() throws Exception {
+        EmptyTarget target = emptyTarget();
+        Map<String, String> hashes = new TreeMap<>();
+        resources.forEach((path, bytes) -> hashes.put(path, PublicationManifest.sha256(bytes)));
+        PublicationManifest manifest = new PublicationManifest(1, BUILD, ARTIFACT, ENVIRONMENT, target.collection,
+                "c".repeat(64), hashes, 0, "EMPTY", PublicationManifest.Operation.RECOVER, null, true, false,
+                drafts.stream().filter(d -> PublicationManifest.userSourceIds().contains(d.sourceId()))
+                        .map(d -> new PublicationManifest.Topic(d.sourceId(), d.version(), KnowledgeCatalog.hash(d.text()))).toList());
+        OperationInput confirmed = operationInput(manifest, 0);
+        assertThrows(SecurityException.class, () -> RagPublicationExecutor.openOrInitialize(target.source, drafts,
+                manifest, confirmed.grant, PublicationManifest.sha256(confirmed.operationBytes)));
+        for (String table : List.of("rag_catalog_state", "rag_source_state", "rag_release_operation", "rag_release_event")) {
+            assertEquals(0, scalar(target.source, "SELECT COUNT(*) FROM " + table), table);
         }
     }
 
@@ -965,6 +1089,21 @@ class PublicationIntegrationIT {
         PublicationManifest manifest = manifest(f, operation, revoke);
         OperationInput confirmed = operationInput(manifest, budget);
         return new OperationInput(manifest, confirmed.bytes, confirmed.operationBytes, confirmed.grant, manifest.validate(identity(f), resources));
+    }
+
+    private OperationInput zeroEmbeddingUpgrade(Fixture f) throws Exception {
+        PublicationManifest base = manifest(f, PublicationManifest.Operation.RECOVER, null);
+        PublicationManifest upgraded = new PublicationManifest(base.schemaVersion(), "c".repeat(40), "d".repeat(64),
+                base.environment(), base.collection(), base.embeddingSignature(), base.resourceSha256(), base.expectedGeneration(),
+                base.expectedSnapshotSha256(), base.operation(), null, false, false, base.topics());
+        OperationInput confirmed = operationInput(upgraded, 0);
+        return new OperationInput(upgraded, confirmed.bytes, confirmed.operationBytes, confirmed.grant,
+                upgraded.validate(upgradeIdentity(f, confirmed), resources));
+    }
+
+    private PublicationManifest.RuntimeIdentity upgradeIdentity(Fixture f, OperationInput upgrade) {
+        return new PublicationManifest.RuntimeIdentity(upgrade.manifest.gitCommit(), upgrade.manifest.artifactSha256(),
+                ENVIRONMENT, f.collection, f.knowledge.embeddingSignature(), f.catalog().epoch(), f.store.snapshotHash());
     }
 
     private PublicationManifest manifest(Fixture f, PublicationManifest.Operation operation, String revoke) {

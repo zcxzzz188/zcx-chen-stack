@@ -13,6 +13,7 @@ import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.MessageAggregator;
 import org.springframework.ai.chat.prompt.Prompt;
+import org.springframework.ai.document.Document;
 import org.springframework.ai.model.tool.ToolCallingManager;
 import org.springframework.ai.openai.OpenAiChatOptions;
 import org.springframework.ai.support.ToolCallbacks;
@@ -79,6 +80,7 @@ public final class ProductRagAnswerService {
                 List<Message> messages = new ArrayList<>();
                 messages.add(new SystemMessage(AiPromptConstants.CUSTOMER_SERVICE_SYSTEM_PROMPT));
                 messages.add(new SystemMessage(help.topicDirectory()));
+                if (tools == null) messages.add(new SystemMessage("当前回复通道仅支持文字，不提供导航按钮或文章卡片；说明已核实的页面入口，不承诺在回复中展示按钮或卡片。"));
                 messages.addAll(recentHistory(memoryId, help));
                 String retained = help.historyContext();
                 if (!retained.isBlank()) messages.add(new SystemMessage("以下是本轮重新核验仍有效的帮助正文。请以原始正文为准，历史回复中的推测不是事实依据；新主题或缺少条件时继续检索。\n" + retained));
@@ -157,6 +159,10 @@ public final class ProductRagAnswerService {
                 }
                 if (!"stop".equalsIgnoreCase(finish)) return Flux.error(new IllegalStateException("客服回答未完成"));
                 String text = reply.getResult().getOutput().getText();
+                if (text != null && CustomerServiceTools.promisesNavigation(text)) {
+                    if (help.events == null) return Flux.error(new IllegalStateException("当前通道不能展示导航按钮"));
+                    help.events.ensureReplyActions(text);
+                }
                 return text == null || text.isBlank() ? Flux.error(new IllegalStateException("客服未返回有效正文"))
                         : help.guard(Flux.just(text));
             }));
@@ -243,10 +249,11 @@ public final class ProductRagAnswerService {
                 KnowledgeEvidence found = customerEvidence(knowledge.retrieve(query));
                 evidence.put(key, found);
                 snapshots.add(found.catalog());
-                if (events != null) events.knowledgeStatus(found.chunks().isEmpty() ? "UNKNOWN" : "SUPPORTED");
+                boolean anchored = knowledge.hasTopicAnchor(found, originalQuestion);
+                if (events != null) events.knowledgeStatus(anchored ? "SUPPORTED" : "UNKNOWN");
                 return (found.chunks().isEmpty()
                         ? "本次语义查询没有匹配资料。请从已审核主题选择对应标题调用readPlatformHelp；仍缺少资料才说明不能确认，不推断功能不存在。\n"
-                        : "") + context(found);
+                        : anchored ? "" : "本次只有语义候选，尚未确认与原问题为同一业务对象。请补读相符主题；用户所说对象仍不唯一时先澄清，不能把候选功能认定为用户正在问的功能。\n") + context(found);
             } catch (RagFailure error) {
                 log.warn("xiaochen knowledge unavailable: {}", error.code());
                 if (events != null) events.knowledgeStatus("UNKNOWN");
@@ -260,14 +267,27 @@ public final class ProductRagAnswerService {
             if (topicTitle == null || topicTitle.isBlank() || topicTitle.length() > 80 || !offeredTopics.contains(topicTitle)) {
                 return "请选择当前已审核目录中的精确帮助主题标题；目录不可用时不能自造标题或推断正文。";
             }
-            String key = "topic:" + topicTitle;
-            if (evidence.containsKey(key)) return context(evidence.get(key));
-            if (topicReads >= MAX_TOPIC_READS) return "本轮主题读取次数已达上限，请依据已有正文回答或请用户缩小范围。";
-            topicReads++;
             try {
-                KnowledgeEvidence found = customerEvidence(knowledge.retrieveByTitle(topicTitle));
-                evidence.put(key, found);
-                snapshots.add(found.catalog());
+                KnowledgeEvidence found = readTopic(topicTitle);
+                // 私信发送、撤回和会话管理是同一能力的互补正文，不能用会话页穷举全部私信功能。
+                if (!found.chunks().isEmpty() && (originalQuestion.contains("私信") || found.chunks().stream()
+                        .anyMatch(chunk -> String.valueOf(chunk.getMetadata().get("source_id")).startsWith("help-private-")))) {
+                    Map<String, Document> chunks = new LinkedHashMap<>();
+                    found.chunks().forEach(chunk -> chunks.putIfAbsent(chunk.getId(), chunk));
+                    for (String id : found.catalog().sourceIds()) {
+                        KnowledgeDocument source = found.catalog().source(id);
+                        if (!id.startsWith("help-private-") || !offeredTopics.contains(source.title())) continue;
+                        KnowledgeEvidence related = readTopic(source.title());
+                        if (related.catalog() != found.catalog() || related.chunks().isEmpty()) {
+                            throw new RagFailure(RagFailure.Code.INDEX_MISMATCH);
+                        }
+                        related.chunks().forEach(chunk -> chunks.putIfAbsent(chunk.getId(), chunk));
+                    }
+                    found = new KnowledgeEvidence(List.copyOf(chunks.values()), found.catalog());
+                    if (found.context().getBytes(java.nio.charset.StandardCharsets.UTF_8).length > knowledge.contextByteBudget()) {
+                        return "私信相关资料超出本轮正文预算，请缩小问题；已读单篇不能代表全部私信功能。";
+                    }
+                }
                 if (events != null) events.knowledgeStatus(found.chunks().isEmpty() ? "UNKNOWN" : "SUPPORTED");
                 return context(found);
             } catch (RagFailure error) {
@@ -275,6 +295,17 @@ public final class ProductRagAnswerService {
                 if (events != null) events.knowledgeStatus("UNKNOWN");
                 return "该主题正文暂时不可用，不能仅凭标题推断规则；请依据其他已核实资料回答。";
             }
+        }
+
+        private KnowledgeEvidence readTopic(String title) {
+            String key = "topic:" + title;
+            if (evidence.containsKey(key)) return evidence.get(key);
+            if (topicReads >= MAX_TOPIC_READS) throw new RagFailure(RagFailure.Code.COST_LIMIT);
+            topicReads++;
+            KnowledgeEvidence found = customerEvidence(knowledge.retrieveByTitle(title));
+            evidence.put(key, found);
+            snapshots.add(found.catalog());
+            return found;
         }
 
         boolean retainHistory(Message message) {

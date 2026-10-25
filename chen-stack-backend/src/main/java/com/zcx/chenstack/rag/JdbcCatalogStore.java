@@ -242,6 +242,28 @@ public final class JdbcCatalogStore implements AutoCloseable {
         finally { rollback(); }
     }
 
+    synchronized ReleaseReceipt latestCompletedReceipt(String environment, String collection) {
+        requireUnchanged();
+        String manifestHash;
+        try (PreparedStatement query = connection.prepareStatement("""
+                SELECT op.manifest_sha256 FROM rag_release_operation op
+                JOIN rag_release_event ev ON ev.operation_id=op.operation_id AND ev.event_type='COMPLETED'
+                WHERE op.status='COMPLETED' AND op.approver_id='CONTROLLED_OPERATOR'
+                  AND op.environment=? AND op.target_collection=?
+                  AND op.applied_generation=? AND op.applied_snapshot_sha256=?
+                ORDER BY ev.id DESC LIMIT 1
+                """)) {
+            query.setString(1, environment); query.setString(2, collection);
+            query.setLong(3, state.generation()); query.setString(4, snapshotHash());
+            try (ResultSet result = query.executeQuery()) {
+                if (!result.next()) throw new IllegalStateException("RECOVERY_COMPLETED_RECEIPT_REQUIRED");
+                manifestHash = result.getString(1);
+            }
+        } catch (SQLException error) { throw new IllegalStateException("RECOVERY_RECEIPT_READ_FAILED", error); }
+        finally { rollback(); }
+        return completedReceipt(manifestHash);
+    }
+
     synchronized ReleaseOperation operation(String id) {
         requireOwner();
         try (PreparedStatement query = connection.prepareStatement("SELECT operation_id,manifest_sha256,approval_sha256,environment,operator_id,approver_id,operation_type,status,expected_generation,applied_generation,applied_snapshot_sha256,target_collection,max_embedding_requests,embedding_requests,target_initialized,index_authority,index_epoch,last_error_code FROM rag_release_operation WHERE operation_id=?")) {

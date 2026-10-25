@@ -51,6 +51,9 @@ public final class RagPublicationExecutor {
         boolean recorded = false;
         try {
             PublicationAuthorization.requireGrant(grant, grant.operator(), manifest.environment(), manifest.operation());
+            boolean reuseIndex = manifest.operation() == PublicationManifest.Operation.RECOVER && grant.maxEmbeddingRequests() == 0;
+            if (reuseIndex) PublicationManifest.require(!manifest.createCollection() && !manifest.initializeEmptyCatalog(),
+                    "RECOVERY_ZERO_BUDGET_CANNOT_INITIALIZE");
             KnowledgeCatalog before = lifecycle.snapshot();
             validateSources(before);
             JdbcCatalogStore.ReleaseOperation previous = store.operation(grant.operationId());
@@ -73,8 +76,8 @@ public final class RagPublicationExecutor {
                         || manifest.initializeEmptyCatalog() && previous != null && before.epoch() == 0),
                         "RELEASE_CATALOG_PRECONDITION_MISMATCH");
             }
-            if (previous != null && (("COMPLETED".equals(previous.status()) && knowledge.publicationReady()
-                    && lifecycle.authorityId().equals(previous.indexAuthority()) && Objects.equals(before.epoch(), previous.indexEpoch()))
+            if (previous != null && (("COMPLETED".equals(previous.status())
+                    && knowledge.publicationMatches(previous.indexAuthority(), previous.indexEpoch()) && Objects.equals(before.epoch(), previous.indexEpoch()))
                     || "REVOKED".equals(previous.status()))) return result(previous.status());
             PublicationManifest.require(previous == null || !"COMPLETED".equals(previous.status()),
                     "RELEASE_COMPLETED_USE_READ_ONLY_RECOVERY");
@@ -86,6 +89,28 @@ public final class RagPublicationExecutor {
                     + "|" + store.databaseIdentityHash());
             if (manifest.operation() != PublicationManifest.Operation.REVOKE) {
                 knowledge.preparePublicationTarget(manifest.createCollection(), owner);
+            }
+            if (reuseIndex) {
+                var receipt = store.latestCompletedReceipt(manifest.environment(), manifest.collection());
+                var indexed = receipt.operation();
+                PublicationManifest.require(!indexed.manifestHash().equals(grant.manifestSha256())
+                        && indexed.targetInitialized() && indexed.indexAuthority() != null
+                        && indexed.indexAuthority().matches("[0-9a-f-]{36}")
+                        && indexed.operator().equals(grant.operator())
+                        && indexed.maxEmbeddingRequests() >= 0 && indexed.maxEmbeddingRequests() <= Integer.MAX_VALUE
+                        && indexed.embeddingRequests() >= 0 && indexed.embeddingRequests() <= indexed.maxEmbeddingRequests()
+                        && before.epoch() == ("PUBLISH".equals(indexed.type())
+                            ? Math.incrementExact(indexed.expectedGeneration()) : indexed.expectedGeneration())
+                        && Objects.equals(indexed.indexEpoch(), before.epoch())
+                        && ("PUBLISH".equals(indexed.type()) || "RECOVER".equals(indexed.type()))
+                        && PublicationManifest.validHash(indexed.operationHash())
+                        && !receipt.completedAt().isAfter(java.time.Instant.now()), "RECOVERY_INDEX_RECEIPT_MISMATCH");
+                String indexHash = knowledge.verifyPublicationIndex(indexed.indexAuthority(), indexed.indexEpoch());
+                PublicationManifest.require(receipt.indexHash().equals(indexHash), "RECOVERY_INDEX_DIGEST_MISMATCH");
+                // 只新增本次运维回执，复用旧向量的 authority/epoch；不重新发布、嵌入或写索引。
+                store.checkpoint(grant.operationId(), "COMPLETED", true, indexed.indexAuthority(), indexed.indexEpoch(), indexHash);
+                knowledge.confirmPublication(before, indexed.indexAuthority(), indexed.indexEpoch());
+                return result("COMPLETED");
             }
             if (applied == null && manifest.operation() != PublicationManifest.Operation.RECOVER) {
                 store.checkpoint(grant.operationId(), "VALIDATED", manifest.operation() != PublicationManifest.Operation.REVOKE, null, null);
@@ -152,6 +177,8 @@ public final class RagPublicationExecutor {
     private static JdbcCatalogStore.ReleaseOperation operation(PublicationManifest manifest,
             PublicationAuthorization.Grant grant, String operationHash) {
         PublicationAuthorization.requireGrant(grant, grant.operator(), manifest.environment(), manifest.operation());
+        PublicationManifest.require(manifest.operation() != PublicationManifest.Operation.RECOVER || grant.maxEmbeddingRequests() != 0
+                || !manifest.initializeEmptyCatalog() && !manifest.createCollection(), "RECOVERY_ZERO_BUDGET_CANNOT_INITIALIZE");
         PublicationManifest.require(PublicationManifest.validHash(operationHash), "RELEASE_OPERATION_HASH_INVALID");
         return new JdbcCatalogStore.ReleaseOperation(grant.operationId(), grant.manifestSha256(), operationHash,
                 grant.environment(), grant.operator(), PublicationAuthorization.MODE, manifest.operation().name(), "VALIDATED",

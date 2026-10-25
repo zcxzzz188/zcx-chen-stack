@@ -4,6 +4,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpServer;
 import com.zcx.chenstack.domain.vo.CustomerServiceEvent;
 import com.zcx.chenstack.service.CustomerServiceTools;
+import com.zcx.chenstack.service.CustomerServiceOrchestrator;
+import com.zcx.chenstack.service.AiUsageService;
 import com.zcx.chenstack.service.EditableArticleService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -57,7 +59,10 @@ class ProductRagAnswerServiceTest {
                 "/editor", "PUBLIC", "DOCUMENT_REVIEWED", Instant.EPOCH, List.of("草稿"))));
         knowledge = mock(RagKnowledgeService.class);
         when(knowledge.chatTimeoutSeconds()).thenReturn(5);
+        when(knowledge.contextByteBudget()).thenReturn(6000);
         when(knowledge.reviewedCatalog()).thenAnswer(invocation -> catalog.lifecycle().snapshot());
+        when(knowledge.retrieveByTitle(anyString())).thenAnswer(invocation -> new KnowledgeEvidence(catalog.chunks().stream()
+                .filter(chunk -> catalog.source((String) chunk.getMetadata().get("source_id")).title().equals(invocation.getArgument(0))).toList(), catalog));
         when(knowledge.retrieve(anyString())).thenReturn(new KnowledgeEvidence(catalog.chunks(), catalog));
         articles = mock(EditableArticleService.class);
         when(articles.listForUser(7, 1, 5)).thenReturn(new CustomerServiceEvent("ARTICLE_SELECTION", "请选择文章", null,
@@ -97,6 +102,139 @@ class ProductRagAnswerServiceTest {
 
     String run(String question, String chat) {
         return String.join("", answer(question, chat, 7).collectList().block(Duration.ofSeconds(8)));
+    }
+
+    @Test void promisedNavigationIsRecreatedForEverySseReplyWithoutAnotherModelRound() {
+        respond = prompt -> Flux.just(text("登录后查看审核状态。下方按钮可直接进入文章管理。", "stop"));
+        AiUsageService quota = mock(AiUsageService.class);
+        when(quota.tryReserveUsage(7)).thenReturn(true);
+        CustomerServiceOrchestrator stream = new CustomerServiceOrchestrator(service, articles, quota);
+        for (int i = 0; i < 2; i++) {
+            List<CustomerServiceEvent> reply = stream.chat("如果审核没有通过，我该在哪里看结果并修改？", "nav-followup", 7)
+                    .collectList().block(Duration.ofSeconds(8));
+            assertEquals(List.of("TEXT", "NAVIGATION_ACTION", "DONE"), reply.stream().map(CustomerServiceEvent::type).toList());
+            assertEquals("OPEN_ARTICLE_MANAGE", reply.get(1).action());
+        }
+        assertEquals(2, prompts.size());
+        verifyNoInteractions(articles);
+    }
+
+    @Test void explicitNavigationAndFinalPromiseProduceOnlyOneAction() {
+        respond = prompt -> Flux.just(prompts.size() == 1
+                ? tools(call("showNavigation", "{\"destination\":\"ARTICLE_MANAGE\"}"))
+                : text("下方按钮可直接进入文章管理。", "stop"));
+        run("打开文章管理", "nav-once");
+        assertEquals(1, events.stream().filter(event -> "NAVIGATION_ACTION".equals(event.type())).count());
+    }
+
+    @Test void unknownNavigationAndTextOnlyPromisesCannotBeReleasedOrRemembered() {
+        respond = prompt -> Flux.just(text("下方按钮可直接进入支付中心。", "stop"));
+        assertThrows(RuntimeException.class, () -> run("打开入口", "unknown-page"));
+        assertTrue(events.isEmpty());
+        assertTrue(memory.get("7:unknown-page").isEmpty());
+        respond = prompt -> Flux.just(text("下方按钮可直接进入文章管理。", "stop"));
+        assertThrows(RuntimeException.class, () -> service.answer("查看文章", "text-only", 7, () -> true)
+                .collectList().block(Duration.ofSeconds(8)));
+        assertTrue(memory.get("7:text-only").isEmpty());
+    }
+
+    @Test void unrelatedPreparedActionCannotValidateAnUnknownPagePromise() {
+        respond = prompt -> Flux.just(prompts.size() == 1
+                ? tools(call("showNavigation", "{\"destination\":\"SETTINGS\"}"))
+                : text("下方按钮可直接进入支付中心。", "stop"));
+        assertThrows(RuntimeException.class, () -> run("查看入口", "unknown-after-tool"));
+        assertTrue(events.isEmpty());
+        assertTrue(memory.get("7:unknown-after-tool").isEmpty());
+    }
+
+    @Test void unknownButtonPromisesCannotBorrowUnrelatedActionsOrArticleCards() {
+        for (String promise : List.of("下方有支付中心按钮。", "下方有按钮。", "请看下方文章卡片，旁边有支付中心按钮。",
+                "下方按钮可进入文章管理。下方还有支付中心按钮。")) {
+            for (boolean withCards : List.of(false, true)) {
+                prompts.clear(); events.clear();
+                String chat = "unknown-button-" + Math.abs(promise.hashCode()) + "-" + withCards;
+                respond = prompt -> Flux.just(prompts.size() == 1
+                        ? tools(withCards ? call("listMyEditableArticles", "{\"page\":1,\"pageSize\":5}")
+                            : call("showNavigation", "{\"destination\":\"SETTINGS\"}"))
+                        : text(promise, "stop"));
+                assertThrows(RuntimeException.class, () -> run("查看本人文章和页面入口", chat), promise + withCards);
+                assertTrue(events.isEmpty(), promise);
+                assertTrue(memory.get("7:" + chat).isEmpty(), promise);
+            }
+        }
+    }
+
+    @Test void knownButtonPromisePreparesItsOwnActionBesideAnUnrelatedAction() {
+        respond = prompt -> Flux.just(prompts.size() == 1
+                ? tools(call("showNavigation", "{\"destination\":\"SETTINGS\"}"))
+                : text("下方按钮可进入文章管理。", "stop"));
+        run("查看本人文章入口", "known-after-unrelated");
+        assertEquals(List.of("OPEN_SETTINGS", "OPEN_ARTICLE_MANAGE"), events.stream()
+                .filter(event -> "NAVIGATION_ACTION".equals(event.type())).map(CustomerServiceEvent::action).toList());
+    }
+
+    private void useReviewedProductHelp() throws Exception {
+        ObjectMapper json = new ObjectMapper().findAndRegisterModules();
+        try (var input = getClass().getClassLoader().getResourceAsStream("knowledge/platform-help.json")) {
+            catalog = new KnowledgeCatalog(java.util.Arrays.stream(json.readValue(input, KnowledgeDocument[].class))
+                    .filter(source -> PublicationManifest.userSourceIds().contains(source.sourceId()))
+                    .map(source -> new KnowledgeDocument(source.sourceId(), source.title(), source.text(), source.version(), source.sourceType(),
+                            source.sourceUrl(), "PUBLIC", "DOCUMENT_REVIEWED", source.updatedAt(), source.keywords())).toList());
+        }
+    }
+
+    @Test void privateConversationTopicIncludesSendingAndRevocationWithoutEmbeddingOrPrivateData() throws Exception {
+        useReviewedProductHelp();
+        respond = prompt -> {
+            if (prompts.size() == 1) return Flux.just(tools(call("readPlatformHelp", "{\"topicTitle\":\"查看私信会话、已读和删除会话\"}")));
+            String facts = prompt.getInstructions().stream().filter(message -> message instanceof ToolResponseMessage)
+                    .map(Object::toString).reduce("", String::concat);
+            assertTrue(facts.contains("Shift+Enter"));
+            assertTrue(facts.contains("两分钟"));
+            assertTrue(facts.contains("删除会话不能当作撤回"));
+            assertTrue(facts.contains("小辰没有读取私人聊天内容或代发私信的工具"));
+            return Flux.just(text("请按已核实的私信步骤操作，小辰不能代发。", "stop"));
+        };
+        run("平台现在支持把我所有私信导出成PDF并自动发邮件吗？", "private-capability");
+        for (String title : catalog.sourceIds().stream().filter(id -> id.startsWith("help-private-"))
+                .map(id -> catalog.source(id).title()).toList()) verify(knowledge).retrieveByTitle(title);
+        verify(knowledge, never()).retrieve(anyString());
+        verifyNoInteractions(articles);
+    }
+
+    @Test void relatedPrivateTopicsDoNotReplaceTheRequestedEmailSettingsEvidence() throws Exception {
+        useReviewedProductHelp();
+        String title = catalog.source("help-email-settings").title();
+        respond = prompt -> {
+            if (prompts.size() == 1) return Flux.just(tools(call("readPlatformHelp", "{\"topicTitle\":\"" + title + "\"}")));
+            String facts = prompt.getInstructions().stream().filter(message -> message instanceof ToolResponseMessage)
+                    .map(Object::toString).reduce("", String::concat);
+            for (String id : List.of("help-email-settings", "help-private-message", "help-private-revoke", "help-private-conversation")) {
+                assertTrue(facts.contains(id), id);
+            }
+            return Flux.just(text("请在个人设置中查看私信邮件通知设置，小辰不能代发私信。", "stop"));
+        };
+        run("私信邮件提醒在哪里设置，发消息和撤回怎么用？", "private-email");
+        verify(knowledge).retrieveByTitle(title);
+        verify(knowledge, never()).retrieve(anyString());
+        verifyNoInteractions(articles);
+    }
+
+    @Test void unanchoredSemanticCandidateRequiresConfirmationInsteadOfSupportedStatus() {
+        when(knowledge.hasTopicAnchor(any(KnowledgeEvidence.class), anyString())).thenReturn(false);
+        when(knowledge.hasTopicAnchor(any(KnowledgeEvidence.class), eq("评论管理"))).thenReturn(true);
+        respond = prompt -> {
+            if (prompts.size() == 1) return Flux.just(tools(call("searchPlatformHelp", "{\"query\":\"评论管理\"}")));
+            String facts = prompt.getInstructions().stream().filter(message -> message instanceof ToolResponseMessage)
+                    .map(Object::toString).reduce("", String::concat);
+            assertTrue(facts.contains("尚未确认与原问题为同一业务对象"));
+            assertTrue(facts.contains("先澄清"));
+            return Flux.just(text("请确认被退回的是文章还是评论？", "stop"));
+        };
+        assertEquals("请确认被退回的是文章还是评论？", run("被退回的内容怎么改好再提交", "unanchored"));
+        verify(knowledge).hasTopicAnchor(any(KnowledgeEvidence.class), eq("被退回的内容怎么改好再提交"));
+        assertTrue(events.stream().anyMatch(event -> "UNKNOWN".equals(event.supportStatus())));
+        assertTrue(events.stream().noneMatch(event -> "SUPPORTED".equals(event.supportStatus())));
     }
 
     @Test void revokedKnowledgeAnswerIsNotReusedAsFollowupContext() {
