@@ -2,15 +2,18 @@ package com.zcx.chenstack.service.impl;
 
 import cn.hutool.core.bean.BeanUtil;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.zcx.chenstack.domain.constants.BlogConstants;
 import com.zcx.chenstack.domain.entity.Conversation;
 import com.zcx.chenstack.domain.entity.PrivateMessage;
 import com.zcx.chenstack.domain.entity.SysUser;
+import com.zcx.chenstack.domain.enums.ExamineStatusEnum;
 import com.zcx.chenstack.domain.vo.ConversationVo;
 import com.zcx.chenstack.exception.BlogException;
 import com.zcx.chenstack.mapper.ConversationMapper;
+import com.zcx.chenstack.mapper.PrivateMessageMapper;
 import com.zcx.chenstack.mapper.SysUserMapper;
 import com.zcx.chenstack.redis.RedisComponent;
 import com.zcx.chenstack.service.ConversationService;
@@ -33,6 +36,9 @@ public class ConversationServiceImpl extends ServiceImpl<ConversationMapper, Con
     private ConversationMapper conversationMapper;
 
     @Resource
+    private PrivateMessageMapper privateMessageMapper;
+
+    @Resource
     private SysUserMapper sysUserMapper;
 
     @Resource
@@ -49,6 +55,16 @@ public class ConversationServiceImpl extends ServiceImpl<ConversationMapper, Con
         if (conversations.isEmpty()) {
             return new ArrayList<>();
         }
+
+        // 已审且未读的消息是权威，避免会话计数的增量更新与清零互相覆盖。
+        QueryWrapper<PrivateMessage> unreadQuery = new QueryWrapper<PrivateMessage>()
+                .select("from_user_id", "COUNT(*) AS unread_count")
+                .eq("to_user_id", userId).eq("is_read", 0).eq("is_revoked", 0)
+                .and(w -> w.eq("examine_status", ExamineStatusEnum.PASS.getCode()).or().isNull("examine_status"))
+                .groupBy("from_user_id");
+        Map<Integer, Integer> unreadBySender = privateMessageMapper.selectMaps(unreadQuery).stream()
+                .collect(Collectors.toMap(row -> ((Number) row.get("from_user_id")).intValue(),
+                        row -> ((Number) row.get("unread_count")).intValue()));
 
         // 收集所有目标用户ID
         List<Integer> targetUserIds = conversations.stream()
@@ -67,6 +83,7 @@ public class ConversationServiceImpl extends ServiceImpl<ConversationMapper, Con
         // 转换为 VO 并填充数据
         return conversations.stream().map(conv -> {
             ConversationVo vo = BeanUtil.copyProperties(conv, ConversationVo.class);
+            vo.setUnreadCount(unreadBySender.getOrDefault(conv.getTargetUserId(), 0));
 
             // 从 Map 中获取目标用户信息
             SysUser targetUser = userMap.get(conv.getTargetUserId());
@@ -85,14 +102,13 @@ public class ConversationServiceImpl extends ServiceImpl<ConversationMapper, Con
     @Override
     public void updateConversation(Integer fromUserId, Integer toUserId, PrivateMessage message) {
         // 更新发送者的会话
-        updateUserConversation(fromUserId, toUserId, message, false);
+        updateUserConversation(fromUserId, toUserId, message);
 
         // 更新接收者的会话
-        updateUserConversation(toUserId, fromUserId, message, true);
+        updateUserConversation(toUserId, fromUserId, message);
     }
 
-    private void updateUserConversation(Integer userId, Integer targetUserId, PrivateMessage message,
-            boolean incrementUnread) {
+    private void updateUserConversation(Integer userId, Integer targetUserId, PrivateMessage message) {
         LambdaQueryWrapper<Conversation> qw = new LambdaQueryWrapper<Conversation>()
                 .eq(Conversation::getUserId, userId)
                 .eq(Conversation::getTargetUserId, targetUserId);
@@ -107,7 +123,7 @@ public class ConversationServiceImpl extends ServiceImpl<ConversationMapper, Con
             conversation.setLastMessageId(message.getId());
             conversation.setLastMessageContent(message.getContent());
             conversation.setLastMessageTime(message.getCreateTime());
-            conversation.setUnreadCount(incrementUnread ? 1 : 0);
+            conversation.setUnreadCount(0);
             conversation.setCreateTime(new Date());
             conversation.setUpdateTime(new Date());
             conversationMapper.insert(conversation);
@@ -116,9 +132,6 @@ public class ConversationServiceImpl extends ServiceImpl<ConversationMapper, Con
             conversation.setLastMessageId(message.getId());
             conversation.setLastMessageContent(message.getContent());
             conversation.setLastMessageTime(message.getCreateTime());
-            if (incrementUnread) {
-                conversation.setUnreadCount(conversation.getUnreadCount() + 1);
-            }
             conversation.setUpdateTime(new Date());
             conversationMapper.updateById(conversation);
         }
@@ -126,6 +139,12 @@ public class ConversationServiceImpl extends ServiceImpl<ConversationMapper, Con
 
     @Override
     public void clearUnreadCount(Integer userId, Integer targetUserId) {
+        privateMessageMapper.update(null, new LambdaUpdateWrapper<PrivateMessage>()
+                .eq(PrivateMessage::getFromUserId, targetUserId).eq(PrivateMessage::getToUserId, userId)
+                .eq(PrivateMessage::getIsRead, 0).eq(PrivateMessage::getIsRevoked, 0)
+                .and(w -> w.eq(PrivateMessage::getExamineStatus, ExamineStatusEnum.PASS.getCode())
+                        .or().isNull(PrivateMessage::getExamineStatus))
+                .set(PrivateMessage::getIsRead, 1).set(PrivateMessage::getReadTime, new Date()));
         LambdaUpdateWrapper<Conversation> updateWrapper = new LambdaUpdateWrapper<Conversation>()
                 .eq(Conversation::getUserId, userId)
                 .eq(Conversation::getTargetUserId, targetUserId)
@@ -151,13 +170,11 @@ public class ConversationServiceImpl extends ServiceImpl<ConversationMapper, Con
 
     @Override
     public Integer getUnreadCount(Integer userId, Integer targetUserId) {
-        LambdaQueryWrapper<Conversation> qw = new LambdaQueryWrapper<Conversation>()
-                .eq(Conversation::getUserId, userId)
-                .eq(Conversation::getTargetUserId, targetUserId);
-
-        Conversation conversation = conversationMapper.selectOne(qw);
-
-        return conversation != null ? conversation.getUnreadCount() : 0;
+        return Math.toIntExact(privateMessageMapper.selectCount(new LambdaQueryWrapper<PrivateMessage>()
+                .eq(PrivateMessage::getToUserId, userId).eq(PrivateMessage::getFromUserId, targetUserId)
+                .eq(PrivateMessage::getIsRead, 0).eq(PrivateMessage::getIsRevoked, 0)
+                .and(w -> w.eq(PrivateMessage::getExamineStatus, ExamineStatusEnum.PASS.getCode())
+                        .or().isNull(PrivateMessage::getExamineStatus))));
     }
 
     @Override

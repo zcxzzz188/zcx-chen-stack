@@ -29,6 +29,7 @@ import com.zcx.chenstack.mapper.ArticleMapper;
 import com.zcx.chenstack.mapper.ColumnMapper;
 import com.zcx.chenstack.mapper.PhotoMapper;
 import com.zcx.chenstack.mapper.PrivateMessageMapper;
+import com.zcx.chenstack.service.PrivateMessageService;
 import com.zcx.chenstack.mapper.SysUserMapper;
 import com.zcx.chenstack.service.MessageService;
 import com.zcx.chenstack.service.PhotoService;
@@ -87,6 +88,8 @@ public class PhotoServiceImpl extends ServiceImpl<PhotoMapper, Photo> implements
     private ColumnMapper columnMapper;
     @Resource
     private PrivateMessageMapper privateMessageMapper;
+    @Resource
+    private PrivateMessageService privateMessageService;
     @Resource
     private MessageService messageService;
     @Resource
@@ -392,12 +395,7 @@ public class PhotoServiceImpl extends ServiceImpl<PhotoMapper, Photo> implements
             return;
         }
 
-        LambdaUpdateWrapper<PrivateMessage> updateWrapper = new LambdaUpdateWrapper<>();
-        updateWrapper.in(PrivateMessage::getImageUrl, validUrls)
-                .eq(PrivateMessage::getMessageType, 2)
-                .eq(PrivateMessage::getIsRevoked, 0)
-                .set(PrivateMessage::getExamineStatus, examineStatus);
-        privateMessageMapper.update(null, updateWrapper);
+        privateMessageService.syncImageAuditStatus(validUrls, examineStatus);
     }
 
     @Override

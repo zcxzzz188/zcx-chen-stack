@@ -119,7 +119,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   ArrowLeft,
@@ -131,7 +131,6 @@ import {
 } from '@element-plus/icons-vue'
 import { getChatHistory } from '@/api/privateMessage'
 import { getUserInfoById } from '@/api/user'
-import { getConversationList } from '@/api/conversation'
 import { uploadMessagePhoto } from '@/api/photo'
 import { useMessageStore } from '@/stores/messageStore'
 import { useUserStore } from '@/stores/userStore'
@@ -178,11 +177,15 @@ const revokeNotificationTimer = ref(null) // 撤回提示定时器
 // 输入检测相关
 const lastTypingSentTime = ref(0) // 上次发送 TYPING 消息的时间
 const typingTimer = ref(null) // 输入状态消失定时器
+let historySequence = 0
+let active = true
 // 获取目标用户信息
 const fetchTargetUser = async () => {
+  const peer = targetUserId.value
+  const owner = currentUserId.value
   try {
-    const res = await getUserInfoById(targetUserId.value)
-    targetUser.value = res.data
+    const res = await getUserInfoById(peer)
+    if (peer === targetUserId.value && owner === currentUserId.value) targetUser.value = res.data
   } catch (error) {
     // 静默处理
   }
@@ -190,22 +193,44 @@ const fetchTargetUser = async () => {
 
 // 获取聊天记录
 const fetchChatHistory = async () => {
+  const sequence = ++historySequence
+  const peer = targetUserId.value
+  const owner = currentUserId.value
+  const knownMessages = new Map(messageStore.currentChatMessages.map((message) => [message.id, { ...message }]))
   try {
     loading.value = true
-    const res = await getChatHistory(targetUserId.value, 1, 50)
-    const messages = res.data?.data || []
+    const messages = []
+    let page = 1
+    let total
+    while (true) {
+      const res = await getChatHistory(peer, page, 50)
+      if (!active || sequence !== historySequence || peer !== targetUserId.value || owner !== currentUserId.value || !owner) return
+      const batch = res.data?.data || []
+      total ??= Number(res.data?.total) || batch.length
+      messages.push(...batch)
+      // 初次打开保留原50条窗口；重连补查到已知消息，避免遗漏超过一页的新消息。
+      if (!knownMessages.size || batch.length < 50 || batch.some((message) => knownMessages.has(message.id)) || messages.length >= total) break
+      page++
+    }
     // 将消息列表反转，确保最新消息在底部
-    messageStore.setCurrentChatMessages(messages.reverse())
+    const currentIds = new Set(messageStore.currentChatMessages.map((message) => message.id))
+    const removed = new Set([...knownMessages.keys()].filter((id) => !currentIds.has(id)))
+    const arrived = messageStore.currentChatMessages.filter((message) => {
+      const previous = knownMessages.get(message.id)
+      return !previous || Object.keys(message).some((key) => message[key] !== previous[key])
+    })
+    messageStore.setCurrentChatMessages([...messages.reverse().filter((message) => !removed.has(message.id)), ...arrived])
     scrollToBottom()
 
     // 获取历史消息后，标记为已读
     if (messages.length > 0) {
-      WebSocketClient.markAsRead(targetUserId.value)
+      WebSocketClient.markAsRead(peer)
+      messageStore.clearConversationUnread(peer)
     }
   } catch (error) {
     // 静默处理
   } finally {
-    loading.value = false
+    if (sequence === historySequence && peer === targetUserId.value && owner === currentUserId.value) loading.value = false
   }
 }
 
@@ -217,31 +242,10 @@ const sendMessage = () => {
 
   const content = messageContent.value
 
-  // 立即添加到消息列表（乐观更新）
-  const tempMessage = {
-    id: Date.now(), // 临时ID
-    fromUserId: currentUserId.value,
-    toUserId: targetUserId.value,
-    content: content,
-    messageType: 1,
-    examineStatus: 0,
-    createTime: new Date(),
-    isRead: 0,
-    isRevoked: 0,
-    fromUserNickname: userStore.user?.nickname,
-    fromUserAvatar: userStore.user?.avatar,
-    toUserNickname: targetUser.value?.nickname,
-    toUserAvatar: targetUser.value?.avatar,
+  if (!WebSocketClient.sendTextMessage(targetUserId.value, content)) {
+    ElMessage.error('私信连接已断开，请等待重连后发送')
+    return
   }
-
-  messageStore.addMessageToCurrentChat(tempMessage)
-  messageStore.updateConversation(targetUserId.value, tempMessage, 0, {
-    nickname: targetUser.value?.nickname,
-    avatar: targetUser.value?.avatar,
-  })
-  scrollToBottom()
-
-  WebSocketClient.sendTextMessage(targetUserId.value, content)
   messageContent.value = ''
 }
 
@@ -299,6 +303,8 @@ const openImagePicker = () => {
 
 // 处理图片选择
 const handleImageSelect = async (event) => {
+  const peer = targetUserId.value
+  const owner = currentUserId.value
   const file = event.target.files?.[0]
   if (!file) {
     return
@@ -324,34 +330,10 @@ const handleImageSelect = async (event) => {
     const res = await uploadMessagePhoto(file)
     const imageUrl = res.data
 
-    // 立即添加到消息列表（乐观更新）
-    const tempMessage = {
-      id: Date.now(), // 临时ID
-      fromUserId: currentUserId.value,
-      toUserId: targetUserId.value,
-      content: '[图片]',
-      messageType: 2,
-      imageUrl: imageUrl,
-      examineStatus: 0,
-      createTime: new Date(),
-      isRead: 0,
-      isRevoked: 0,
-      fromUserNickname: userStore.user?.nickname,
-      fromUserAvatar: userStore.user?.avatar,
-      toUserNickname: targetUser.value?.nickname,
-      toUserAvatar: targetUser.value?.avatar,
+    if (owner !== currentUserId.value || peer !== targetUserId.value) return
+    if (!WebSocketClient.sendImageMessage(peer, imageUrl)) {
+      ElMessage.error('私信连接已断开，请等待重连后发送')
     }
-
-    messageStore.addMessageToCurrentChat(tempMessage)
-    messageStore.updateConversation(targetUserId.value, tempMessage, 0, {
-      nickname: targetUser.value?.nickname,
-      avatar: targetUser.value?.avatar,
-    })
-    scrollToBottom()
-
-    // 发送图片消息
-    WebSocketClient.sendImageMessage(targetUserId.value, imageUrl)
-    ElMessage.success('图片发送成功')
   } catch (error) {
     // 静默处理
   } finally {
@@ -589,32 +571,6 @@ const closeContextMenu = (event) => {
   }
 }
 
-// WebSocket 消息处理
-const handleNewMessage = (data) => {
-  if (data.fromUserId === targetUserId.value || data.toUserId === targetUserId.value) {
-    // 补充用户信息
-    const message = {
-      ...data,
-      id: data.messageId || data.id, // 确保有消息ID
-      fromUserNickname: data.fromUserNickname || targetUser.value?.nickname,
-      fromUserAvatar: data.fromUserAvatar || targetUser.value?.avatar,
-      toUserNickname: data.toUserNickname || userStore.user?.nickname,
-      toUserAvatar: data.toUserAvatar || userStore.user?.avatar,
-    }
-    // 将消息添加到当前聊天窗口
-    messageStore.addMessageToCurrentChat(message)
-    scrollToBottom()
-
-    // 如果是收到对方的消息，立即标记为已读
-    if (data.fromUserId === targetUserId.value) {
-      // 清空前端会话未读数
-      messageStore.clearConversationUnread(targetUserId.value)
-      // 通知后端标记为已读
-      WebSocketClient.markAsRead(targetUserId.value)
-    }
-  }
-}
-
 // 处理对方正在输入通知
 const handleTypingNotify = (data) => {
   if (data.fromUserId === targetUserId.value) {
@@ -631,19 +587,6 @@ const handleTypingNotify = (data) => {
       messageStore.setTargetUserTyping(false)
       typingTimer.value = null
     }, 6000)
-  }
-}
-
-const handleSendSuccess = (data) => {
-  // 消息发送成功，更新临时ID为真实ID
-  const messages = messageStore.currentChatMessages
-  const lastMessage = messages[messages.length - 1]
-  if (lastMessage && lastMessage.id > Date.now() - 5000) {
-    // 更新最后一条消息的ID
-    lastMessage.id = data.messageId
-    if (typeof data.code === 'number') {
-      lastMessage.examineStatus = data.code
-    }
   }
 }
 
@@ -724,43 +667,28 @@ const handleMessageRevoke = (data) => {
   }
 }
 
-// 组件挂载
-onMounted(async () => {
-  // 设置当前聊天用户
-  messageStore.setCurrentChatUser(targetUserId.value)
-  fetchTargetUser()
-  fetchChatHistory()
+watch(
+  () => [targetUserId.value, currentUserId.value],
+  ([peer, owner]) => {
+    targetUser.value = null
+    messageStore.setCurrentChatUser(owner ? peer : null)
+    if (!owner) return
+    fetchTargetUser()
+    fetchChatHistory()
+  },
+  { immediate: true, flush: 'post' },
+)
 
-  // 如果会话列表为空（刷新页面时），主动获取会话列表以获取在线状态
-  if (messageStore.conversationList.length === 0) {
-    try {
-      const res = await getConversationList()
-      messageStore.setConversationList(res.data || [])
+watch(() => messageStore.currentChatMessages.length, scrollToBottom)
+watch(
+  () => messageStore.conversationList.find((conv) => conv.targetUserId === targetUserId.value)?.isOnline,
+  (online) => { isOnline.value = !!online },
+  { immediate: true },
+)
 
-      // 在获取会话列表后立即更新在线状态
-      const conversation = messageStore.conversationList.find(
-        (conv) => conv.targetUserId === targetUserId.value,
-      )
-      if (conversation) {
-        isOnline.value = conversation.isOnline || false
-      }
-    } catch (error) {
-      // 静默处理
-    }
-  } else {
-    // 从已有的会话列表中获取初始在线状态
-    const conversation = messageStore.conversationList.find(
-      (conv) => conv.targetUserId === targetUserId.value,
-    )
-    if (conversation) {
-      isOnline.value = conversation.isOnline || false
-    }
-  }
-
-  // 注意：不要在这里初始化 WebSocket，Header.vue 已经全局初始化了
-  // 只需要监听消息事件
-  WebSocketClient.on('NEW_MESSAGE', handleNewMessage)
-  WebSocketClient.on('SEND_SUCCESS', handleSendSuccess)
+// 先注册事件，再发起异步恢复；不等待会话查询后才订阅。
+onMounted(() => {
+  WebSocketClient.on('open', fetchChatHistory)
   WebSocketClient.on('MESSAGE_READ', handleMessageRead)
   WebSocketClient.on('USER_ONLINE_STATUS', handleUserOnlineStatus)
   WebSocketClient.on('REVOKE_SUCCESS', handleRevokeSuccess)
@@ -774,8 +702,9 @@ onMounted(async () => {
 
 // 组件卸载
 onUnmounted(() => {
-  WebSocketClient.off('NEW_MESSAGE', handleNewMessage)
-  WebSocketClient.off('SEND_SUCCESS', handleSendSuccess)
+  active = false
+  historySequence++
+  WebSocketClient.off('open', fetchChatHistory)
   WebSocketClient.off('MESSAGE_READ', handleMessageRead)
   WebSocketClient.off('USER_ONLINE_STATUS', handleUserOnlineStatus)
   WebSocketClient.off('REVOKE_SUCCESS', handleRevokeSuccess)

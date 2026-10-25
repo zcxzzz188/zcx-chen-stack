@@ -1,4 +1,5 @@
 import { GetJwt } from '@/utils/Auth'
+import { sameJwtAccount } from '@/utils/JwtSession'
 
 class WebSocketClient {
   constructor() {
@@ -8,6 +9,7 @@ class WebSocketClient {
     this.heartbeatTimer = null // 心跳定时器
     this.isManualClose = false // 是否手动关闭 (用于判断是否需要自动重连)
     this.messageHandlers = new Map() // 消息处理器 (观察者模式)
+    this.token = null
   }
 
   /**
@@ -19,23 +21,25 @@ class WebSocketClient {
       return
     }
 
-    // 如果已经有连接，先关闭
-    if (this.ws) {
-      this.close()
-    }
+    if (this.ws && this.token === token && this.ws.readyState < WebSocket.CLOSING) return
+    this.close()
 
     // 将 HTTP URL 转换为 WebSocket URL 例如 http://localhost:5000 转换为 ws://localhost:5000
     const httpUrl = import.meta.env.VITE_BACKEND_SERVER || 'http://localhost:5000'
-    const wsUrl = `${httpUrl.replace(/^http/, 'ws')}/ws/message?token=${token}`
+    const wsUrl = `${httpUrl.replace(/^http/, 'ws')}/ws/message?token=${encodeURIComponent(token)}`
     this.url = wsUrl
     // 是否手动关闭
     this.isManualClose = false
 
     try {
-      this.ws = new WebSocket(wsUrl)
+      const socket = new WebSocket(wsUrl)
+      this.ws = socket
+      this.token = token
+      const current = () => this.ws === socket && sameJwtAccount(token, GetJwt())
 
       // 连接成功
       this.ws.onopen = () => {
+        if (!current()) return
         // 开始心跳
         this.startHeartbeat()
         // 触发连接成功事件
@@ -44,6 +48,7 @@ class WebSocketClient {
 
       // 处理收到的消息
       this.ws.onmessage = (event) => {
+        if (!current()) return
         try {
           const data = JSON.parse(event.data)
           // 处理收到的消息
@@ -55,6 +60,7 @@ class WebSocketClient {
 
       // 连接错误
       this.ws.onerror = (error) => {
+        if (!current()) return
         // 静默处理
         // 触发连接错误事件
         this.triggerHandler('error', error)
@@ -62,6 +68,7 @@ class WebSocketClient {
 
       // 连接关闭
       this.ws.onclose = () => {
+        if (this.ws !== socket) return
         // 停止心跳
         this.stopHeartbeat()
         // 触发连接关闭事件
@@ -82,15 +89,17 @@ class WebSocketClient {
    * 发送消息
    */
   send(message) {
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN && sameJwtAccount(this.token, GetJwt())) {
       const json = JSON.stringify(message)
-      this.ws.send(json)
-      // 心跳消息不打印日志，避免控制屏
-      if (message.type !== 'HEARTBEAT') {
-        // 静默处理
+      try {
+        this.ws.send(json)
+      } catch {
+        return false
       }
+      // 心跳消息不打印日志，避免控制屏
+      return true
     } else {
-      // 静默处理
+      return false
     }
   }
 
@@ -98,7 +107,7 @@ class WebSocketClient {
    * 发送文本消息
    */
   sendTextMessage(toUserId, content) {
-    this.send({
+    return this.send({
       type: 'SEND_MESSAGE',
       toUserId,
       content,
@@ -110,7 +119,7 @@ class WebSocketClient {
    * 发送图片消息
    */
   sendImageMessage(toUserId, imageUrl) {
-    this.send({
+    return this.send({
       type: 'SEND_MESSAGE',
       toUserId,
       content: '[图片]',
@@ -133,7 +142,7 @@ class WebSocketClient {
    * 标记消息已读
    */
   markAsRead(targetUserId) {
-    this.send({
+    return this.send({
       type: 'READ_MESSAGE',
       targetUserId,
     })
@@ -235,7 +244,11 @@ class WebSocketClient {
     if (this.messageHandlers.has(type)) {
       // 遍历所有订阅者，逐个通知
       this.messageHandlers.get(type).forEach((handler) => {
-        handler(data) // 执行每个订阅者的处理函数
+        try {
+          handler(data)
+        } catch {
+          // 一个页面处理器失败不能阻断其他订阅者。
+        }
       })
     }
   }
@@ -291,9 +304,13 @@ class WebSocketClient {
     if (this.ws) {
       // 先移除事件监听，避免触发 onclose 导致自动重连
       this.ws.onclose = null
+      this.ws.onopen = null
+      this.ws.onmessage = null
+      this.ws.onerror = null
       this.ws.close()
       this.ws = null
     }
+    this.token = null
   }
 
   /**

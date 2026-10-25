@@ -5,6 +5,7 @@ import com.zcx.chenstack.domain.entity.PrivateMessage;
 import com.zcx.chenstack.domain.vo.PageVo;
 import com.zcx.chenstack.domain.vo.PrivateMessageVo;
 
+import java.util.Collection;
 import java.util.List;
 
 /**
@@ -37,4 +38,8 @@ public interface PrivateMessageService extends IService<PrivateMessage> {
      * 获取未读消息数
      */
     Integer getUnreadCount(Integer userId);
+
+    void deliverApprovedMessage(PrivateMessage message);
+
+    void syncImageAuditStatus(Collection<String> imageUrls, Integer examineStatus);
 }

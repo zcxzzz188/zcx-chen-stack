@@ -1,28 +1,36 @@
 package com.zcx.chenstack.service.impl;
 
 import cn.hutool.core.bean.BeanUtil;
+import com.alibaba.fastjson.JSON;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.zcx.chenstack.domain.constants.BlogConstants;
-import com.zcx.chenstack.domain.constants.RedisConstants;
+import com.zcx.chenstack.domain.dto.WebSocketMessage;
 import com.zcx.chenstack.domain.entity.PrivateMessage;
 import com.zcx.chenstack.domain.entity.SysUser;
 import com.zcx.chenstack.domain.enums.ExamineStatusEnum;
+import com.zcx.chenstack.domain.enums.WebSocketMessageTypeEnum;
 import com.zcx.chenstack.domain.vo.PageVo;
 import com.zcx.chenstack.domain.vo.PrivateMessageVo;
 import com.zcx.chenstack.exception.BlogException;
 import com.zcx.chenstack.mapper.PrivateMessageMapper;
 import com.zcx.chenstack.mapper.SysUserMapper;
-import com.zcx.chenstack.utils.RedisUtils;
 import com.zcx.chenstack.service.PrivateMessageService;
+import com.zcx.chenstack.service.ConversationService;
+import com.zcx.chenstack.service.UserSettingsService;
+import com.zcx.chenstack.utils.EmailUtils;
+import com.zcx.chenstack.websocket.WebSocketSessionManager;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
+import org.springframework.web.socket.WebSocketSession;
 
 import java.util.*;
-import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 /**
@@ -40,7 +48,137 @@ public class PrivateMessageServiceImpl extends ServiceImpl<PrivateMessageMapper,
     private SysUserMapper sysUserMapper;
 
     @Resource
-    private RedisUtils redisUtils;
+    private ConversationService conversationService;
+
+    @Resource
+    private WebSocketSessionManager sessionManager;
+
+    @Resource
+    private UserSettingsService userSettingsService;
+
+    @Resource
+    private EmailUtils emailUtils;
+
+    @Override
+    @Transactional
+    public void syncImageAuditStatus(Collection<String> imageUrls, Integer examineStatus) {
+        if (imageUrls == null || imageUrls.isEmpty()
+                || (!ExamineStatusEnum.PASS.getCode().equals(examineStatus)
+                && !ExamineStatusEnum.NO_PASS.getCode().equals(examineStatus))) {
+            return;
+        }
+        boolean approved = ExamineStatusEnum.PASS.getCode().equals(examineStatus);
+        LambdaQueryWrapper<PrivateMessage> query = new LambdaQueryWrapper<PrivateMessage>()
+                .in(PrivateMessage::getImageUrl, imageUrls)
+                .eq(PrivateMessage::getMessageType, 2).eq(PrivateMessage::getIsRevoked, 0);
+        query.and(w -> w.eq(PrivateMessage::getExamineStatus, ExamineStatusEnum.WAIT.getCode())
+                .or().isNull(PrivateMessage::getExamineStatus)
+                .or(!approved).eq(!approved, PrivateMessage::getExamineStatus, ExamineStatusEnum.PASS.getCode()));
+        for (PrivateMessage message : privateMessageMapper.selectList(query)) {
+            LambdaUpdateWrapper<PrivateMessage> update = new LambdaUpdateWrapper<PrivateMessage>()
+                    .eq(PrivateMessage::getId, message.getId())
+                    .eq(PrivateMessage::getIsRevoked, 0)
+                    .and(w -> w.eq(PrivateMessage::getExamineStatus, ExamineStatusEnum.WAIT.getCode())
+                            .or().isNull(PrivateMessage::getExamineStatus)
+                            .or(!approved).eq(!approved, PrivateMessage::getExamineStatus, ExamineStatusEnum.PASS.getCode()))
+                    .set(PrivateMessage::getExamineStatus, examineStatus);
+            // 发送补偿与异步审核竞争同一状态迁移，只有更新成功者投递。
+            if (privateMessageMapper.update(null, update) != 1) {
+                continue;
+            }
+            message.setExamineStatus(examineStatus);
+            if (approved) {
+                deliverApprovedMessage(message);
+            }
+            afterCommit(() -> sendImageAuditReceipt(message));
+        }
+    }
+
+    @Override
+    public void deliverApprovedMessage(PrivateMessage message) {
+        if (!ExamineStatusEnum.PASS.getCode().equals(message.getExamineStatus())
+                || !Integer.valueOf(0).equals(message.getIsRevoked())
+                || Integer.valueOf(1).equals(message.getIsDeleted())) {
+            return;
+        }
+        Integer fromUserId = message.getFromUserId();
+        Integer toUserId = message.getToUserId();
+        conversationService.updateConversation(fromUserId, toUserId, message);
+        SysUser fromUser = sysUserMapper.selectById(fromUserId);
+        SysUser toUser = sysUserMapper.selectById(toUserId);
+        Integer unreadCount = conversationService.getUnreadCount(toUserId, fromUserId);
+        WebSocketMessage push = messageEvent(message, WebSocketMessageTypeEnum.NEW_MESSAGE)
+                .unreadCount(unreadCount).build();
+        if (fromUser != null) {
+            push.setFromUserNickname(fromUser.getNickname());
+            push.setFromUserAvatar(fromUser.getAvatar());
+        }
+        if (toUser != null) {
+            push.setToUserNickname(toUser.getNickname());
+            push.setToUserAvatar(toUser.getAvatar());
+        }
+        afterCommit(() -> {
+            sendToOnlineUser(toUserId, push);
+            sendPrivateMessageEmailNotification(message, fromUser, toUser, unreadCount);
+        });
+    }
+
+    private void sendImageAuditReceipt(PrivateMessage message) {
+        sendToOnlineUser(message.getFromUserId(), messageEvent(message, WebSocketMessageTypeEnum.SEND_SUCCESS)
+                .message(ExamineStatusEnum.PASS.getCode().equals(message.getExamineStatus())
+                        ? "发送成功" : "图片未通过审核").build());
+    }
+
+    private static WebSocketMessage.WebSocketMessageBuilder messageEvent(PrivateMessage message,
+            WebSocketMessageTypeEnum type) {
+        return WebSocketMessage.builder().type(type.getType()).messageId(message.getId())
+                .fromUserId(message.getFromUserId()).toUserId(message.getToUserId())
+                .content(message.getContent()).messageType(message.getMessageType())
+                .imageUrl(message.getImageUrl()).createTime(message.getCreateTime())
+                .code(message.getExamineStatus());
+    }
+
+    private void sendToOnlineUser(Integer userId, WebSocketMessage message) {
+        WebSocketSession session = sessionManager.getSession(userId);
+        if (session != null && session.isOpen()) {
+            sessionManager.sendMessage(userId, JSON.toJSONString(message));
+        }
+    }
+
+    private void sendPrivateMessageEmailNotification(PrivateMessage message, SysUser fromUser,
+            SysUser toUser, Integer unreadCount) {
+        try {
+            if (!Integer.valueOf(1).equals(userSettingsService.getReceivePrivateMessageEmail(message.getToUserId()))
+                    || toUser == null || toUser.getEmail() == null || toUser.getEmail().trim().isEmpty()
+                    || fromUser == null || unreadCount > 1) {
+                return;
+            }
+            String content = Integer.valueOf(2).equals(message.getMessageType()) ? "[图片]" : message.getContent();
+            String preview = content == null ? "" : content.length() > 50 ? content.substring(0, 50) + "..." : content;
+            Map<String, Object> data = new HashMap<>();
+            data.put("senderNickname", fromUser.getNickname());
+            data.put("messagePreview", preview);
+            data.put("receiveTime", message.getCreateTime());
+            data.put("conversationUrl", "线上地址后续补充");
+            emailUtils.sendHtmlMail(toUser.getEmail(), "来自 " + fromUser.getNickname() + " 的新私信",
+                    "private-message-notification", data);
+        } catch (Exception e) {
+            log.error("发送私信邮件通知失败：toUserId={}", message.getToUserId(), e);
+        }
+    }
+
+    private static void afterCommit(Runnable action) {
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    action.run();
+                }
+            });
+        } else {
+            action.run();
+        }
+    }
 
     @Override
     public PageVo<List<PrivateMessageVo>> getChatHistory(Integer userId, Integer targetUserId,
@@ -102,21 +240,7 @@ public class PrivateMessageServiceImpl extends ServiceImpl<PrivateMessageMapper,
 
     @Override
     public void markAsRead(Integer fromUserId, Integer toUserId) {
-        LambdaUpdateWrapper<PrivateMessage> updateWrapper = new LambdaUpdateWrapper<PrivateMessage>()
-                .set(PrivateMessage::getIsRead, 1)
-                .set(PrivateMessage::getReadTime, new Date())
-                .eq(PrivateMessage::getFromUserId, fromUserId)
-                .eq(PrivateMessage::getToUserId, toUserId)
-                .eq(PrivateMessage::getIsRead, 0)
-                .and(w -> w.eq(PrivateMessage::getExamineStatus, ExamineStatusEnum.PASS.getCode())
-                        .or()
-                        .isNull(PrivateMessage::getExamineStatus));
-
-        privateMessageMapper.update(null, updateWrapper);
-
-        // 更新 Redis 未读数
-        String redisKey = RedisConstants.PRIVATE_MESSAGE_UNREAD_COUNT_KEY + toUserId;
-        redisUtils.del(redisKey);
+        conversationService.clearUnreadCount(toUserId, fromUserId);
     }
 
     @Override
@@ -167,15 +291,6 @@ public class PrivateMessageServiceImpl extends ServiceImpl<PrivateMessageMapper,
 
     @Override
     public Integer getUnreadCount(Integer userId) {
-        // 先从 Redis 获取
-        String redisKey = RedisConstants.PRIVATE_MESSAGE_UNREAD_COUNT_KEY + userId;
-        Object cacheObj = redisUtils.get(redisKey);
-
-        if (cacheObj != null) {
-            return (Integer) cacheObj;
-        }
-
-        // Redis 没有，从数据库查询
         LambdaQueryWrapper<PrivateMessage> qw = new LambdaQueryWrapper<PrivateMessage>()
                 .eq(PrivateMessage::getToUserId, userId)
                 .eq(PrivateMessage::getIsRead, 0)
@@ -184,11 +299,6 @@ public class PrivateMessageServiceImpl extends ServiceImpl<PrivateMessageMapper,
                         .or()
                         .isNull(PrivateMessage::getExamineStatus));
 
-        Integer count = Math.toIntExact(privateMessageMapper.selectCount(qw));
-
-        // 缓存到 Redis（30分钟）
-        redisUtils.set(redisKey, count, 30, TimeUnit.MINUTES);
-
-        return count;
+        return Math.toIntExact(privateMessageMapper.selectCount(qw));
     }
 }

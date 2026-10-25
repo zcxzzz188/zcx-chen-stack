@@ -134,10 +134,11 @@ const statistics = computed(() => ({
 
 // 获取会话列表
 const fetchConversationList = async () => {
+  const version = messageStore.getConversationVersion()
   try {
     loading.value = true
     const res = await getConversationList()
-    messageStore.setConversationList(res.data || [])
+    messageStore.setConversationList(res.data || [], version)
   } catch (error) {
     // 静默处理
   } finally {
@@ -204,19 +205,6 @@ const handleMarkAllRead = async () => {
   }
 }
 
-// 新消息处理器（如果会话列表中没有这个用户，重新获取会话列表）
-const handleNewMessage = (data) => {
-  // Header.vue 已经更新了 messageStore,这里不需要再次调用 updateConversation
-  // 只需要检查是否是新会话，如果是则重新获取会话列表
-  const hasConversation = messageStore.conversationList.some(
-    (conv) => conv.targetUserId === data.fromUserId,
-  )
-
-  if (!hasConversation) {
-    fetchConversationList()
-  }
-}
-
 // 处理用户在线状态变化
 const handleUserOnlineStatus = (data) => {
   messageStore.updateUserOnlineStatus(data.userId, data.isOnline)
@@ -236,14 +224,13 @@ const handleTypingNotify = (data) => {
 // 组件挂载
 onMounted(() => {
   // 如果会话列表为空，才主动获取（避免重复获取）
-  // Header.vue 已经在用户登录时获取过一次了
+  // App 的全局私信连接也会在登录和重连时恢复列表。
   if (messageStore.conversationList.length === 0) {
     fetchConversationList()
   }
 
-  // 注意：不要在这里初始化 WebSocket，Header.vue 已经全局初始化了
+  // 连接和新私信事件由 App 管理，此处只订阅页面附加状态。
   // 只需要监听新消息事件，用于检测新会话
-  WebSocketClient.on('NEW_MESSAGE', handleNewMessage)
   WebSocketClient.on('USER_ONLINE_STATUS', handleUserOnlineStatus)
   WebSocketClient.on('TYPING_NOTIFY', handleTypingNotify)
 })
@@ -251,7 +238,6 @@ onMounted(() => {
 // 组件卸载
 onUnmounted(() => {
   // 移除监听器
-  WebSocketClient.off('NEW_MESSAGE', handleNewMessage)
   WebSocketClient.off('USER_ONLINE_STATUS', handleUserOnlineStatus)
   WebSocketClient.off('TYPING_NOTIFY', handleTypingNotify)
 })

@@ -13,13 +13,16 @@
 </template>
 
 <script setup>
-import { ref } from 'vue'
+import { ref, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
 import CustomerServiceFloatButton from '@/components/CustomerService/CustomerServiceFloatButton.vue'
 import CustomerServiceChat from '@/components/CustomerService/CustomerServiceChat.vue'
+import { usePrivateMessageRealtime } from '@/utils/privateMessageRealtime'
 
 const router = useRouter()
 const customerServiceChatRef = ref(null)
+const stopPrivateMessages = usePrivateMessageRealtime()
+onBeforeUnmount(stopPrivateMessages)
 
 // 首屏加载动画：等 Vue Router 完成初始路由解析（包括所有懒加载 chunk 下载）后再移除
 router.isReady().then(() => {

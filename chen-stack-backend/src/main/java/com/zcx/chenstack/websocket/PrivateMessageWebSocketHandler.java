@@ -6,16 +6,12 @@ import com.zcx.chenstack.domain.constants.BlogConstants;
 import com.zcx.chenstack.domain.dto.WebSocketMessage;
 import com.zcx.chenstack.domain.entity.Photo;
 import com.zcx.chenstack.domain.entity.PrivateMessage;
-import com.zcx.chenstack.domain.entity.SysUser;
 import com.zcx.chenstack.domain.enums.ExamineStatusEnum;
 import com.zcx.chenstack.domain.enums.WebSocketMessageTypeEnum;
 import com.zcx.chenstack.domain.result.AuditResult;
 import com.zcx.chenstack.mapper.PhotoMapper;
-import com.zcx.chenstack.mapper.SysUserMapper;
 import com.zcx.chenstack.service.ConversationService;
 import com.zcx.chenstack.service.PrivateMessageService;
-import com.zcx.chenstack.service.UserSettingsService;
-import com.zcx.chenstack.utils.EmailUtils;
 import com.zcx.chenstack.utils.TextAuditUtils;
 import com.zcx.chenstack.utils.XssUtils;
 import jakarta.annotation.Resource;
@@ -27,9 +23,7 @@ import org.springframework.web.socket.WebSocketSession;
 import org.springframework.web.socket.handler.TextWebSocketHandler;
 
 import java.io.IOException;
-import java.util.Date;
-import java.util.HashMap;
-import java.util.Map;
+import java.util.List;
 
 /**
  * WebSocket 消息处理器
@@ -49,16 +43,7 @@ public class PrivateMessageWebSocketHandler extends TextWebSocketHandler {
     private ConversationService conversationService;
 
     @Resource
-    private SysUserMapper sysUserMapper;
-
-    @Resource
     private PhotoMapper photoMapper;
-
-    @Resource
-    private UserSettingsService userSettingsService;
-
-    @Resource
-    private EmailUtils emailUtils;
 
     @Resource
     private TextAuditUtils textAuditUtils;
@@ -145,11 +130,9 @@ public class PrivateMessageWebSocketHandler extends TextWebSocketHandler {
             return;
         }
 
-        // 广播用户下线状态（在移除会话之前广播，确保能正常发送）
-        sessionManager.broadcastUserOnlineStatus(userId, false);
-
-        // 移除用户会话
-        sessionManager.removeSession(userId);
+        if (sessionManager.removeSession(userId, session)) {
+            sessionManager.broadcastUserOnlineStatus(userId, false);
+        }
     }
 
     /**
@@ -176,7 +159,13 @@ public class PrivateMessageWebSocketHandler extends TextWebSocketHandler {
         // XSS 过滤：防止恶意脚本注入
         content = XssUtils.cleanPlainText(content);
 
-        // 文本消息发送前审核，图片消息按图片审核状态决定初始状态
+        if (toUserId == null || toUserId <= 0
+                || (Integer.valueOf(2).equals(messageType) && (imageUrl == null || imageUrl.isBlank()))) {
+            sendMessage(session, WebSocketMessage.error("私信接收者或图片参数无效"));
+            return;
+        }
+
+        // 图片先保存待审核，保存后再次读取审核结果，覆盖审核早于消息入库的情况。
         if (!Integer.valueOf(2).equals(messageType)) {
             if (content == null || content.trim().isEmpty()) {
                 sendMessage(session, WebSocketMessage.error("私信内容不能为空"));
@@ -200,13 +189,6 @@ public class PrivateMessageWebSocketHandler extends TextWebSocketHandler {
                 examineStatus = ExamineStatusEnum.WAIT.getCode();
                 ackMessage = "私信内容需要调整或稍后重试";
             }
-        } else {
-            examineStatus = resolveMessageImageAuditStatus(imageUrl);
-            if (ExamineStatusEnum.PASS.getCode().equals(examineStatus)) {
-                ackMessage = "发送成功";
-            } else if (ExamineStatusEnum.NO_PASS.getCode().equals(examineStatus)) {
-                ackMessage = "图片未通过审核";
-            }
         }
 
         // 1. 保存消息到数据库
@@ -219,62 +201,31 @@ public class PrivateMessageWebSocketHandler extends TextWebSocketHandler {
         privateMessage.setExamineStatus(examineStatus);
         privateMessage.setIsRead(0);
         privateMessage.setIsRevoked(0);
-        privateMessageService.save(privateMessage);
-
-        // 2. 仅审核通过的消息更新会话并推送给接收者
-        if (ExamineStatusEnum.PASS.getCode().equals(examineStatus)) {
-            conversationService.updateConversation(fromUserId, toUserId, privateMessage);
-
-            // 3. 查询用户信息
-            SysUser fromUser = sysUserMapper.selectById(fromUserId);
-            SysUser toUser = sysUserMapper.selectById(toUserId);
-
-            // 4. 推送消息给接收者（如果在线）
-            WebSocketSession toSession = sessionManager.getSession(toUserId);
-            if (toSession != null && toSession.isOpen()) {
-                // 查询接收者与发送者的会话未读数
-                Integer unreadCount = conversationService.getUnreadCount(toUserId, fromUserId);
-
-                WebSocketMessage pushMessage = WebSocketMessage.builder()
-                        .type(WebSocketMessageTypeEnum.NEW_MESSAGE.getType())
-                        .messageId(privateMessage.getId())
-                        .fromUserId(fromUserId)
-                        .toUserId(toUserId)
-                        .content(content)
-                        .messageType(messageType)
-                        .imageUrl(imageUrl)
-                        .createTime(privateMessage.getCreateTime())
-                        .unreadCount(unreadCount)
-                        .code(privateMessage.getExamineStatus())
-                        .build();
-
-                // 添加用户信息
-                if (fromUser != null) {
-                    pushMessage.setFromUserNickname(fromUser.getNickname());
-                    pushMessage.setFromUserAvatar(fromUser.getAvatar());
-                }
-                if (toUser != null) {
-                    pushMessage.setToUserNickname(toUser.getNickname());
-                    pushMessage.setToUserAvatar(toUser.getAvatar());
-                }
-
-                sendMessage(toSession, pushMessage);
-            }
-
-            // 5. 不管接收者是否在线，都检查是否发送邮件通知
-            // 判断条件：1. 接收者开启了邮件通知 2. 接收者绑定了邮箱 3. 这是第一条未读消息
-            sendPrivateMessageEmailNotification(toUserId, fromUser, content, privateMessage.getCreateTime());
+        if (!privateMessageService.save(privateMessage)) {
+            sendMessage(session, WebSocketMessage.error("私信保存失败，请稍后重试"));
+            return;
         }
 
-        // 6. 发送成功回执给发送者，携带审核状态
+        // 回执使用已持久化的身份、ID及内容，前端无需猜测对应的临时消息。
         if (session != null && session.isOpen()) {
             WebSocketMessage ackResponse = WebSocketMessage.builder()
                     .type(WebSocketMessageTypeEnum.SEND_SUCCESS.getType())
                     .messageId(privateMessage.getId())
+                    .fromUserId(fromUserId)
+                    .toUserId(toUserId)
+                    .content(content)
+                    .messageType(messageType)
+                    .imageUrl(imageUrl)
+                    .createTime(privateMessage.getCreateTime())
                     .code(examineStatus)
                     .message(ackMessage)
                     .build();
             sendMessage(session, ackResponse);
+        }
+        if (Integer.valueOf(2).equals(messageType)) {
+            privateMessageService.syncImageAuditStatus(List.of(imageUrl), resolveMessageImageAuditStatus(imageUrl));
+        } else if (ExamineStatusEnum.PASS.getCode().equals(examineStatus)) {
+            privateMessageService.deliverApprovedMessage(privateMessage);
         }
     }
 
@@ -284,10 +235,7 @@ public class PrivateMessageWebSocketHandler extends TextWebSocketHandler {
     private void handleReadMessage(Integer userId, WebSocketMessage wsMessage) {
         Integer targetUserId = wsMessage.getTargetUserId();
 
-        // 批量更新消息为已读
-        privateMessageService.markAsRead(targetUserId, userId);
-
-        // 更新会话未读数
+        // REST 与 WebSocket 共用已读入口，未读数由尚未读的已审消息计算。
         conversationService.clearUnreadCount(userId, targetUserId);
 
         // 通知发送者消息已读
@@ -406,61 +354,14 @@ public class PrivateMessageWebSocketHandler extends TextWebSocketHandler {
     private void sendMessage(WebSocketSession session, Object message) {
         try {
             String json = JSON.toJSONString(message);
-            session.sendMessage(new TextMessage(json));
+            synchronized (session) {
+                if (session.isOpen()) {
+                    session.sendMessage(new TextMessage(json));
+                }
+            }
         } catch (IOException e) {
             log.error("发送 WebSocket 消息失败", e);
         }
     }
 
-    /**
-     * 发送私信邮件通知（不管接收者是否在线，只要满足条件就发送）
-     */
-    private void sendPrivateMessageEmailNotification(Integer toUserId, SysUser fromUser, String content, Date createTime) {
-        try {
-            // 1. 检查接收者是否开启了邮件通知（从 user_settings 表读取）
-            Integer isReceiveEmail = userSettingsService.getReceivePrivateMessageEmail(toUserId);
-            if (isReceiveEmail == null || isReceiveEmail != 1) {
-                return; // 用户未开启邮件通知
-            }
-
-            // 2. 检查接收者是否绑定了邮箱
-            SysUser toUser = sysUserMapper.selectById(toUserId);
-            if (toUser == null || toUser.getEmail() == null || toUser.getEmail().trim().isEmpty()) {
-                return; // 未绑定邮箱
-            }
-
-            // 3. 检查是否是第一条未读消息（未读数从 0 变成 1）
-            Integer fromUserId = fromUser != null ? fromUser.getId() : null;
-            if (fromUserId == null) {
-                return;
-            }
-            Integer unreadCount = conversationService.getUnreadCount(toUserId, fromUserId);
-            if (unreadCount > 1) {
-                return; // 不是第一条未读消息，避免重复发送
-            }
-
-            // 4. 截取私信内容预览（前 50 个字）
-            String contentPreview = content != null && content.length() > 50
-                    ? content.substring(0, 50) + "..."
-                    : (content != null ? content : "");
-
-            // 5. 准备邮件模板数据
-            Map<String, Object> data = new HashMap<>();
-            data.put("senderNickname", fromUser != null ? fromUser.getNickname() : "陌生人");
-            data.put("messagePreview", contentPreview);
-            data.put("receiveTime", createTime);
-            data.put("conversationUrl", "线上地址后续补充");
-
-            // 6. 发送邮件
-            emailUtils.sendHtmlMail(
-                    toUser.getEmail(),
-                    "来自 " + data.get("senderNickname") + " 的新私信",
-                    "private-message-notification",
-                    data
-            );
-
-        } catch (Exception e) {
-            log.error("发送私信邮件通知失败：toUserId={}", toUserId, e);
-        }
-    }
 }

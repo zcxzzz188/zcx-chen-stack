@@ -56,10 +56,13 @@ public class WebSocketSessionManager {
     /**
      * 移除会话
      */
-    public void removeSession(Integer userId) {
-        sessions.remove(userId);
+    public boolean removeSession(Integer userId, WebSocketSession session) {
+        if (!sessions.remove(userId, session)) {
+            return false;
+        }
         // 删除 Redis 在线状态
         redisComponent.removeUserOnlineStatus(userId);
+        return true;
     }
 
     /**
@@ -90,10 +93,14 @@ public class WebSocketSessionManager {
         WebSocketSession session = sessions.get(userId);
 
         // 方案1：用户在线，直接发送（最快）
-        if (session != null && session.isOpen()) {
+        if (session != null) {
             try {
-                session.sendMessage(new TextMessage(message));
-                return;  // 成功，直接返回
+                synchronized (session) {
+                    if (session.isOpen()) {
+                        session.sendMessage(new TextMessage(message));
+                        return;
+                    }
+                }
             } catch (IOException e) {
                 log.warn("直接发送失败，userId: {}, 降级到 RabbitMQ", userId, e);
                 // 发送失败，降级到 RabbitMQ
@@ -149,14 +156,19 @@ public class WebSocketSessionManager {
      */
     public boolean sendToWebSocketDirect(Integer userId, String message) {
         WebSocketSession session = sessions.get(userId);
-        if (session == null || !session.isOpen()) {
+        if (session == null) {
             // 用户不在线，返回 false（不抛异常，避免无意义重试）
             return false;
         }
 
         try {
-            session.sendMessage(new TextMessage(message));
-            return true;
+            synchronized (session) {
+                if (!session.isOpen()) {
+                    return false;
+                }
+                session.sendMessage(new TextMessage(message));
+                return true;
+            }
         } catch (IOException e) {
             // 网络错误等异常，抛出异常触发重试
             log.error("发送 WebSocket 消息失败，userId: {}", userId, e);

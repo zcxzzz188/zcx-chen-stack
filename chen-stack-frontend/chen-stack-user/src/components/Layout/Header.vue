@@ -98,7 +98,6 @@ import {
   Collection,
 } from '@element-plus/icons-vue'
 import { useMessageStore } from '@/stores/messageStore'
-import { getUnreadCount } from '@/api/privateMessage'
 import { getUnreadNotificationCount } from '@/api/notification'
 import WebSocketClient from '@/utils/WebSocketClient'
 
@@ -164,18 +163,6 @@ const handleLoginClick = () => {
   router.push('/login')
 }
 
-// 获取未读消息数
-const fetchUnreadCount = async () => {
-  if (user.value?.id && GetJwt()) {
-    try {
-      const res = await getUnreadCount()
-      messageStore.totalUnreadCount = res.data || 0
-    } catch (error) {
-      // 静默处理
-    }
-  }
-}
-
 // 获取未读通知数量
 const fetchNotificationUnreadCount = async () => {
   if (user.value?.id && GetJwt()) {
@@ -190,83 +177,30 @@ const fetchNotificationUnreadCount = async () => {
   }
 }
 
-// 合并获取未读消息和通知数量，并行请求
-const fetchAllUnreadCounts = async () => {
-  if (!user.value?.id || !GetJwt()) return
-  try {
-    const [unreadRes, notificationRes] = await Promise.all([
-      getUnreadCount(),
-      getUnreadNotificationCount(),
-    ])
-    messageStore.totalUnreadCount = unreadRes.data || 0
-    notificationUnreadCount.value = notificationRes.data?.total || 0
-  } catch (error) {
-    // 静默处理
-  }
-}
-
-// 新消息处理器（定义在组件级别，便于移除）
-const handleNewMessage = (data) => {
-  messageStore.updateConversation(
-    data.fromUserId,
-    {
-      content: data.content,
-      createTime: data.createTime,
-    },
-    data.unreadCount, // 使用后端返回的最新未读数
-    {
-      nickname: data.fromUserNickname,
-      avatar: data.fromUserAvatar,
-    },
-  )
-}
-
-// 消息撤回处理器
-const handleMessageRevoked = (data) => {
-  // 更新会话列表中的最后一条消息
-  messageStore.updateConversationLastMessage(data.fromUserId, data.content || '撤回了一条消息')
-}
-
 // 新通知处理器
 const handleNewNotification = (data) => {
   // 收到新通知时，重新获取准确的未读数量
   fetchNotificationUnreadCount()
 }
 
-// 初始化 WebSocket 连接
-const initWebSocket = () => {
+// 私信连接由 App 管理，此处只订阅系统通知。
+const subscribeNotifications = () => {
   if (!user.value?.id || !GetJwt()) {
     return
   }
 
-  // 如果 WebSocket 未连接，则建立连接
-  if (!WebSocketClient.isConnected()) {
-    WebSocketClient.connect()
-  }
-
-  // 移除旧的监听器(避免重复注册)
-  WebSocketClient.off('NEW_MESSAGE', handleNewMessage)
-  WebSocketClient.off('MESSAGE_REVOKED', handleMessageRevoked)
   WebSocketClient.off('NEW_NOTIFICATION', handleNewNotification)
   // 注册新消息监听器
-  WebSocketClient.on('NEW_MESSAGE', handleNewMessage)
-  WebSocketClient.on('MESSAGE_REVOKED', handleMessageRevoked)
   WebSocketClient.on('NEW_NOTIFICATION', handleNewNotification)
 
-  // 监听 WebSocket 重连,重新注册监听器
+  // 重连后恢复系统通知未读数。
   WebSocketClient.off('open', handleWebSocketOpen)
   WebSocketClient.on('open', handleWebSocketOpen)
 }
 
 // WebSocket 连接成功处理器
 const handleWebSocketOpen = () => {
-  // 重连后重新注册监听器
-  WebSocketClient.off('NEW_MESSAGE', handleNewMessage)
-  WebSocketClient.off('MESSAGE_REVOKED', handleMessageRevoked)
-  WebSocketClient.off('NEW_NOTIFICATION', handleNewNotification)
-  WebSocketClient.on('NEW_MESSAGE', handleNewMessage)
-  WebSocketClient.on('MESSAGE_REVOKED', handleMessageRevoked)
-  WebSocketClient.on('NEW_NOTIFICATION', handleNewNotification)
+  fetchNotificationUnreadCount()
 }
 
 const getUserInfo = async () => {
@@ -338,20 +272,15 @@ const handleScroll = () => {
   lastScrollY.value = currentScrollY
 }
 
-// 监听用户登录状态变化，自动初始化 WebSocket
+// 监听用户登录状态变化，订阅系统通知。
 watch(
   () => user.value,
   (newUser) => {
     if (newUser?.id && GetJwt()) {
-      // 用户已登录，立即初始化 WebSocket，使用合并的请求
-      fetchAllUnreadCounts()
-      initWebSocket()
+      fetchNotificationUnreadCount()
+      subscribeNotifications()
     } else {
-      // 用户已登出，关闭 WebSocket
-      WebSocketClient.close()
       // 移除监听器
-      WebSocketClient.off('NEW_MESSAGE', handleNewMessage)
-      WebSocketClient.off('MESSAGE_REVOKED', handleMessageRevoked)
       WebSocketClient.off('NEW_NOTIFICATION', handleNewNotification)
       WebSocketClient.off('open', handleWebSocketOpen)
       // 重置未读数量
@@ -384,8 +313,6 @@ onBeforeUnmount(() => {
   window.removeEventListener('scroll', handleScroll)
   window.removeEventListener('notification-read', handleNotificationRead)
   // 移除 WebSocket 监听器
-  WebSocketClient.off('NEW_MESSAGE', handleNewMessage)
-  WebSocketClient.off('MESSAGE_REVOKED', handleMessageRevoked)
   WebSocketClient.off('NEW_NOTIFICATION', handleNewNotification)
   WebSocketClient.off('open', handleWebSocketOpen)
 })

@@ -21,14 +21,33 @@ export const useMessageStore = defineStore(
 
     // 各会话的输入状态 Map<userId, boolean>
     const conversationTypingMap = ref({})
+    const receivedMessageIds = new Set()
+    const conversationChanges = new Map()
+    let conversationVersion = 0
+
+    const changedConversation = (userId) => {
+      conversationChanges.set(Number(userId), ++conversationVersion)
+    }
+
+    const getConversationVersion = () => conversationVersion
 
     /**
      * 设置会话列表
      */
-    const setConversationList = (list) => {
-      conversationList.value = list
+    const setConversationList = (list, requestedVersion) => {
+      if (requestedVersion !== undefined) {
+        const changed = (id) => (conversationChanges.get(Number(id)) || 0) > requestedVersion
+        list = [
+          ...conversationList.value.filter((conv) => changed(conv.targetUserId)),
+          ...list.filter((conv) => !changed(conv.targetUserId)),
+        ]
+      }
+      conversationList.value = list.map((conv) => ({
+        ...conv,
+        unreadCount: conv.targetUserId === currentChatUserId.value ? 0 : Number(conv.unreadCount) || 0,
+      }))
       // 计算总未读数
-      totalUnreadCount.value = list.reduce((sum, conv) => sum + conv.unreadCount, 0)
+      totalUnreadCount.value = conversationList.value.reduce((sum, conv) => sum + conv.unreadCount, 0)
     }
 
     /**
@@ -39,6 +58,8 @@ export const useMessageStore = defineStore(
      * @param userInfo - 可选，用户信息（昵称、头像等）
      */
     const updateConversation = (userId, message, unreadCount, userInfo) => {
+      changedConversation(userId)
+      if (currentChatUserId.value === userId) unreadCount = 0
       const index = conversationList.value.findIndex((conv) => conv.targetUserId === userId)
 
       if (index !== -1) {
@@ -103,6 +124,7 @@ export const useMessageStore = defineStore(
      * 清空某个会话的未读数
      */
     const clearConversationUnread = (userId) => {
+      changedConversation(userId)
       const conv = conversationList.value.find((c) => c.targetUserId === userId)
       if (conv && conv.unreadCount > 0) {
         totalUnreadCount.value -= conv.unreadCount
@@ -114,6 +136,7 @@ export const useMessageStore = defineStore(
      * 设置当前聊天用户
      */
     const setCurrentChatUser = (userId) => {
+      if (currentChatUserId.value !== userId) currentChatMessages.value = []
       currentChatUserId.value = userId
       clearConversationUnread(userId)
     }
@@ -122,14 +145,52 @@ export const useMessageStore = defineStore(
      * 添加消息到当前聊天窗口
      */
     const addMessageToCurrentChat = (message) => {
-      currentChatMessages.value.push(message)
+      const existing = currentChatMessages.value.find((item) => item.id === message.id)
+      if (existing) {
+        const status = existing.examineStatus
+        Object.assign(existing, message)
+        if ((status === 1 || status === 2) && message.examineStatus === 0) existing.examineStatus = status
+      } else {
+        currentChatMessages.value.push(message)
+      }
+      currentChatMessages.value.sort((a, b) => new Date(a.createTime) - new Date(b.createTime) || a.id - b.id)
     }
 
     /**
      * 设置当前聊天消息列表
      */
     const setCurrentChatMessages = (messages) => {
-      currentChatMessages.value = messages
+      currentChatMessages.value = []
+      messages.forEach(addMessageToCurrentChat)
+    }
+
+    // 同一持久化消息可能经重连、历史查询和实时通道到达，只计一次未读。
+    const receiveMessage = (data, ownerId) => {
+      const id = data.messageId || data.id
+      if (!Number.isSafeInteger(id) || id <= 0 || data.toUserId !== ownerId) return false
+      if (data.code !== undefined && data.code !== 1) return false
+      if (receivedMessageIds.has(id)) return false
+      receivedMessageIds.add(id)
+      const message = { ...data, id, examineStatus: data.code ?? data.examineStatus }
+      updateConversation(data.fromUserId, message, data.unreadCount, {
+        nickname: data.fromUserNickname,
+        avatar: data.fromUserAvatar,
+      })
+      if (currentChatUserId.value === data.fromUserId) addMessageToCurrentChat(message)
+      return true
+    }
+
+    const acknowledgeMessage = (data, ownerId) => {
+      const id = data.messageId || data.id
+      if (!Number.isSafeInteger(id) || id <= 0 || data.fromUserId !== ownerId) return
+      const message = { ...data, id, examineStatus: data.code }
+      if (currentChatUserId.value === data.toUserId) addMessageToCurrentChat(message)
+      if (data.code === 1) {
+        updateConversation(data.toUserId, message, 0, {
+          nickname: data.toUserNickname,
+          avatar: data.toUserAvatar,
+        })
+      }
     }
 
     /**
@@ -146,6 +207,7 @@ export const useMessageStore = defineStore(
      * 删除会话
      */
     const removeConversation = (userId) => {
+      changedConversation(userId)
       const index = conversationList.value.findIndex((conv) => conv.targetUserId === userId)
       if (index !== -1) {
         const conv = conversationList.value[index]
@@ -182,6 +244,10 @@ export const useMessageStore = defineStore(
       totalUnreadCount.value = 0
       currentChatUserId.value = null
       currentChatMessages.value = []
+      receivedMessageIds.clear()
+      conversationChanges.clear()
+      conversationVersion = 0
+      clearAllTyping()
     }
 
     /**
@@ -218,11 +284,14 @@ export const useMessageStore = defineStore(
       targetUserTyping,
       conversationTypingMap,
       setConversationList,
+      getConversationVersion,
       updateConversation,
       clearConversationUnread,
       setCurrentChatUser,
       addMessageToCurrentChat,
       setCurrentChatMessages,
+      receiveMessage,
+      acknowledgeMessage,
       revokeMessageInCurrentChat,
       removeConversation,
       updateUserOnlineStatus,
