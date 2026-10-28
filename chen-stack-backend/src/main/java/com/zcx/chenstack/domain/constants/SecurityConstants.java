@@ -57,6 +57,8 @@ public class SecurityConstants {
             "/tag/list",
 
             // 其他
+            "/wiki/pages",
+            "/wiki/pages/{id:\\d+}",
             "/favicon.ico",
 
             // 私信

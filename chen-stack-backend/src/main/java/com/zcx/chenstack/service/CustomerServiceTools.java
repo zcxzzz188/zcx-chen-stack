@@ -7,6 +7,7 @@ import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
 
 
+import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.function.Consumer;
@@ -73,6 +74,10 @@ public final class CustomerServiceTools {
     }
     public void knowledgeStatus(String status) {
         pending.add(CustomerServiceEvent.state("KNOWLEDGE_STATUS", null, null, status));
+    }
+
+    public void knowledgeSources(List<CustomerServiceEvent.KnowledgeSource> sources) {
+        if (!sources.isEmpty()) pending.add(CustomerServiceEvent.knowledgeSources(List.copyOf(sources)));
     }
 
     public void knowledgeUnavailable() {

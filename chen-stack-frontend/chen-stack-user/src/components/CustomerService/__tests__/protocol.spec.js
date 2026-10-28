@@ -4,6 +4,13 @@ import { createCustomerServiceDecoder, navigationTarget, validateCustomerService
 const frame = event => `data: ${JSON.stringify(event)}\r\n\r\n`
 
 describe('客服协议与动作边界', () => {
+  it('只接受由服务端返回的站内文章来源地址', () => {
+    const source = { type: 'KNOWLEDGE_SOURCES', sources: [{ title: '公开文章', url: '/user/7/article/1', version: 'v1' }] }
+    expect(validateCustomerServiceEvent(source)).toEqual(source)
+    for (const url of ['https://example.com', '//example.com', '/admin/wiki', 'javascript:alert(1)', '/user/0/article/1']) {
+      expect(() => validateCustomerServiceEvent({ ...source, sources: [{ ...source.sources[0], url }] })).toThrow()
+    }
+  })
   it('逐字节 UTF-8 分块后仍解析完整文本和 DONE', () => {
     const events = []
     const protocol = createCustomerServiceDecoder(event => events.push(event))

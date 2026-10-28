@@ -1,6 +1,6 @@
 package com.zcx.chenstack.service;
 
-import com.baomidou.mybatisplus.extension.service.IService;
+import com.baomidou.mybatisplus.spring.service.IService;
 import com.zcx.chenstack.domain.dto.SysPermissionDto;
 import com.zcx.chenstack.domain.entity.SysPermission;
 import com.zcx.chenstack.domain.vo.PageVo;

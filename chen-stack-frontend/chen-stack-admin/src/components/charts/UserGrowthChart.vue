@@ -89,7 +89,7 @@ const renderChart = () => {
         },
       ],
     })
-    .interaction([{ type: 'element-active' }])
+    .interaction({ elementHighlight: true })
 
   chartInstance.render()
 }

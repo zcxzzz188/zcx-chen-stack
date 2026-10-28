@@ -331,4 +331,60 @@ class ReleaseProviderBudgetTest {
             assertEquals(2, received.get()); assertEquals(2L, budget.snapshot().get("chat"));
         } finally { server.stop(0); }
     }
+    @Test void actualSdkCancellationClosesStreamingConnectionWithoutAnotherAttempt() throws Exception {
+        var budget = budget(0, 1);
+        AtomicInteger received = new AtomicInteger();
+        CountDownLatch disconnected = new CountDownLatch(1);
+        HttpServer server = HttpServer.create(new java.net.InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/chat/completions", exchange -> {
+            received.incrementAndGet(); exchange.getRequestBody().readAllBytes();
+            exchange.getResponseHeaders().set("Content-Type", "text/event-stream"); exchange.sendResponseHeaders(200, 0);
+            try {
+                exchange.getResponseBody().write(("data: {\"id\":\"cancel\",\"object\":\"chat.completion.chunk\",\"created\":1,"
+                        + "\"model\":\"fixture\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"first\"},\"finish_reason\":null}]}\n\n")
+                        .getBytes(StandardCharsets.UTF_8));
+                exchange.getResponseBody().flush();
+                for (int i = 0; i < 100; i++) {
+                    Thread.sleep(30); exchange.getResponseBody().write(": waiting\n\n".getBytes(StandardCharsets.UTF_8));
+                    exchange.getResponseBody().flush();
+                }
+            } catch (java.io.IOException closed) { disconnected.countDown(); }
+            catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); }
+            finally { exchange.close(); }
+        });
+        server.start();
+        try {
+            var model = sdkFixture(server, budget);
+            assertNotNull(model.stream(new org.springframework.ai.chat.prompt.Prompt("cancel fixture"))
+                    .take(1).blockLast(Duration.ofSeconds(8)));
+            assertTrue(disconnected.await(5, java.util.concurrent.TimeUnit.SECONDS), "SDK cancellation must close the transport");
+            assertEquals(1, received.get()); assertEquals(1L, budget.snapshot().get("chat"));
+        } finally { server.stop(0); }
+    }
+
+    @Test void actualSdkDoesNotFollowRedirectsOrSpendAnUnrecordedAttempt() throws Exception {
+        var budget = budget(0, 2);
+        AtomicInteger received = new AtomicInteger(); AtomicInteger redirected = new AtomicInteger();
+        HttpServer server = HttpServer.create(new java.net.InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/chat/completions", exchange -> {
+            received.incrementAndGet(); exchange.getRequestBody().readAllBytes();
+            exchange.getResponseHeaders().set("Location", "/redirected"); exchange.sendResponseHeaders(307, -1); exchange.close();
+        });
+        server.createContext("/redirected", exchange -> { redirected.incrementAndGet(); exchange.sendResponseHeaders(503, -1); exchange.close(); });
+        server.start();
+        try {
+            assertThrows(RuntimeException.class, () -> sdkFixture(server, budget).call("redirect fixture"));
+            assertEquals(1, received.get()); assertEquals(0, redirected.get()); assertEquals(1L, budget.snapshot().get("chat"));
+        } finally { server.stop(0); }
+    }
+
+    private org.springframework.ai.openai.OpenAiChatModel sdkFixture(HttpServer server, ReleaseProviderBudget budget) {
+        AiConfig config = new AiConfig();
+        ReflectionTestUtils.setField(config, "apiKey", "fixture-only");
+        ReflectionTestUtils.setField(config, "baseUrl", "http://127.0.0.1:" + server.getAddress().getPort());
+        ReflectionTestUtils.setField(config, "completionsPath", "/chat/completions");
+        ReflectionTestUtils.setField(config, "model", "fixture"); ReflectionTestUtils.setField(config, "temperature", 0.0);
+        ReflectionTestUtils.setField(config, "maxTokens", 16);
+        return config.openAiChatModel(budget);
+    }
 }

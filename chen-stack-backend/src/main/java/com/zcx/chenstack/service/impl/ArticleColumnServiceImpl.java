@@ -1,6 +1,6 @@
 package com.zcx.chenstack.service.impl;
 
-import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import com.baomidou.mybatisplus.spring.service.impl.ServiceImpl;
 import com.zcx.chenstack.domain.entity.ArticleColumn;
 import com.zcx.chenstack.mapper.ArticleColumnMapper;
 import com.zcx.chenstack.service.ArticleColumnService;

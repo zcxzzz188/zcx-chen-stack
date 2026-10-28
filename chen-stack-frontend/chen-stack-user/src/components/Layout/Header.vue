@@ -20,6 +20,10 @@
       <el-icon><Message /></el-icon>
       <span class="menu-text">文章</span>
     </el-menu-item>
+    <el-menu-item v-if="wikiPortalEnabled" index="/wiki" class="menu-item wiki-menu-item" aria-label="知识 Wiki">
+      <el-icon><Collection /></el-icon>
+      <span class="menu-text">Wiki</span>
+    </el-menu-item>
     <el-menu-item index="/creation" class="menu-item">
       <el-icon><MagicStick /></el-icon>
       <span class="menu-text">创作中心</span>
@@ -87,6 +91,7 @@ import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { GetJwt } from '@/utils/Auth'
 import { info } from '@/api/user'
+import { isWikiPortalEnabled } from '@/utils/wikiPortal'
 import {
   UserFilled,
   User,
@@ -110,13 +115,14 @@ const router = useRouter()
 
 // 当前激活的菜单索引
 const activeIndex = ref('/')
+const wikiPortalEnabled = ref(false)
 
 // 通知未读数量
 const notificationUnreadCount = ref(0)
 
 // 监听路由变化，更新激活的菜单
 router.afterEach((to) => {
-  activeIndex.value = to.path
+  activeIndex.value = to.path.startsWith('/wiki') ? '/wiki' : to.path
 })
 
 // 处理菜单选择事件
@@ -298,6 +304,7 @@ const handleNotificationRead = () => {
 
 // 组件挂载时添加监听滚动事件
 onMounted(() => {
+  isWikiPortalEnabled().then(enabled => { wikiPortalEnabled.value = enabled })
   window.addEventListener('scroll', handleScroll)
   window.addEventListener('notification-read', handleNotificationRead)
   // 只在有登录凭据时恢复身份，空对象不代表已登录。
@@ -683,6 +690,11 @@ onBeforeUnmount(() => {
     padding: 0 12px 0 12px;
     .menu-item {
       display: none; // 隐藏PC端菜单
+    }
+    .wiki-menu-item {
+      display: flex;
+      padding: 0 10px;
+      .menu-text { display: inline; }
     }
     .logo {
       display: none; // 手机端隐藏 logo

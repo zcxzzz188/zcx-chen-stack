@@ -4,6 +4,7 @@ import { getMenuList } from '@/api/menu'
 import { info } from '@/api/user'
 import { RemoveJwt } from '@/utils/Auth'
 import { formatMenu } from '@/utils/Menu'
+import { wikiApi } from '@/api/wiki'
 
 const modules = {}
 // 导入视图组件
@@ -17,10 +18,18 @@ export const useUserStore = defineStore('user', () => {
   const routes = ref([])
   const menusLoaded = ref(false) // 用于跟踪菜单是否已加载
   const routesAdded = ref(false) // 用于跟踪动态路由是否已添加到路由器
+  const wikiAccess = ref(false)
 
   // 设置用户信息
   const setUser = (userInfo) => {
     user.value = userInfo
+    wikiAccess.value = false
+  }
+
+  const checkWikiAccess = async () => {
+    try { wikiAccess.value = (await wikiApi.access()).data === true }
+    catch { wikiAccess.value = false }
+    return wikiAccess.value
   }
 
   // 获取用户信息
@@ -39,6 +48,7 @@ export const useUserStore = defineStore('user', () => {
     routes.value = []
     menusLoaded.value = false // 清除菜单已加载标志
     routesAdded.value = false // 清除路由已添加标志
+    wikiAccess.value = false
   }
 
   // 生成路由的函数
@@ -100,5 +110,7 @@ export const useUserStore = defineStore('user', () => {
     clearUser,
     loadMenusAndRoutes,
     getUserInfo,
+    wikiAccess,
+    checkWikiAccess,
   }
 })

@@ -14,6 +14,7 @@ import java.nio.file.StandardOpenOption;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
+import java.time.Duration;
 import java.time.format.DateTimeParseException;
 import java.util.HexFormat;
 import java.util.Map;
@@ -45,6 +46,23 @@ public final class ReleaseProviderBudget {
     }
 
     public boolean configured() { return path != null; }
+
+    /** SDK 的同步与流式发送共用门禁；禁止底层重发和跨地址重定向。 */
+    public com.openai.core.http.HttpClient httpClient(Kind kind, Duration timeout, String endpoint) {
+        return new com.openai.client.okhttp.OkHttpClient(httpTransport(kind, timeout, endpoint));
+    }
+
+    /** 独立调用可在同一安全 transport 上附加来源门禁和取消；不共享 G2 的账本实例。 */
+    public okhttp3.OkHttpClient httpTransport(Kind kind, Duration timeout, String endpoint) {
+        var url = okhttp3.HttpUrl.get(endpoint);
+        return new okhttp3.OkHttpClient.Builder().connectTimeout(timeout).readTimeout(timeout).callTimeout(timeout)
+                .retryOnConnectionFailure(false).followRedirects(false).followSslRedirects(false)
+                .addInterceptor(chain -> {
+                    try { reserve(kind); }
+                    catch (SecurityException denied) { throw new IOException("RELEASE_PROVIDER_SEND_BLOCKED", denied); }
+                    return chain.proceed(chain.request().newBuilder().url(url).build());
+                }).build();
+    }
 
     public ClientHttpRequestInterceptor restInterceptor(Kind kind) {
         return (request, body, execution) -> { reserve(kind); return execution.execute(request, body); };

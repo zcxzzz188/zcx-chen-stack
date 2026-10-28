@@ -1,0 +1,167 @@
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test'
+import { mount, flushPromises } from '@vue/test-utils'
+import ElementPlus from 'element-plus'
+import Wiki from '@/views/wiki/index.vue'
+import { wikiApi } from '@/api/wiki'
+
+vi.mock('@/api/wiki', () => ({ wikiApi: Object.fromEntries(['access', 'sources', 'inspect', 'authorize', 'revoke', 'jobs', 'compile', 'cancel', 'draft', 'affected', 'pages', 'versions', 'revision', 'submit', 'approve', 'publish', 'withdraw', 'restore'].map((key) => [key, vi.fn()])) }))
+const source = { type: 'ARTICLE', id: '7', title: 'Redis 缓存说明', text: '缓存 TTL 为 60 秒', fingerprint: 'a'.repeat(64), originVersion: 'v1', parserVersion: 'p1', active: false }
+const job = { requestId: 'synthetic-wiki-1', state: 'DRAFT_READY', maxCalls: 32, usedCalls: 2, maxUnits: 500000, usedUnits: 800, createdAt: '2026-10-26' }
+let wrapper
+beforeEach(() => {
+  vi.clearAllMocks()
+  wikiApi.sources.mockResolvedValue({ data: { items: [source], total: 1 } })
+  wikiApi.jobs.mockResolvedValue({ data: { items: [], total: 0 } })
+  wikiApi.pages.mockResolvedValue({ data: [] })
+  wikiApi.inspect.mockResolvedValue({ data: source })
+  wikiApi.authorize.mockResolvedValue({ data: { ...source, active: true, snapshotId: 10, generation: 1 } })
+})
+afterEach(() => { wrapper?.unmount(); document.body.innerHTML = '' })
+async function open() { wrapper = mount(Wiki, { attachTo: document.body, global: { plugins: [ElementPlus] } }); await flushPromises(); return wrapper }
+function button(text) { return wrapper.findAll('button').find((item) => item.text() === text) }
+function dialogButton(text) { return [...document.body.querySelectorAll('button')].find((item) => item.textContent.trim() === text) }
+
+describe('Wiki 管理端（合成 API 数据）', () => {
+  it('显示空任务、空页面状态，并不自动授权任何来源', async () => {
+    await open()
+    expect(wrapper.text()).toContain('Redis 缓存说明')
+    expect(wrapper.text()).toContain('暂无编译任务')
+    expect(wrapper.text()).toContain('暂无 Wiki 页面')
+    expect(wikiApi.authorize).not.toHaveBeenCalled()
+  })
+  it('已保留发布指针但来源失效时显示重新编译核查', async () => {
+    wikiApi.pages.mockResolvedValue({ data: [{ id: 2, title: '失效知识', currentVersion: 1, withdrawn: false, publicEligible: false }] })
+    await open()
+    expect(wrapper.text()).toContain('来源或版本失效，需重编译核查')
+  })
+  it('检查来源后必须主动勾选，授权绑定精确 fingerprint', async () => {
+    await open()
+    await button('检查并授权').trigger('click'); await flushPromises()
+    const authorizeButton = dialogButton('授权此精确版本')
+    expect(authorizeButton.disabled).toBe(true)
+    const checkbox = document.body.querySelector('.el-dialog input[type="checkbox"]')
+    checkbox.click(); await flushPromises()
+    authorizeButton.click(); await flushPromises()
+    expect(wikiApi.authorize).toHaveBeenCalledWith({ type: 'ARTICLE', id: '7', fingerprint: 'a'.repeat(64) })
+    expect(wikiApi.compile).not.toHaveBeenCalled()
+  })
+  it('DRAFT_READY 等终态任务的取消按钮禁用', async () => {
+    wikiApi.jobs.mockResolvedValue({ data: { items: [job], total: 1 } })
+    await open()
+    expect(button('取消').attributes('disabled')).toBeDefined()
+    expect(button('预览草稿').attributes('disabled')).toBeUndefined()
+    expect(wrapper.text()).toContain('调用 2 / 32')
+    expect(wikiApi.cancel).not.toHaveBeenCalled()
+  })
+  it('排队任务说明预览不可用，可以取消并显示后端更新后的状态', async () => {
+    wikiApi.jobs.mockResolvedValue({ data: { items: [{ ...job, state: 'QUEUED' }], total: 1 } })
+    wikiApi.cancel.mockResolvedValue({ data: null })
+    await open()
+    expect(wrapper.text()).toContain('等待编译')
+    expect(wrapper.text()).toContain('草稿尚未生成，暂不能预览；可取消任务')
+    expect(button('预览草稿').attributes('disabled')).toBeDefined()
+    expect(button('取消').attributes('disabled')).toBeUndefined()
+    wikiApi.jobs.mockResolvedValue({ data: { items: [{ ...job, state: 'CANCELLED' }], total: 1 } })
+    await button('取消').trigger('click'); await flushPromises()
+    expect(wikiApi.cancel).toHaveBeenCalledExactlyOnceWith(job.requestId)
+    expect(wrapper.text()).toContain('已取消')
+    expect(button('取消').attributes('disabled')).toBeDefined()
+  })
+  it('主题不匹配时以中文说明失败原因并保留原始代码', async () => {
+    wikiApi.jobs.mockResolvedValue({ data: { items: [{ ...job, state: 'FAILED', firstStop: 'WIKI_TOPIC_SET_INVALID' }], total: 1 } })
+    await open()
+    expect(wrapper.text()).toContain('所选来源未生成指定主题，请调整主题或重新选择来源。')
+    const detail = wrapper.findAll('details').find(item => item.text().includes('WIKI_TOPIC_SET_INVALID'))
+    expect(detail.element.open).toBe(false)
+    expect(button('预览草稿').attributes('disabled')).toBeDefined()
+    expect(button('取消').attributes('disabled')).toBeDefined()
+  })
+  it('草稿以可读引用展示，原始审计正文保留在技术详情中', async () => {
+    const markdown = '# Wiki 编译草稿\n\n状态：DRAFT · SEMANTIC_NOT_VERIFIED\n\n任务：task-secret-details\n\n## 缓存\n\n### 关键事实与证据\n\n- TTL: 60 秒 [SEMANTIC_NOT_VERIFIED] [f1]\n  - snapshot=7 source=ARTICLE:7 selector=utf16:0-5 quote=“TTL为60秒”\n\n任务：正文中的合法内容'
+    wikiApi.jobs.mockResolvedValue({ data: { items: [job], total: 1 } })
+    wikiApi.draft.mockResolvedValue({ data: { requestId: job.requestId, markdown, sources: [{ ...source, snapshotId: 7 }], topics: ['缓存'], conflicts: [] } })
+    await open(); await button('预览草稿').trigger('click'); await flushPromises()
+    const dialog = [...document.body.querySelectorAll('.el-dialog')].find(item => item.textContent.includes('草稿预览与人工核查'))
+    expect(dialog.textContent).toContain('引用 1 处')
+    const preview = dialog.querySelector('.draft-preview')
+    expect(preview.textContent).toContain('引用（Redis 缓存说明）：“TTL为60秒”')
+    expect(preview.textContent).toContain('任务：正文中的合法内容')
+    expect(preview.textContent).not.toContain('snapshot=7')
+    const technical = [...dialog.querySelectorAll('details')].find(item => item.querySelector('pre')?.textContent === markdown)
+    expect(technical).toBeTruthy()
+    expect(technical.open).toBe(false)
+  })
+  it('预览请求失败时显示可读提示并保留原始原因', async () => {
+    wikiApi.jobs.mockResolvedValue({ data: { items: [job], total: 1 } })
+    wikiApi.draft.mockRejectedValue({ response: { data: { msg: 'WIKI_DRAFT_UNAVAILABLE' } } })
+    await open(); await button('预览草稿').trigger('click'); await flushPromises()
+    const alert = wrapper.get('[role="alert"]')
+    expect(alert.text()).toContain('操作未完成')
+    expect(alert.text()).toContain('WIKI_DRAFT_UNAVAILABLE')
+    expect(alert.find('details').element.open).toBe(false)
+  })
+  it('草稿展示来源、冲突和语义核查边界，拒绝执行不可信 HTML', async () => {
+    wikiApi.jobs.mockResolvedValue({ data: { items: [job], total: 1 } })
+    wikiApi.draft.mockResolvedValue({ data: { requestId: job.requestId, markdown: '# 缓存\n\n<script>window.pwned=true</script>\n\n![x](https://evil.example/x)', bodyHash: 'b'.repeat(64), manifestHash: 'c'.repeat(64), compilerVersion: 'synthetic-v1', sources: [{ ...source, generation: 1 }], topics: ['缓存'], conflicts: ['TTL: 60 / 120'] } })
+    await open(); await button('预览草稿').trigger('click'); await flushPromises()
+    expect(document.body.textContent).toContain('SEMANTIC_NOT_VERIFIED')
+    expect(document.body.querySelector('.el-dialog .el-alert__title').textContent).toContain('草稿需人工核查')
+    expect(document.body.querySelector('.el-dialog .el-alert__title').textContent).not.toContain('SEMANTIC_NOT_VERIFIED')
+    expect(document.body.textContent).toContain('TTL: 60 / 120')
+    expect(document.body.textContent).toContain('Redis 缓存说明')
+    expect(document.body.querySelector('.draft-preview script,.draft-preview img')).toBeNull()
+    expect(wikiApi.revision).not.toHaveBeenCalled()
+  })
+  it('后端拒绝或未配置时显示错误并结束加载', async () => {
+    wikiApi.sources.mockRejectedValue({ response: { data: { msg: 'WIKI_NOT_CONFIGURED' } } })
+    await open()
+    expect(wrapper.get('[role="alert"]').text()).toContain('WIKI_NOT_CONFIGURED')
+    expect(wrapper.find('.is-loading').exists()).toBe(false)
+  })
+  it('审核通过前必须重新检查此版本的来源和冲突', async () => {
+    wikiApi.pages.mockResolvedValue({ data: [{ id: 2, title: '缓存知识', currentVersion: null, withdrawn: false }] })
+    wikiApi.versions.mockResolvedValue({ data: [{ id: 21, pageId: 2, version: 1, requestId: job.requestId, title: '缓存知识', summary: '缓存配置', state: 'IN_REVIEW', markdown: '# 缓存', bodyHash: 'd'.repeat(64), manifestHash: 'e'.repeat(64), current: false }] })
+    wikiApi.draft.mockResolvedValue({ data: { requestId: job.requestId, markdown: '# 来源证据', bodyHash: 'f'.repeat(64), manifestHash: 'e'.repeat(64), sources: [source], topics: ['缓存'], conflicts: [] } })
+    wikiApi.approve.mockResolvedValue({ data: {} })
+    await open(); await button('审核与历史版本').trigger('click'); await flushPromises()
+    const approveButton = dialogButton('审核通过')
+    expect(approveButton.disabled).toBe(true)
+    dialogButton('重新检查此版本的来源与编译冲突').click(); await flushPromises()
+    const reviewDialog = [...document.body.querySelectorAll('.el-dialog')].find((item) => item.textContent.includes('人工审核与版本历史'))
+    const checkboxes = reviewDialog.querySelectorAll('input[type="checkbox"]')
+    expect(reviewDialog.textContent).toContain('已检查并处理冲突、欠证和待人工核查内容')
+    checkboxes[0].click(); checkboxes[1].click(); await flushPromises()
+    expect(approveButton.disabled).toBe(false)
+    approveButton.click(); await flushPromises()
+    expect(wikiApi.approve).toHaveBeenCalledWith(21, { bodyHash: 'd'.repeat(64), confirmEvidence: true, confirmConflicts: true })
+  })
+  it('正式发布携带当前指针版本，过时审批不能通过 UI 自动改写重试', async () => {
+    wikiApi.pages.mockResolvedValue({ data: [{ id: 2, title: '缓存知识', currentVersion: 3, withdrawn: false }] })
+    wikiApi.versions.mockResolvedValue({ data: [{ id: 24, pageId: 2, version: 4, requestId: job.requestId, title: '缓存知识', state: 'APPROVED', markdown: '# 缓存', bodyHash: 'd'.repeat(64), manifestHash: 'e'.repeat(64), current: false }] })
+    wikiApi.publish.mockRejectedValue({ response: { data: { msg: 'WIKI_CURRENT_VERSION_CONFLICT' } } })
+    await open(); await button('审核与历史版本').trigger('click'); await flushPromises()
+    dialogButton('正式发布').click(); await flushPromises()
+    expect(wikiApi.publish).toHaveBeenCalledExactlyOnceWith(24, { bodyHash: 'd'.repeat(64), expectedCurrentVersion: 3 })
+    expect(wrapper.get('[role="alert"]').text()).toContain('WIKI_CURRENT_VERSION_CONFLICT')
+  })
+  it('撤回后保留的当前历史版本仍允许受控恢复', async () => {
+    wikiApi.pages.mockResolvedValue({ data: [{ id: 2, title: '缓存知识', currentVersion: 1, withdrawn: true }] })
+    wikiApi.versions.mockResolvedValue({ data: [{ id: 21, pageId: 2, version: 1, requestId: job.requestId, title: '缓存知识', state: 'PUBLISHED', markdown: '# 缓存', bodyHash: 'd'.repeat(64), manifestHash: 'e'.repeat(64), current: true }] })
+    await open(); await button('审核与历史版本').trigger('click'); await flushPromises()
+    expect(dialogButton('恢复此历史版本').disabled).toBe(false)
+  })
+  it('提交审核刷新完成前不能打开证据预览', async () => {
+    const version = { id: 21, pageId: 2, version: 1, requestId: job.requestId, title: '缓存知识', state: 'DRAFT', markdown: '# 缓存', bodyHash: 'd'.repeat(64), manifestHash: 'e'.repeat(64), current: false }
+    wikiApi.pages.mockResolvedValue({ data: [{ id: 2, title: '缓存知识', currentVersion: null, withdrawn: true }] })
+    wikiApi.versions.mockResolvedValue({ data: [version] })
+    let finish
+    wikiApi.submit.mockImplementation(() => new Promise((resolve) => { finish = resolve }))
+    await open(); await button('审核与历史版本').trigger('click'); await flushPromises()
+    dialogButton('提交审核').click(); await flushPromises()
+    expect(dialogButton('重新检查此版本的来源与编译冲突').disabled).toBe(true)
+    expect(wikiApi.draft).not.toHaveBeenCalled()
+    wikiApi.versions.mockResolvedValue({ data: [{ ...version, state: 'IN_REVIEW' }] })
+    finish({}); await flushPromises()
+    expect(dialogButton('重新检查此版本的来源与编译冲突').disabled).toBe(false)
+  })
+})

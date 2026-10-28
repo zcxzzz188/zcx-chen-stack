@@ -7,10 +7,10 @@ import com.zcx.chenstack.config.RagPublicationConfiguration;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.WebApplicationType;
-import org.springframework.boot.autoconfigure.jackson.JacksonAutoConfiguration;
-import org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration;
+import org.springframework.boot.jackson2.autoconfigure.Jackson2AutoConfiguration;
+import org.springframework.boot.jdbc.autoconfigure.DataSourceAutoConfiguration;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
-import org.springframework.boot.web.context.WebServerApplicationContext;
+import org.springframework.boot.web.server.context.WebServerApplicationContext;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
 
@@ -18,7 +18,7 @@ import javax.sql.DataSource;
 import java.util.Map;
 
 /** 仅从本地进程调用的非Web运维命令，不由Main扫描注册，也不加载业务定时任务。 */
-@Import({DataSourceAutoConfiguration.class, JacksonAutoConfiguration.class, RagPublicationConfiguration.class})
+@Import({DataSourceAutoConfiguration.class, Jackson2AutoConfiguration.class, RagPublicationConfiguration.class})
 @EnableConfigurationProperties(RagProperties.class)
 public class RagPublicationCommand {
     public record Invocation(boolean localOnly) { }

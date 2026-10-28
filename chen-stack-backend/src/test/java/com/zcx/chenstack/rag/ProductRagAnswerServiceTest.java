@@ -21,8 +21,8 @@ import org.springframework.ai.chat.model.Generation;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.ai.openai.OpenAiChatModel;
 import org.springframework.ai.openai.OpenAiChatOptions;
-import org.springframework.ai.openai.api.OpenAiApi;
-import org.springframework.retry.support.RetryTemplate;
+import com.zcx.chenstack.config.AiConfig;
+import org.springframework.test.util.ReflectionTestUtils;
 import reactor.core.publisher.Flux;
 
 import java.net.InetSocketAddress;
@@ -71,7 +71,7 @@ class ProductRagAnswerServiceTest {
         when(articles.listForUser(7, 1, 5)).thenReturn(new CustomerServiceEvent("ARTICLE_SELECTION", "请选择文章", null,
                 List.of(new CustomerServiceEvent.EditableArticle(73915, "PRIVATE_TITLE_SENTINEL", 1, 0, true)), 1, 5, false, "SUPPORTED"));
         model = mock(ChatModel.class);
-        when(model.getDefaultOptions()).thenReturn(OpenAiChatOptions.builder().model("protocol-fixture").build());
+        when(model.getOptions()).thenReturn(OpenAiChatOptions.builder().model("protocol-fixture").build());
         scopeRespond = prompt -> Flux.just(text("USER_HELP", "stop"));
         respond = prompt -> Flux.just(text("自然回答", "stop"));
         when(model.stream(any(Prompt.class))).thenAnswer(invocation -> {
@@ -443,13 +443,7 @@ class ProductRagAnswerServiceTest {
         });
         server.start();
         try {
-            OpenAiChatModel loopback = OpenAiChatModel.builder().openAiApi(OpenAiApi.builder()
-                            .baseUrl("http://127.0.0.1:" + server.getAddress().getPort()).completionsPath("/chat/completions")
-                            .apiKey("offline-fixture-only")
-                            .webClientBuilder(org.springframework.web.reactive.function.client.WebClient.builder()
-                                    .filter(budget.streamFilter(ReleaseProviderBudget.Kind.CHAT))).build())
-                    .defaultOptions(OpenAiChatOptions.builder().model("fixture").build())
-                    .retryTemplate(RetryTemplate.builder().maxAttempts(1).build()).build();
+            OpenAiChatModel loopback = loopback(server, budget);
             service = new ProductRagAnswerService(knowledge, ChatClient.create(loopback), memory);
             AiUsageService quota = mock(AiUsageService.class);
             when(quota.tryReserveUsage(7)).thenReturn(true);
@@ -500,11 +494,7 @@ class ProductRagAnswerServiceTest {
         });
         server.start();
         try {
-            OpenAiChatModel loopback = OpenAiChatModel.builder().openAiApi(OpenAiApi.builder()
-                            .baseUrl("http://127.0.0.1:" + server.getAddress().getPort()).completionsPath("/chat/completions")
-                            .apiKey("offline-fixture-only").build())
-                    .defaultOptions(OpenAiChatOptions.builder().model("fixture").build())
-                    .retryTemplate(RetryTemplate.builder().maxAttempts(1).build()).build();
+            OpenAiChatModel loopback = loopback(server, new ReleaseProviderBudget("", "", 64, 20));
             service = new ProductRagAnswerService(knowledge, ChatClient.create(loopback), memory);
             assertTrue(run("我之前码的那些文字还能接着改吗", "wire").contains("卡片"));
             assertEquals(2, wires.size());
@@ -518,5 +508,15 @@ class ProductRagAnswerServiceTest {
                 assertFalse(wire.contains("userId"));
             }
         } finally { server.stop(0); }
+    }
+    private OpenAiChatModel loopback(HttpServer server, ReleaseProviderBudget budget) {
+        AiConfig config = new AiConfig();
+        ReflectionTestUtils.setField(config, "apiKey", "offline-fixture-only");
+        ReflectionTestUtils.setField(config, "baseUrl", "http://127.0.0.1:" + server.getAddress().getPort());
+        ReflectionTestUtils.setField(config, "completionsPath", "/chat/completions");
+        ReflectionTestUtils.setField(config, "model", "fixture");
+        ReflectionTestUtils.setField(config, "temperature", 0.0);
+        ReflectionTestUtils.setField(config, "maxTokens", 2048);
+        return config.openAiChatModel(budget);
     }
 }

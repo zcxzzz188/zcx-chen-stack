@@ -11,6 +11,13 @@ const article = { articleId: 42, title: '<img src=x onerror=alert(1)>', editStat
 const selection = () => ({ type: 'ARTICLE_SELECTION', text: '请选择文章', articles: [article], page: 1, pageSize: 5, hasMore: true })
 let store, wrapper
 const render = () => { wrapper = mount(Cards, { props: { event: selection() }, global: { stubs: { ElButton: { template: '<button><slot /></button>' } } } }); return wrapper }
+
+it('显示服务端核验的公开文章来源，标题按文本渲染', () => {
+  wrapper = mount(Cards, { props: { event: { type: 'KNOWLEDGE_SOURCES', sources: [{ title: '<img src=x>', url: '/user/7/article/1', version: 'v1' }] } } })
+  expect(wrapper.get('a').attributes('href')).toBe('/user/7/article/1')
+  expect(wrapper.get('a').text()).toBe('<img src=x>')
+  expect(wrapper.find('img').exists()).toBe(false)
+})
 beforeEach(() => { vi.clearAllMocks(); setActivePinia(createPinia()); store = useUserStore(); store.user = { id: 7 } })
 afterEach(() => wrapper?.unmount())
 

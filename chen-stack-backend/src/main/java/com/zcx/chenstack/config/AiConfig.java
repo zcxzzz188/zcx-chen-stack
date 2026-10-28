@@ -7,11 +7,9 @@ import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.ai.chat.memory.MessageWindowChatMemory;
 import org.springframework.ai.openai.OpenAiChatModel;
 import org.springframework.ai.openai.OpenAiChatOptions;
-import org.springframework.ai.openai.api.OpenAiApi;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.retry.support.RetryTemplate;
 
 import java.util.Map;
 
@@ -49,30 +47,15 @@ public class AiConfig {
         if (maxTokens == null || maxTokens < 1 || maxTokens > 393216) {
             throw new IllegalArgumentException("spring.ai.openai.chat.options.max-tokens 必须为 1 到 393216 的整数");
         }
-        // 创建 OpenAI API 客户端，指向 DeepSeek API 地址
-        OpenAiApi openAiApi = OpenAiApi.builder()
-                .baseUrl(baseUrl)
-                .completionsPath(completionsPath)
-                .apiKey(apiKey)
-                .restClientBuilder(org.springframework.web.client.RestClient.builder()
-                        .requestInterceptor(budget.restInterceptor(ReleaseProviderBudget.Kind.CHAT)))
-                .webClientBuilder(org.springframework.web.reactive.function.client.WebClient.builder()
-                        .filter(budget.streamFilter(ReleaseProviderBudget.Kind.CHAT)))
-                .build();
-
-        // 创建聊天选项（使用新的 API 方式）
-        OpenAiChatOptions options = new OpenAiChatOptions();
-        options.setModel(model);
-        options.setTemperature(temperature);
-        options.setMaxTokens(maxTokens);
-        options.setExtraBody(Map.of("thinking", Map.of("type", "disabled")));
-
-        // 创建并返回 OpenAI Chat 模型
+        var clientOptions = com.openai.core.ClientOptions.builder().baseUrl(baseUrl).apiKey(apiKey).maxRetries(0)
+                .httpClient(budget.httpClient(ReleaseProviderBudget.Kind.CHAT, java.time.Duration.ofSeconds(60),
+                        baseUrl.replaceAll("/+$", "") + completionsPath)).build();
+        OpenAiChatOptions options = OpenAiChatOptions.builder().model(model).temperature(temperature)
+                .maxTokens(maxTokens).maxRetries(0).extraBody(Map.of("thinking", Map.of("type", "disabled"))).build();
         return OpenAiChatModel.builder()
-                .openAiApi(openAiApi)
-                .defaultOptions(options)
-                // 失败由调用方处理，避免自动重发产生重复计费请求。
-                .retryTemplate(RetryTemplate.builder().maxAttempts(1).build())
+                .openAiClient(new com.openai.client.OpenAIClientImpl(clientOptions))
+                .openAiClientAsync(new com.openai.client.OpenAIClientAsyncImpl(clientOptions))
+                .options(options)
                 .build();
     }
 

@@ -20,7 +20,10 @@ spring:
     multipart:
       max-file-size: 10MB # 文件上传最大大小
       max-request-size: 10MB # 请求体最大大小
-  jackson:
+  http:
+    converters:
+      preferred-json-mapper: jackson2
+  jackson2:
     date-format: yyyy-MM-dd HH:mm:ss # Date 日期格式化
     time-zone: GMT+8
   datasource:
@@ -152,6 +155,9 @@ chen-stack:
     - https://api.your-domain.com
     - https://localhost
     - https://servicewechat.com
+chen:
+  ai:
+    knowledge-mode: ${AI_KNOWLEDGE_MODE:rag}
 logging:
   level:
     org.springframework.boot.autoconfigure: INFO

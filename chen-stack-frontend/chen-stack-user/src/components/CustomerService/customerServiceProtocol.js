@@ -36,13 +36,21 @@ export function navigationTarget(action, authorizedArticle, currentUserId) {
 
 export function validateCustomerServiceEvent(event) {
   if (!event || typeof event !== 'object') throw new Error('客服事件无效')
-  if (!['TEXT', 'DONE', 'NAVIGATION_ACTION', 'ARTICLE_SELECTION', 'EMPTY_RESULT', 'ERROR_STATE', 'KNOWLEDGE_STATUS'].includes(event.type)) {
+  if (!['TEXT', 'DONE', 'NAVIGATION_ACTION', 'ARTICLE_SELECTION', 'EMPTY_RESULT', 'ERROR_STATE', 'KNOWLEDGE_STATUS', 'KNOWLEDGE_SOURCES'].includes(event.type)) {
     throw new Error('未知客服事件')
   }
   if (event.text != null && typeof event.text !== 'string') throw new Error('客服文本无效')
   if (event.errorCode != null && (typeof event.errorCode !== 'string' || !Object.hasOwn(errorMessages, event.errorCode))) throw new Error('客服错误码无效')
   if (event.type === 'KNOWLEDGE_STATUS' && !['SUPPORTED', 'NOT_SUPPORTED', 'UNKNOWN'].includes(event.supportStatus)) throw new Error('知识状态无效')
   if (event.type === 'NAVIGATION_ACTION' && !actions.has(event.action)) throw new Error('客服动作无效')
+  if (event.type === 'KNOWLEDGE_SOURCES') {
+    if (!Array.isArray(event.sources) || event.sources.length < 1 || event.sources.length > 96) throw new Error('知识来源无效')
+    for (const source of event.sources) {
+      if (!source || typeof source.title !== 'string' || !source.title.trim() || source.title.length > 300 ||
+          (source.version != null && (typeof source.version !== 'string' || source.version.length > 200)) ||
+          (source.url != null && (typeof source.url !== 'string' || !/^\/user\/[1-9]\d*\/article\/[1-9]\d*$/.test(source.url)))) throw new Error('知识来源无效')
+    }
+  }
   if (event.type === 'ARTICLE_SELECTION' || event.type === 'EMPTY_RESULT') {
     if (!Array.isArray(event.articles) || event.articles.length > 20 ||
         !Number.isInteger(event.page) || event.page < 1 || event.page > 1000 ||

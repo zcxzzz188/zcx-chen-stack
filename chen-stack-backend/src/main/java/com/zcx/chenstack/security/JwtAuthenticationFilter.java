@@ -25,7 +25,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.context.SecurityContextHolder;
-import org.springframework.security.web.util.matcher.AntPathRequestMatcher;
+import org.springframework.security.web.servlet.util.matcher.PathPatternRequestMatcher;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
 
@@ -95,9 +95,9 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
         // 检查是否是可选认证接口（有token就认证，没有就跳过）
         boolean isOptionalAuth = false;
-        boolean isProfileUpdate = new AntPathRequestMatcher("/user/info", "PUT").matches(request);
+        boolean isProfileUpdate = PathPatternRequestMatcher.withDefaults().matcher(org.springframework.http.HttpMethod.PUT, "/user/info").matches(request);
         for (String url : SecurityConstants.Optional_Auth_Urls) {
-            AntPathRequestMatcher matcher = new AntPathRequestMatcher(url);
+            var matcher = PathPatternRequestMatcher.withDefaults().matcher(url);
             if (matcher.matches(request) && !isProfileUpdate) {
                 isOptionalAuth = true;
                 break;

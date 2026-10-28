@@ -1,7 +1,7 @@
 package com.zcx.chenstack.service.impl;
 
 import cn.hutool.core.bean.BeanUtil;
-import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import com.baomidou.mybatisplus.spring.service.impl.ServiceImpl;
 import com.zcx.chenstack.domain.constants.BlogConstants;
 import com.zcx.chenstack.domain.dto.SysRolePermissionDto;
 import com.zcx.chenstack.domain.entity.SysRole;

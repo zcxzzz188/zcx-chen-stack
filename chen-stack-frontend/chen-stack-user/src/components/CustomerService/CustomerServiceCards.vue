@@ -3,6 +3,13 @@
     <el-button v-if="current.type === 'NAVIGATION_ACTION'" type="primary" @click="navigate">
       {{ current.text }}
     </el-button>
+    <div v-else-if="current.type === 'KNOWLEDGE_SOURCES'" class="knowledge-sources">
+      <p>本次回答参考的公开来源</p>
+      <ul><li v-for="(source, index) in current.sources" :key="index">
+        <a v-if="source.url" :href="source.url" target="_blank" rel="noopener noreferrer">{{ source.title }}</a>
+        <span v-else>{{ source.title }}</span>
+      </li></ul>
+    </div>
     <template v-else-if="['ARTICLE_SELECTION', 'EMPTY_RESULT'].includes(current.type)">
       <p>{{ current.text }}</p>
       <div v-for="article in current.articles" :key="article.articleId" class="article-choice">

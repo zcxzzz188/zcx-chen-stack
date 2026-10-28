@@ -1,6 +1,6 @@
 package com.zcx.chenstack.service;
 
-import com.baomidou.mybatisplus.extension.service.IService;
+import com.baomidou.mybatisplus.spring.service.IService;
 import com.zcx.chenstack.domain.dto.CategorySortDto;
 import com.zcx.chenstack.domain.dto.TagDto;
 import com.zcx.chenstack.domain.entity.Tag;

@@ -1,6 +1,6 @@
 package com.zcx.chenstack.service;
 
-import com.baomidou.mybatisplus.extension.service.IService;
+import com.baomidou.mybatisplus.spring.service.IService;
 import com.zcx.chenstack.domain.dto.ArticleAuditDto;
 import com.zcx.chenstack.domain.dto.ArticleDto;
 import com.zcx.chenstack.domain.dto.ArticleStatusDto;

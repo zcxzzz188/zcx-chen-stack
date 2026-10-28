@@ -198,7 +198,7 @@ public class QdrantKnowledgeIndex implements AutoCloseable {
         if (chunkIds == null || chunkIds.isEmpty() || chunkIds.size() > 64) {
             throw new RagFailure(RagFailure.Code.INDEX_MISMATCH);
         }
-        List<Points.PointId> ids = chunkIds.stream().map(UUID::fromString).map(uuid -> id(uuid)).toList();
+        var ids = chunkIds.stream().map(UUID::fromString).map(uuid -> id(uuid)).toList();
         verify(false);
         try {
             return client.retrieveAsync(properties.getCollection(), ids, true, false, null)

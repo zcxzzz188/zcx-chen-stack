@@ -107,8 +107,7 @@ public class AiServiceImpl implements AiService {
             String promptText = AiPromptConstants.extractSummaryPrompt(plainText);
 
             // 配置选项（减少 max-tokens 来限制输出长度）
-            OpenAiChatOptions options = new OpenAiChatOptions();
-            options.setMaxTokens(250);
+            OpenAiChatOptions options = openAiChatModel.getOptions().mutate().maxTokens(250).build();
 
             // 创建提示
             Prompt prompt = new Prompt(promptText, options);

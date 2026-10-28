@@ -9,6 +9,10 @@
       <div class="sidebar-divider"></div>
       <!-- pc端菜单 -->
       <el-menu :default-active="activeMenu" class="el-menu-pc" :background-color="sidebarBg" :text-color="sidebarText" :active-text-color="sidebarActiveText" :router="true">
+        <el-menu-item v-if="isWikiAdmin" index="/wiki">
+          <el-icon :size="18"><Document /></el-icon>
+          <span>Wiki 知识管理</span>
+        </el-menu-item>
         <template v-for="menu in menus" :key="menu.id">
           <el-sub-menu v-if="menu.children && menu.children.length > 0" :index="menu.path">
             <template #title>
@@ -149,7 +153,7 @@ import { useUserStore } from '@/stores/userStore'
 import { ElMessage } from 'element-plus'
 import Dark from '@/components/common/Dark.vue'
 import { getMessagesCount, getMessageList, readAdminMessages } from '@/api/message'
-import { Bell, Message, User } from '@element-plus/icons-vue'
+import { Bell, Document, Message, User } from '@element-plus/icons-vue'
 import { formatTime } from '@/utils/FormatTime'
 import { onUnmounted } from 'vue'
 
@@ -288,6 +292,7 @@ const handleMessageClick = async (message) => {
 
 // 页面加载时获取消息数量
 onMounted(() => {
+  userStore.checkWikiAccess()
   fetchUnreadCount()
   // 可以添加一个定时器，定期刷新消息数量
   const intervalId = setInterval(fetchUnreadCount, 60000) // 每分钟刷新一次
@@ -298,6 +303,7 @@ onMounted(() => {
 const menus = computed(() => {
   return userStore.menus
 })
+const isWikiAdmin = computed(() => userStore.wikiAccess)
 
 // 当前激活的菜单
 const activeMenu = computed(() => {

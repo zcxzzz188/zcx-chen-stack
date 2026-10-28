@@ -1,7 +1,7 @@
 package com.zcx.chenstack.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
-import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import com.baomidou.mybatisplus.spring.service.impl.ServiceImpl;
 import com.zcx.chenstack.domain.entity.UserSettings;
 import com.zcx.chenstack.exception.BlogException;
 import com.zcx.chenstack.mapper.UserSettingsMapper;

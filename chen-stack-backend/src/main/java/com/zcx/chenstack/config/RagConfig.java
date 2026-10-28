@@ -6,27 +6,23 @@ import com.zcx.chenstack.rag.*;
 import org.springframework.ai.document.MetadataMode;
 import org.springframework.ai.openai.OpenAiEmbeddingModel;
 import org.springframework.ai.openai.OpenAiEmbeddingOptions;
-import org.springframework.ai.openai.api.OpenAiApi;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.io.ClassPathResource;
-import org.springframework.http.client.JdkClientHttpRequestFactory;
-import org.springframework.retry.support.RetryTemplate;
-import org.springframework.web.client.RestClient;
-
-import java.net.http.HttpClient;
 import java.time.Duration;
 import java.util.List;
 
 @Configuration(proxyBeanMethods = false)
-@EnableConfigurationProperties(RagProperties.class)
+@EnableConfigurationProperties({RagProperties.class, AiKnowledgeProperties.class})
 public class RagConfig {
     @Bean
     public ProductRagAnswerService productRagAnswerService(RagKnowledgeService knowledge,
             org.springframework.ai.openai.OpenAiChatModel model, org.springframework.ai.chat.memory.ChatMemory memory,
-            ReleaseProviderBudget budget) {
-        return new ProductRagAnswerService(knowledge, org.springframework.ai.chat.client.ChatClient.create(model), memory, budget);
+            ReleaseProviderBudget budget, AiKnowledgeProperties properties,
+            org.springframework.beans.factory.ObjectProvider<com.zcx.chenstack.wiki.WikiPublicationService> wiki) {
+        return new ProductRagAnswerService(knowledge, org.springframework.ai.chat.client.ChatClient.create(model), memory,
+                budget, properties, "wiki".equals(properties.knowledgeMode()) ? wiki.getIfAvailable() : null);
     }
 
     @Bean
@@ -71,21 +67,14 @@ public class RagConfig {
     public static GuardedEmbeddingModel embedding(RagProperties properties, ReleaseProviderBudget budget) {
         properties.validate();
         Duration timeout = Duration.ofSeconds(properties.getEmbeddingTimeoutSeconds());
-        var factory = new JdkClientHttpRequestFactory(HttpClient.newBuilder().connectTimeout(timeout).build());
-        factory.setReadTimeout(timeout);
-        var api = OpenAiApi.builder().baseUrl(properties.getEmbeddingBaseUrl()).embeddingsPath("/embeddings")
-                .apiKey(properties.getEmbeddingApiKey()).restClientBuilder(RestClient.builder().requestFactory(factory)
-                        .requestInterceptor(budget.restInterceptor(ReleaseProviderBudget.Kind.EMBEDDING)))
-                .responseErrorHandler(new org.springframework.web.client.ResponseErrorHandler() {
-                    @Override public boolean hasError(org.springframework.http.client.ClientHttpResponse response) throws java.io.IOException {
-                        return response.getStatusCode().isError();
-                    }
-                    @Override public void handleError(org.springframework.http.client.ClientHttpResponse response) {
-                        throw new RagFailure(RagFailure.Code.EMBEDDING_UNAVAILABLE);
-                    }
-                }).build();
-        var options = OpenAiEmbeddingOptions.builder().model(properties.getEmbeddingModel()).dimensions(1024).build();
-        return new GuardedEmbeddingModel(new OpenAiEmbeddingModel(api, MetadataMode.NONE, options,
-                RetryTemplate.builder().maxAttempts(1).build()), properties);
+        var clientOptions = com.openai.core.ClientOptions.builder().baseUrl(properties.getEmbeddingBaseUrl())
+                .apiKey(properties.getEmbeddingApiKey()).maxRetries(0)
+                .httpClient(budget.httpClient(ReleaseProviderBudget.Kind.EMBEDDING, timeout,
+                        properties.getEmbeddingBaseUrl().replaceAll("/+$", "") + "/embeddings")).build();
+        var options = OpenAiEmbeddingOptions.builder().model(properties.getEmbeddingModel()).dimensions(1024)
+                .encodingFormat(OpenAiEmbeddingOptions.EncodingFormat.FLOAT).maxRetries(0).build();
+        return new GuardedEmbeddingModel(OpenAiEmbeddingModel.builder()
+                .openAiClient(new com.openai.client.OpenAIClientImpl(clientOptions)).metadataMode(MetadataMode.NONE)
+                .options(options).build(), properties);
     }
 }

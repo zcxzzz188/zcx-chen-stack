@@ -1,0 +1,78 @@
+server:
+  address: 127.0.0.1
+  port: 0
+spring:
+  profiles:
+    active: framework-it
+  application:
+    name: chen-framework-it
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    username: root
+    hikari:
+      maximum-pool-size: 3
+      minimum-idle: 0
+  data:
+    redis:
+      host: 127.0.0.1
+  rabbitmq:
+    host: 127.0.0.1
+    username: fixture
+    listener:
+      simple:
+        auto-startup: false
+      direct:
+        auto-startup: false
+  mail:
+    host: 127.0.0.1
+    port: 1
+    username: fixture
+    password: fixture
+  ai:
+    openai:
+      api-key: fixture-only
+      base-url: http://127.0.0.1:1
+      chat:
+        options:
+          model: fixture
+          temperature: 0.0
+          max-tokens: 128
+  http:
+    converters:
+      preferred-json-mapper: jackson2
+  jackson2:
+    date-format: yyyy-MM-dd HH:mm:ss
+    time-zone: GMT+8
+chen:
+  ai:
+    knowledge-mode: ${AI_KNOWLEDGE_MODE:rag}
+  rag:
+    enabled: false
+    release:
+      enabled: false
+      recovery-enabled: false
+  wiki:
+    enabled: true
+    public-portal-enabled: true
+chen-stack:
+  jwt: framework-it-synthetic-secret
+  allow-origins:
+    - http://localhost
+  logic-delete-cleanup:
+    enabled: false
+minio:
+  accessKey: fixture
+  bucketName: fixture
+  publicPoint: http://127.0.0.1:1
+frontend:
+  userHost: http://127.0.0.1:1
+  adminHost: http://127.0.0.1:1
+aliyun:
+  accessKeyId: fixture
+  accessKeySecret: fixture
+  imageaudit:
+    endpoint: 127.0.0.1:1
+management:
+  health:
+    mail:
+      enabled: false

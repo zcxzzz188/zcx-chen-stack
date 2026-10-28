@@ -1,6 +1,6 @@
 package com.zcx.chenstack.service;
 
-import com.baomidou.mybatisplus.extension.service.IService;
+import com.baomidou.mybatisplus.spring.service.IService;
 import com.zcx.chenstack.domain.dto.SysMenuDto;
 import com.zcx.chenstack.domain.entity.SysMenu;
 import com.zcx.chenstack.domain.vo.PageVo;

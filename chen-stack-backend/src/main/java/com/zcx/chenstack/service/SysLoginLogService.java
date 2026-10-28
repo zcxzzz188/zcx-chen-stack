@@ -1,6 +1,6 @@
 package com.zcx.chenstack.service;
 
-import com.baomidou.mybatisplus.extension.service.IService;
+import com.baomidou.mybatisplus.spring.service.IService;
 import com.zcx.chenstack.domain.dto.SysLoginLogQueryDto;
 import com.zcx.chenstack.domain.entity.SysLoginLog;
 import com.zcx.chenstack.domain.vo.PageVo;

@@ -69,6 +69,14 @@ if ($LASTEXITCODE -ne 0) { throw '本地运维操作失败，停止；保留所�
 
 `CHEN_RELEASE_PROJECT_NAME`须明确dev，profiles保留dev并加rag；`CHEN_RELEASE_CONTROL_DIRECTORY`和`CHEN_RELEASE_BUDGET_DIRECTORY`为已核对外部绝对目录。首次发布需新集合确认；稳态读取及撤销不得沿用创建确认。宿主Manifest/operation目录映射为/release，JAR固定/app/app.jar。数据库名未写入Manifest字段，必须由实际部署检查与一次性授权限定为chen_stack。
 
+## AI 知识模式手动切换
+
+实际 dev 部署由 `script/dev/.env` 经原 Compose 文件链向 backend 传入 `AI_KNOWLEDGE_MODE`，Spring 使用 `chen.ai.knowledge-mode` 绑定，默认 `rag`。固定模式为 `chat`（不检索 RAG/Wiki）、`rag`（既有 G2 问答检索）和 `wiki`（仅当前有效且正式发布的 Wiki）；`hybrid`、`auto` 尚未实现，启动拒绝，非法值也不回退。模式只改变知识依据，不扩大小辰业务工具权限。
+
+`wiki` 还要求在已批准并完成 Wiki SQL/触发器部署的环境显式设置 `CHEN_WIKI_ENABLED=true`、`CHEN_WIKI_PRODUCT_ENABLED=true`；未就绪时拒绝启动或知识读取失败关闭，不使用旧索引或 RAG 兜底。它不需要启用编译器。`chen-stack-backend/.env.example` 是变量模板，普通 JVM 启动须显式导入环境变量。
+
+修改 `.env` 后仅对原 Compose 项目的 backend 执行 `up -d --no-deps --force-recreate backend` 才能应用；`restart` 不会重新注入变量。必须保留原有项目名、所有 `-f` 覆盖文件、`--env-file`、镜像和预算挂载，不能用候选 Compose 替换正式项目。正式容器切换需用户另行批准，本轮只允许隔离验证。切换不修改 Java、不重建知识库、不删除 Qdrant 集合、不重新编译或发布 Wiki。可通过仅管理员可读的模式诊断接口核对实际后端模式；不得打印完整 `docker compose config` 或容器环境。
+
 ## 恢复、幂等、撤销和失败关闭
 
 | 场景 | 行为 |

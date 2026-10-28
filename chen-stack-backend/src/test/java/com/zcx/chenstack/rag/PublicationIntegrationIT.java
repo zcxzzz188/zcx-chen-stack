@@ -23,12 +23,12 @@ import org.springframework.ai.embedding.EmbeddingRequest;
 import org.springframework.ai.embedding.EmbeddingResponse;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.DefaultApplicationArguments;
-import org.springframework.boot.autoconfigure.http.HttpMessageConvertersAutoConfiguration;
-import org.springframework.boot.autoconfigure.jackson.JacksonAutoConfiguration;
-import org.springframework.boot.autoconfigure.web.servlet.DispatcherServletAutoConfiguration;
-import org.springframework.boot.autoconfigure.web.servlet.ServletWebServerFactoryAutoConfiguration;
-import org.springframework.boot.autoconfigure.web.servlet.WebMvcAutoConfiguration;
-import org.springframework.boot.web.servlet.context.ServletWebServerApplicationContext;
+import org.springframework.boot.http.converter.autoconfigure.HttpMessageConvertersAutoConfiguration;
+import org.springframework.boot.jackson2.autoconfigure.Jackson2AutoConfiguration;
+import org.springframework.boot.webmvc.autoconfigure.DispatcherServletAutoConfiguration;
+import org.springframework.boot.tomcat.autoconfigure.servlet.TomcatServletWebServerAutoConfiguration;
+import org.springframework.boot.webmvc.autoconfigure.WebMvcAutoConfiguration;
+import org.springframework.boot.web.server.servlet.context.ServletWebServerApplicationContext;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.datasource.AbstractDataSource;
@@ -1013,7 +1013,10 @@ class PublicationIntegrationIT {
                     "--chen.rag.release.environment=" + ENVIRONMENT, "--chen.rag.release.budget-ledger-path=" + ledger,
                     "--chen.rag.release.budget-id=it-wire"));
             Path log = control.resolve("command.log");
-            var builder = new ProcessBuilder(command).directory(temporary.toFile()).redirectErrorStream(true).redirectOutput(log.toFile());
+            var builder = new ProcessBuilder(javaArgumentFile(command)).directory(temporary.toFile()).redirectErrorStream(true).redirectOutput(log.toFile());
+            builder.environment().clear();
+            builder.environment().put("SystemRoot", System.getenv("SystemRoot"));
+            builder.environment().put("TEMP", temporary.toString()); builder.environment().put("TMP", temporary.toString());
             builder.environment().put("SPRING_DATASOURCE_PASSWORD", docker.password);
             Process process = builder.start();
             if (!process.waitFor(45, TimeUnit.SECONDS)) { process.destroyForcibly(); fail("Local operator command did not exit."); }
@@ -1024,7 +1027,7 @@ class PublicationIntegrationIT {
             assertEquals(1, scalar(docker.source(schema), "SELECT COUNT(*) FROM rag_release_operation WHERE status='COMPLETED' AND approver_id='CONTROLLED_OPERATOR'"));
             int spent = attempts.get();
             command.add("--spring.main.web-application-type=servlet");
-            process = builder.command(command).start();
+            process = builder.command(javaArgumentFile(command)).start();
             if (!process.waitFor(30, TimeUnit.SECONDS)) { process.destroyForcibly(); fail("Web-mode rejection did not exit."); }
             assertNotEquals(0, process.exitValue()); assertEquals(spent, attempts.get());
             System.out.println("PUBLICATION_IT_LOCAL_COMMAND nonWeb=true durableWireBudget=true productionConfiguration=REAL externalProviderCalls=0");
@@ -1497,21 +1500,36 @@ class PublicationIntegrationIT {
                 .collect(java.util.stream.Collectors.joining(File.pathSeparator));
         assertFalse(dependencies.isBlank(), "The isolated archive must retain the existing Surefire dependency JARs.");
         Path artifact = syntheticRuntimeJar();
-        var builder = new ProcessBuilder(Path.of(System.getProperty("java.home"), "bin", "java").toString(), "-cp",
+        var builder = new ProcessBuilder(javaArgumentFile(List.of(Path.of(System.getProperty("java.home"), "bin", "java").toString(), "-cp",
                 artifact + File.pathSeparator + dependencies,
                 HttpApplication.class.getName(), Integer.toString(docker.mysqlPort), Integer.toString(docker.grpcPort), schema,
-                collection, action, marker.toString(), temporary.resolve("receipt-" + schema).toString(), artifact.toString());
+                collection, action, marker.toString(), temporary.resolve("receipt-" + schema).toString(), artifact.toString())))
+                .directory(temporary.toFile());
+        builder.environment().clear();
+        builder.environment().put("SystemRoot", System.getenv("SystemRoot"));
+        builder.environment().put("TEMP", temporary.toString()); builder.environment().put("TMP", temporary.toString());
         builder.environment().put("CHEN_SYNTHETIC_MYSQL_PASSWORD", docker.password);
         builder.redirectErrorStream(true).redirectOutput(log.toFile());
         Process process = builder.start();
         long deadline = System.nanoTime() + Duration.ofSeconds(45).toNanos();
         while (process.isAlive() && !Files.exists(marker) && System.nanoTime() < deadline) Thread.sleep(100);
         if (!Files.exists(marker)) {
-            process.destroyForcibly();
+            process.destroyForcibly().waitFor(10, TimeUnit.SECONDS);
             String details = Files.exists(log) ? Files.readString(log, StandardCharsets.UTF_8) : "NO_LOG";
             fail("Synthetic Spring Boot process did not start: " + details.substring(Math.max(0, details.length() - 8000)));
         }
         return new HttpProcess(process, Integer.parseInt(Files.readString(marker).strip()));
+    }
+
+    /** JDK argument files avoid Windows' command-line limit as the managed classpath grows. */
+    private List<String> javaArgumentFile(List<String> command) throws IOException {
+        Path arguments = Files.createTempFile(temporary, "java-", ".args");
+        String content = "\"-Dfile.encoding=UTF-8\"\n\"-Djava.io.tmpdir=" + temporary.toString().replace("\\", "\\\\") + "\"\n"
+                + command.subList(1, command.size()).stream()
+                .map(value -> "\"" + value.replace("\\", "\\\\").replace("\"", "\\\"") + "\"")
+                .collect(java.util.stream.Collectors.joining("\n"));
+        Files.writeString(arguments, content, StandardCharsets.UTF_8);
+        return List.of(command.getFirst(), "@" + arguments);
     }
 
     /** Test archive contains compiled classes and synthetic public resources, never application config or private keys. */
@@ -1544,14 +1562,14 @@ class PublicationIntegrationIT {
 
     private record HttpProcess(Process process, int port) implements AutoCloseable {
         @Override public void close() throws Exception {
-            process.destroy(); if (!process.waitFor(10, TimeUnit.SECONDS)) process.destroyForcibly();
+            process.destroy(); if (!process.waitFor(10, TimeUnit.SECONDS)) process.destroyForcibly().waitFor(10, TimeUnit.SECONDS);
         }
     }
 
     /** A separate real servlet JVM; only the HTTP observation surface is test-specific. */
     @Configuration(proxyBeanMethods = false)
-    @Import({ServletWebServerFactoryAutoConfiguration.class, DispatcherServletAutoConfiguration.class,
-            WebMvcAutoConfiguration.class, JacksonAutoConfiguration.class, HttpMessageConvertersAutoConfiguration.class})
+    @Import({TomcatServletWebServerAutoConfiguration.class, DispatcherServletAutoConfiguration.class,
+            WebMvcAutoConfiguration.class, Jackson2AutoConfiguration.class, HttpMessageConvertersAutoConfiguration.class})
     public static class HttpApplication {
         public static void main(String[] args) throws Exception {
             int mysqlPort = Integer.parseInt(args[0]), grpcPort = Integer.parseInt(args[1]);
@@ -1605,7 +1623,10 @@ class PublicationIntegrationIT {
             var context = (ServletWebServerApplicationContext) app.run("--server.port=0", "--server.address=127.0.0.1",
                     "--spring.config.name=chen-release-isolated-test", "--spring.profiles.active=release-it");
             Runtime.getRuntime().addShutdownHook(new Thread(() -> { knowledge.close(); catalog.lifecycle().close(); }));
-            Files.writeString(Path.of(args[5]), Integer.toString(context.getWebServer().getPort()), StandardCharsets.UTF_8);
+            Path marker = Path.of(args[5]);
+            Path staged = marker.resolveSibling(marker.getFileName() + ".staged");
+            Files.writeString(staged, Integer.toString(context.getWebServer().getPort()), StandardCharsets.UTF_8);
+            Files.move(staged, marker, java.nio.file.StandardCopyOption.ATOMIC_MOVE);
         }
     }
 

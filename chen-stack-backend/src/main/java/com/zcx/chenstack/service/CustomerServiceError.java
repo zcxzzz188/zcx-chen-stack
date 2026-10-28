@@ -38,6 +38,7 @@ public enum CustomerServiceError {
 
     public static CustomerServiceError classify(Throwable error) {
         Set<Throwable> seen = Collections.newSetFromMap(new IdentityHashMap<>());
+        CustomerServiceError fallback = SERVICE_UNAVAILABLE;
         for (Throwable cause = error; cause != null && seen.add(cause); cause = cause.getCause()) {
             if (cause instanceof Failure failure) return failure.code;
             if (cause instanceof RagFailure) return KNOWLEDGE_UNAVAILABLE;
@@ -48,6 +49,8 @@ public enum CustomerServiceError {
                     || cause instanceof io.netty.handler.timeout.TimeoutException) return MODEL_TIMEOUT;
             if (cause instanceof WebClientResponseException response) return providerStatus(response.getStatusCode().value());
             if (cause instanceof RestClientResponseException response) return providerStatus(response.getStatusCode().value());
+            if (cause instanceof com.openai.errors.OpenAIServiceException response) return providerStatus(response.statusCode());
+            if (cause instanceof com.openai.errors.OpenAIInvalidDataException) return SSE_INCOMPLETE;
             if (cause instanceof NonTransientAiException || cause instanceof TransientAiException) {
                 // Spring AI 1.1.8 RetryUtils 的状态前缀为 "<HTTP status> - <body>"。
                 String message = cause.getMessage();
@@ -57,10 +60,10 @@ public enum CustomerServiceError {
                 return MODEL_SERVICE_ERROR;
             }
             if (cause instanceof DecodingException) return SSE_INCOMPLETE;
-            if (cause instanceof IOException) return MODEL_NETWORK_ERROR;
+            if (cause instanceof IOException) fallback = MODEL_NETWORK_ERROR;
             if (cause instanceof WebClientRequestException && cause.getCause() == null) return MODEL_NETWORK_ERROR;
         }
-        return SERVICE_UNAVAILABLE;
+        return fallback;
     }
 
     private static CustomerServiceError providerStatus(int status) {

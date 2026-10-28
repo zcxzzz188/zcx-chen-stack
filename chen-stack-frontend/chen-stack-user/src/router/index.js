@@ -1,6 +1,7 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { GetJwt } from '@/utils/Auth'
+import { isWikiPortalEnabled } from '@/utils/wikiPortal'
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
@@ -22,6 +23,18 @@ const router = createRouter({
           name: 'Article',
           component: () => import('@/views/Article/index.vue'),
           meta: { title: '文章' },
+        },
+        {
+          path: 'wiki',
+          name: 'Wiki',
+          component: () => import('@/views/Wiki/index.vue'),
+          meta: { title: '知识 Wiki' },
+        },
+        {
+          path: 'wiki/:id',
+          name: 'WikiDetail',
+          component: () => import('@/views/Wiki/Detail.vue'),
+          meta: { title: 'Wiki 阅读' },
         },
         {
           path: 'search',
@@ -154,7 +167,10 @@ const router = createRouter({
   ],
 })
 
-router.beforeEach((to) => {
+router.beforeEach(async (to) => {
+  if ((to.name === 'Wiki' || to.name === 'WikiDetail') && !(await isWikiPortalEnabled())) {
+    return '/'
+  }
   if (!GetJwt() && (to.path.startsWith('/creation') || to.path === '/editor')) {
     ElMessage.error('请先登录')
     return '/login'

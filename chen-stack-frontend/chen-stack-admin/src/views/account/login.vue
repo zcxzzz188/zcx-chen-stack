@@ -46,8 +46,10 @@
             <label class="form-label">验证码</label>
             <div class="check-code-wrapper">
               <el-input v-model="loginForm.checkCode" placeholder="请输入验证码" size="large" class="check-code-input" @keyup.enter="handleLogin" />
-              <img :src="checkCodeInfo.checkCodeBase64" class="check-code-image" title="点击刷新验证码" @click="refreshCheckCode()" />
+              <img v-if="checkCodeInfo.checkCodeBase64" :src="checkCodeInfo.checkCodeBase64" class="check-code-image" alt="登录验证码" title="点击刷新验证码" @click="refreshCheckCode()" />
+              <el-button v-else :disabled="!canRefreshCode" @click="refreshCheckCode()">重新获取</el-button>
             </div>
+            <p v-if="checkCodeError" role="alert">{{ checkCodeError }}</p>
           </el-form-item>
 
           <div class="form-remember">
@@ -61,7 +63,6 @@
           </el-form-item>
         </el-form>
 
-        <p class="test-account">测试账号: test / 123456</p>
       </div>
     </div>
   </div>
@@ -90,6 +91,7 @@ const loginForm = ref({
 
 const loading = ref(false)
 const checkCodeInfo = ref({})
+const checkCodeError = ref('')
 
 const validatePasswordCharacters = (rule, value, callback) => {
   if (value === '') {
@@ -114,12 +116,18 @@ const loginFormRef = ref(null)
 
 // 获取验证码
 const getCheckCode = async () => {
+  checkCodeInfo.value = {}
+  checkCodeError.value = ''
+  loginForm.value.checkCodeKey = ''
   try {
     const res = await checkCode()
+    if (!res.data?.checkCodeKey || !res.data.checkCodeBase64?.startsWith('data:image/')) {
+      throw new Error('INVALID_CAPTCHA_RESPONSE')
+    }
     checkCodeInfo.value = res.data
     loginForm.value.checkCodeKey = res.data.checkCodeKey
-  } catch (error) {
-    console.error('获取验证码失败:', error)
+  } catch {
+    checkCodeError.value = '验证码加载失败，请重新获取'
   }
 }
 
@@ -139,8 +147,8 @@ const refreshCheckCode = async (force = false) => {
 
 const initLoginForm = () => {
   const lastLogoutUsername = window.sessionStorage.getItem(LAST_LOGOUT_USERNAME_KEY)?.trim()
-  loginForm.value.username = lastLogoutUsername || 'test'
-  loginForm.value.password = lastLogoutUsername ? '' : '123456'
+  loginForm.value.username = lastLogoutUsername || ''
+  loginForm.value.password = ''
   loginForm.value.checkCode = ''
 }
 
@@ -399,16 +407,6 @@ const handleLogin = async () => {
   &:active {
     background: var(--btn-bg);
   }
-}
-
-// ========================================
-// 测试账号提示
-// ========================================
-.test-account {
-  text-align: center;
-  font-size: 13px;
-  color: var(--text-muted);
-  margin: 24px 0 0 0;
 }
 
 // ========================================
