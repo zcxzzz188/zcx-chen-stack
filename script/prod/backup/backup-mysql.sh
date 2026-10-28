@@ -170,6 +170,7 @@ printf '%s\n' "${MYSQL_PASSWORD}" | docker exec -i "${MYSQL_CONTAINER_NAME}" sh 
     -u${MYSQL_USER} \
     --databases ${MYSQL_DATABASE} \
     --single-transaction \
+    --no-tablespaces \
     --quick \
     --lock-tables=false \
     --default-character-set=utf8mb4 \
@@ -245,6 +246,7 @@ do_backup() {
         -u${MYSQL_USER} \
         --databases ${MYSQL_DATABASE} \
         --single-transaction \
+        --no-tablespaces \
         --quick \
         --lock-tables=false \
         --default-character-set=utf8mb4 \
