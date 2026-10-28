@@ -9,3 +9,7 @@ Compose 和后端不提供 MySQL、MinIO、Redis 密码或 JWT 签名密钥的�
 数据库备份脚本支持显式的 `CHEN_CREDENTIAL_ENV_FILE`，在原 `.env` 后读取受限轮换凭据文件，且不修改原文件。人工入口和定时任务均须设置同一路径；不要继续用旧 `.env` 中已失效的密码。脚本通过标准输入将密码传给容器内客户端环境，不将其放入命令参数。生产备份和回退材料应放在受限外部目录。
 
 移除当前源码中的默认值不能撤销 Git 历史中的秘密。历史值必须按实际消费者受控轮换；MySQL 账号变更后不可仅修改容器环境变量代替真实数据库密码变更。JWT 换钥会使既有登录态失效，需要重新登录。
+
+MySQL 重启会使 RAG 目录启动时持有的连接和会话锁失效；后端 health=UP 不能替代目录就绪验证。数据库稳定后，使用原运行 JAR、现行新凭据和既有只读恢复配置恢复后端，再验证已认证的 `/ai/customer-service/status` HTTP/业务码均为 200、`ragAvailability=CONFIGURED`，并核对来源状态和完整索引指纹。禁止绕过目录 ownership 校验、开启发布或重新授权旧快照；仓库配置提交与运行 JAR 身份应分别记录，不因 Git 更新而改写恢复 manifest。
+
+Qdrant 网络等待可用 `CHEN_RAG_QDRANTTIMEOUTSECONDS` 配置 `chen.rag.qdrant-timeout-seconds`，现有代码允许 1–30 秒，本轮验证为 15 秒。网络等待调整不改变 TLS、原 CA、主机名、权限及完整索引校验；当前和回滚入口必须使用一致的有效设置。
