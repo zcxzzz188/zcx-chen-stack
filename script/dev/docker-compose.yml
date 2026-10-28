@@ -5,10 +5,10 @@ services:
     container_name: chen-stack-mysql
     restart: unless-stopped
     environment:
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD must be explicitly configured}
       MYSQL_DATABASE: ${MYSQL_DATABASE:-chen_stack}
       MYSQL_USER: ${MYSQL_USER:-root}
-      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-root}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?MYSQL_PASSWORD must be explicitly configured}
       TZ: Asia/Shanghai
     ports:
       - "127.0.0.1:${MYSQL_PORT:-3306}:3306"
@@ -18,7 +18,7 @@ services:
     networks:
       - chen-stack-network
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD:-root}"]
+      test: ["CMD-SHELL", 'MYSQL_PWD="$${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD must be explicitly configured}" mysql --protocol=socket -uroot --batch --skip-column-names -e "SELECT 1" | grep -qx 1']
       timeout: 20s
       retries: 15
       interval: 10s
@@ -31,13 +31,37 @@ services:
     restart: unless-stopped
     ports:
       - "127.0.0.1:${REDIS_PORT:-6379}:6379"
+    environment:
+      REDIS_USERNAME: ${REDIS_USERNAME:-chenstack}
     volumes:
       - redis_data:/data
-    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD:-chenstack123}", "--user", "default", "off", "--user", "${REDIS_USERNAME:-chenstack}", "on", "+@all", "~*", "&*", ">${REDIS_PASSWORD:-chenstack123}"]
+      - type: bind
+        source: ${REDIS_SECURE_CONFIG_DIRECTORY:-./redis-secure}
+        target: /secure
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${REDIS_HEALTH_PASSWORD_FILE:-./redis-secure/redis-app.secret}
+        target: /run/secrets/redis-health-password
+        read_only: true
+        bind:
+          create_host_path: false
+    command:
+      - sh
+      - -ec
+      - |
+        test -f /secure/redis.conf
+        test -s /secure/redis.conf
+        test -f /secure/users.acl
+        test -s /secure/users.acl
+        test -f /run/secrets/redis-health-password
+        test -s /run/secrets/redis-health-password
+        exec /usr/local/bin/docker-entrypoint.sh redis-server /secure/redis.conf
     networks:
       - chen-stack-network
     healthcheck:
-      test: ["CMD", "redis-cli", "--user", "${REDIS_USERNAME:-chenstack}", "-a", "${REDIS_PASSWORD:-chenstack123}", "ping"]
+      test: ["CMD-SHELL", 'test -f /run/secrets/redis-health-password && test -s /run/secrets/redis-health-password && REDISCLI_AUTH="$$(cat /run/secrets/redis-health-password)" redis-cli --user "$${REDIS_USERNAME}" -e ping | grep -qx PONG']
       timeout: 10s
       retries: 5
       interval: 10s
@@ -50,7 +74,7 @@ services:
     restart: unless-stopped
     environment:
       MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minio}
-      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-minio}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:?MINIO_SECRET_KEY must be explicitly configured}
       # 启用 MinIO Web 控制台
       MINIO_BROWSER: on
       MINIO_BROWSER_LOGIN_ANIMATION: on
@@ -86,7 +110,7 @@ services:
     restart: unless-stopped
     environment:
       RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER:-guest}
-      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS:-guest}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS:?RABBITMQ_DEFAULT_PASS must be explicitly configured}
     ports:
       - "127.0.0.1:${RABBITMQ_PORT:-5672}:5672"
       - "127.0.0.1:${RABBITMQ_MANAGEMENT_PORT:-15672}:15672"
@@ -123,25 +147,25 @@ services:
       MYSQL_PORT: 3306
       MYSQL_DATABASE: ${MYSQL_DATABASE:-chen_stack}
       MYSQL_USERNAME: ${MYSQL_USER:-root}
-      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-root}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?MYSQL_PASSWORD must be explicitly configured}
 
       # Redis 配置
       REDIS_HOST: redis
       REDIS_PORT: 6379
       REDIS_USERNAME: ${REDIS_USERNAME:-chenstack}
-      REDIS_PASSWORD: ${REDIS_PASSWORD:-chenstack123}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD must be explicitly configured}
 
       # MinIO 配置
       MINIO_ENDPOINT: http://minio:9000
       MINIO_PUBLIC_POINT: ${MINIO_PUBLIC_POINT:-http://localhost:9000}
       MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minio}
-      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minio}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:?MINIO_SECRET_KEY must be explicitly configured}
 
       # RabbitMQ 配置
       RABBITMQ_HOST: rabbitmq
       RABBITMQ_PORT: 5672
       RABBITMQ_USERNAME: ${RABBITMQ_DEFAULT_USER:-guest}
-      RABBITMQ_PASSWORD: ${RABBITMQ_DEFAULT_PASS:-guest}
+      RABBITMQ_PASSWORD: ${RABBITMQ_DEFAULT_PASS:?RABBITMQ_DEFAULT_PASS must be explicitly configured}
 
       # 本地开发默认关闭邮件健康检查，避免占位邮箱导致 actuator health DOWN
 
@@ -181,7 +205,7 @@ services:
       ALIYUN_ACCESS_KEY_SECRET: ${ALIYUN_ACCESS_KEY_SECRET:-your-access-key-secret}
 
       # 自定义配置
-      CHEN_STACK_JWT_SECRET: ${CHEN_STACK_JWT_SECRET:-chenstack_jwt_secret}
+      CHEN_STACK_JWT_SECRET: ${CHEN_STACK_JWT_SECRET:?CHEN_STACK_JWT_SECRET must be explicitly configured}
       CHEN_STACK_PHOTO_AUTO_AUDIT: ${CHEN_STACK_PHOTO_AUTO_AUDIT:-false}
       CHEN_STACK_ARTICLE_AUTO_AUDIT: ${CHEN_STACK_ARTICLE_AUTO_AUDIT:-true}
       CHEN_STACK_COLUMN_AUTO_AUDIT: ${CHEN_STACK_COLUMN_AUTO_AUDIT:-false}

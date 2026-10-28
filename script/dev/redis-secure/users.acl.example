@@ -1,0 +1,2 @@
+# This template grants no login. Supply the reviewed application ACL separately.
+user default off

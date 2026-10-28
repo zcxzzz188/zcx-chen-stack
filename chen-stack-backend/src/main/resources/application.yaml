@@ -39,7 +39,7 @@ spring:
     driver-class-name: com.mysql.cj.jdbc.Driver
     url: jdbc:mysql://${MYSQL_HOST:localhost}:${MYSQL_PORT:3306}/${MYSQL_DATABASE:chen_stack}?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false&connectTimeout=30000&socketTimeout=30000
     username: ${MYSQL_USERNAME:root}
-    password: ${MYSQL_PASSWORD:root}
+    password: ${MYSQL_PASSWORD}
   data:
     redis:
       host: ${REDIS_HOST:localhost}
@@ -73,7 +73,7 @@ spring:
     host: ${RABBITMQ_HOST:localhost}
     port: ${RABBITMQ_PORT:5672}
     username: ${RABBITMQ_USERNAME:guest}
-    password: ${RABBITMQ_PASSWORD:guest}
+    password: ${RABBITMQ_PASSWORD}
     virtual-host: /
     connection-timeout: 60000 # 连接超时时间(毫秒)
     requested-heartbeat: 60 # 心跳检测间隔(秒)
@@ -115,7 +115,7 @@ minio: # minio 配置
   endpoint: ${MINIO_ENDPOINT:http://localhost:9000} # java后端连接minio服务的地址
   publicPoint: ${MINIO_PUBLIC_POINT:http://localhost:9000} # 生成的图片地址
   accessKey: ${MINIO_ACCESS_KEY:minio}
-  secretKey: ${MINIO_SECRET_KEY:minio}
+  secretKey: ${MINIO_SECRET_KEY}
   bucketName: chen-stack
 frontend:
   userHost: ${FRONTEND_USER_HOST:http://localhost:7000/} # 前端用户地址
@@ -127,7 +127,7 @@ aliyun:
   imageaudit:
     endpoint: imageaudit.cn-shanghai.aliyuncs.com
 chen-stack:
-  jwt: ${CHEN_STACK_JWT_SECRET:chenstack_jwt_secret} # jwt 密钥
+  jwt: ${CHEN_STACK_JWT_SECRET} # jwt 密钥
   rate-limit:
     enabled: ${CHEN_STACK_RATE_LIMIT_ENABLED:true} # 限流开关，压力测试时设为 false
   PhotoAutoAudit: ${CHEN_STACK_PHOTO_AUTO_AUDIT:false} # 是否开启图片自动审核

@@ -6,10 +6,10 @@ services:
     container_name: chen-stack-mysql
     restart: unless-stopped
     environment:
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD must be explicitly configured}
       MYSQL_DATABASE: ${MYSQL_DATABASE}
       MYSQL_USER: ${MYSQL_USER}
-      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?MYSQL_PASSWORD must be explicitly configured}
       TZ: Asia/Shanghai
     ports:
       - "${MYSQL_PORT}:3306"
@@ -19,7 +19,7 @@ services:
     networks:
       - chen-stack-network
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD}"]
+      test: ["CMD-SHELL", 'MYSQL_PWD="$${MYSQL_ROOT_PASSWORD}" mysql --user=root --batch --skip-column-names --execute="SELECT 1" | grep -qx 1']
       timeout: 20s
       retries: 10
       interval: 10s
@@ -32,13 +32,37 @@ services:
     restart: unless-stopped
     ports:
       - "${REDIS_PORT}:6379"
+    environment:
+      REDIS_USERNAME: ${REDIS_USERNAME:?REDIS_USERNAME must be explicitly configured}
     volumes:
       - redis_data:/data
-    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD}", "--user", "default", "off", "--user", "${REDIS_USERNAME}", "on", "+@all", "~*", "&*", ">${REDIS_PASSWORD}"]
+      - type: bind
+        source: ${REDIS_SECURE_CONFIG_DIRECTORY:?REDIS_SECURE_CONFIG_DIRECTORY must be explicitly configured}
+        target: /secure
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${REDIS_HEALTH_PASSWORD_FILE:?REDIS_HEALTH_PASSWORD_FILE must be explicitly configured}
+        target: /run/secrets/redis-health-password
+        read_only: true
+        bind:
+          create_host_path: false
+    command:
+      - sh
+      - -ec
+      - |
+        test -f /secure/redis.conf
+        test -s /secure/redis.conf
+        test -f /secure/users.acl
+        test -s /secure/users.acl
+        test -f /run/secrets/redis-health-password
+        test -s /run/secrets/redis-health-password
+        exec /usr/local/bin/docker-entrypoint.sh redis-server /secure/redis.conf
     networks:
       - chen-stack-network
     healthcheck:
-      test: ["CMD", "redis-cli", "--user", "${REDIS_USERNAME}", "-a", "${REDIS_PASSWORD}", "ping"]
+      test: ["CMD-SHELL", 'test -f /run/secrets/redis-health-password && test -s /run/secrets/redis-health-password && REDISCLI_AUTH="$$(cat /run/secrets/redis-health-password)" redis-cli --user "$${REDIS_USERNAME}" -e ping | grep -qx PONG']
       timeout: 10s
       retries: 5
       interval: 10s
@@ -51,7 +75,7 @@ services:
     restart: unless-stopped
     environment:
       MINIO_ROOT_USER: ${MINIO_ACCESS_KEY}
-      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:?MINIO_SECRET_KEY must be explicitly configured}
       MINIO_BROWSER: on
       MINIO_BROWSER_LOGIN_ANIMATION: on
       MINIO_BROWSER_SESSION_DURATION: 12h
@@ -83,7 +107,7 @@ services:
     restart: unless-stopped
     environment:
       RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER}
-      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS:?RABBITMQ_DEFAULT_PASS must be explicitly configured}
     ports:
       - "${RABBITMQ_PORT}:5672"
       - "${RABBITMQ_MANAGEMENT_PORT}:15672"

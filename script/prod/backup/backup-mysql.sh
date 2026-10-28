@@ -72,12 +72,13 @@ log() {
 log_simple "正在从 .env 文件加载配置..."
 
 # 检查并修复 Windows 换行符
-if file "${ENV_FILE}" | grep -q "CRLF"; then
-    log_simple "WARNING: 检测到 .env 文件为 Windows 格式，自动转换中..."
-    sed -i 's/\r$//' "${ENV_FILE}" 2>/dev/null || true
-fi
+# Read configuration without rewriting the protected source file.
 
-source "${ENV_FILE}"
+source <(sed 's/\r$//' "${ENV_FILE}")
+if [ -n "${CHEN_CREDENTIAL_ENV_FILE:-}" ]; then
+    [ -r "${CHEN_CREDENTIAL_ENV_FILE}" ] || exit 1
+    source <(sed 's/\r$//' "${CHEN_CREDENTIAL_ENV_FILE}")
+fi
 log "成功加载 .env 配置文件"
 
 # Docker 容器名称
@@ -85,8 +86,8 @@ MYSQL_CONTAINER_NAME="chen-stack-mysql"
 
 # MySQL 配置（从 .env 文件读取）
 MYSQL_USER="${MYSQL_USER:-root}"              # 应用连接数据库的用户名
-MYSQL_PASSWORD="${MYSQL_PASSWORD:-chenstack123}"  # 应用连接数据库的密码
-MYSQL_ROOT_PASSWORD="${MYSQL_ROOT_PASSWORD:-root}" # root 密码（备用）
+MYSQL_PASSWORD="${MYSQL_PASSWORD:?MYSQL_PASSWORD must be explicitly configured}"  # 应用连接数据库的密码
+MYSQL_ROOT_PASSWORD="${MYSQL_ROOT_PASSWORD:-}" # root 密码（备用）
 MYSQL_DATABASE="${MYSQL_DATABASE:-chen_stack}" # 数据库名称
 
 # 备份配置
@@ -127,12 +128,16 @@ MYSQL_CONTAINER_NAME="chen-stack-mysql"
 
 # 从 .env 读取配置
 if [ -f "${ENV_FILE}" ]; then
-    source "${ENV_FILE}"
+    source <(sed 's/\r$//' "${ENV_FILE}")
+fi
+if [ -n "${CHEN_CREDENTIAL_ENV_FILE:-}" ]; then
+    [ -r "${CHEN_CREDENTIAL_ENV_FILE}" ] || exit 1
+    source <(sed 's/\r$//' "${CHEN_CREDENTIAL_ENV_FILE}")
 fi
 
 MYSQL_USER="${MYSQL_USER:-root}"
-MYSQL_PASSWORD="${MYSQL_PASSWORD:-chenstack123}"
-MYSQL_ROOT_PASSWORD="${MYSQL_ROOT_PASSWORD:-root}"
+MYSQL_PASSWORD="${MYSQL_PASSWORD:?MYSQL_PASSWORD must be explicitly configured}"
+MYSQL_ROOT_PASSWORD="${MYSQL_ROOT_PASSWORD:-}"
 MYSQL_DATABASE="${MYSQL_DATABASE:-chen_stack}"
 
 log_simple() {
@@ -161,9 +166,8 @@ if ! check_mysql_container; then
     exit 1
 fi
 
-docker exec ${MYSQL_CONTAINER_NAME} mysqldump \
+printf '%s\n' "${MYSQL_PASSWORD}" | docker exec -i "${MYSQL_CONTAINER_NAME}" sh -c 'IFS= read -r MYSQL_PWD; export MYSQL_PWD; exec mysqldump "$@"' backup-mysql \
     -u${MYSQL_USER} \
-    -p${MYSQL_PASSWORD} \
     --databases ${MYSQL_DATABASE} \
     --single-transaction \
     --quick \
@@ -237,9 +241,8 @@ do_backup() {
     fi
 
     log "使用 Docker 方式备份..."
-    docker exec ${MYSQL_CONTAINER_NAME} mysqldump \
+    printf '%s\n' "${MYSQL_PASSWORD}" | docker exec -i "${MYSQL_CONTAINER_NAME}" sh -c 'IFS= read -r MYSQL_PWD; export MYSQL_PWD; exec mysqldump "$@"' backup-mysql \
         -u${MYSQL_USER} \
-        -p${MYSQL_PASSWORD} \
         --databases ${MYSQL_DATABASE} \
         --single-transaction \
         --quick \
