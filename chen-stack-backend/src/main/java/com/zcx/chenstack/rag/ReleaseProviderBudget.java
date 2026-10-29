@@ -18,10 +18,12 @@ import java.time.Duration;
 import java.time.format.DateTimeParseException;
 import java.util.HexFormat;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /** 本轮运维费用账本；发送前落盘，失败或UNKNOWN不退款，目录ACL由可信运维账户维护。 */
 public final class ReleaseProviderBudget {
     public enum Kind { EMBEDDING, CHAT }
+    private record HttpSend(AtomicBoolean dispatched) { }
     private final Path path;
     private final String header;
     private final int embeddingLimit;
@@ -60,7 +62,16 @@ public final class ReleaseProviderBudget {
                 .addInterceptor(chain -> {
                     try { reserve(kind); }
                     catch (SecurityException denied) { throw new IOException("RELEASE_PROVIDER_SEND_BLOCKED", denied); }
-                    return chain.proceed(chain.request().newBuilder().url(url).build());
+                    return chain.proceed(chain.request().newBuilder().url(url)
+                            .tag(HttpSend.class, new HttpSend(new AtomicBoolean())).build());
+                })
+                .addNetworkInterceptor(chain -> {
+                    // 503 Retry-After:0 仍可能触发内部 follow-up；每个 Call 只放行一次网络发送。
+                    HttpSend send = chain.request().tag(HttpSend.class);
+                    if (send == null || !send.dispatched().compareAndSet(false, true)) {
+                        throw new IOException("RELEASE_PROVIDER_RETRY_BLOCKED");
+                    }
+                    return chain.proceed(chain.request());
                 }).build();
     }
 

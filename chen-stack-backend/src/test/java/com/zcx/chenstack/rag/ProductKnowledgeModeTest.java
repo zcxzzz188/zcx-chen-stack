@@ -8,6 +8,7 @@ import com.zcx.chenstack.wiki.WikiViews.*;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.chat.prompt.Prompt;
 import reactor.core.publisher.Flux;
 
 import java.util.List;
@@ -180,5 +181,27 @@ class ProductKnowledgeModeTest {
         }
         assertTrue(fixture.prompts.isEmpty());
         verifyNoInteractions(wiki, fixture.articles);
+    }
+
+    @Test void configuredWikiRoundLimitStopsToolLoopAfterThreeBodyCalls() {
+        fixture.service = new ProductRagAnswerService(fixture.knowledge, ChatClient.create(fixture.model), fixture.memory,
+                null, new AiKnowledgeProperties("wiki"), wiki, 3);
+        fixture.respond = prompt -> Flux.just(fixture.tools(fixture.call("readPublishedWiki", "{\"title\":\"事务知识\"}")));
+
+        assertThrows(RuntimeException.class, () -> fixture.run("事务是什么", "bounded-wiki"));
+
+        assertEquals(3, fixture.prompts.size());
+        verify(fixture.model, times(4)).stream(any(Prompt.class));
+        assertTrue(fixture.memory.get("wiki:7:bounded-wiki").isEmpty());
+        verifyNoInteractions(fixture.articles);
+    }
+
+    @Test void modelRoundLimitRejectsValuesOutsideOneToSixBeforeSending() {
+        for (int limit : new int[]{0, 7}) {
+            assertThrows(IllegalArgumentException.class, () -> new ProductRagAnswerService(
+                    fixture.knowledge, ChatClient.create(fixture.model), fixture.memory,
+                    null, new AiKnowledgeProperties("wiki"), wiki, limit));
+        }
+        verify(fixture.model, never()).stream(any(Prompt.class));
     }
 }

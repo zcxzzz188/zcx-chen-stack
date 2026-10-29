@@ -378,6 +378,42 @@ class ReleaseProviderBudgetTest {
         } finally { server.stop(0); }
     }
 
+    @Test void retryAfterZeroCannotSendTwiceButANewCallHasItsOwnPermit() throws Exception {
+        var budget = budget(0, 2);
+        AtomicInteger received = new AtomicInteger();
+        HttpServer server = HttpServer.create(new java.net.InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/chat/completions", exchange -> {
+            int attempt = received.incrementAndGet();
+            exchange.getRequestBody().readAllBytes();
+            exchange.getResponseHeaders().set("Content-Type", "application/json");
+            byte[] response;
+            if (attempt == 1) {
+                response = "{\"error\":{\"message\":\"fixture unavailable\"}}".getBytes(StandardCharsets.UTF_8);
+                exchange.getResponseHeaders().set("Retry-After", "0");
+                exchange.sendResponseHeaders(503, response.length);
+            } else {
+                response = ("{\"id\":\"fixture\",\"object\":\"chat.completion\",\"created\":1,\"model\":\"fixture\","
+                        + "\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"ok\"},\"finish_reason\":\"stop\"}],"
+                        + "\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1,\"total_tokens\":2}}")
+                        .getBytes(StandardCharsets.UTF_8);
+                exchange.sendResponseHeaders(200, response.length);
+            }
+            exchange.getResponseBody().write(response);
+            exchange.close();
+        });
+        server.start();
+        try {
+            var model = sdkFixture(server, budget);
+            assertThrows(RuntimeException.class, () -> model.call("first call"));
+            assertEquals(1, received.get());
+            assertEquals(1L, budget.snapshot().get("chat"));
+
+            assertEquals("ok", model.call("independent second call"));
+            assertEquals(2, received.get());
+            assertEquals(2L, budget.snapshot().get("chat"));
+        } finally { server.stop(0); }
+    }
+
     private org.springframework.ai.openai.OpenAiChatModel sdkFixture(HttpServer server, ReleaseProviderBudget budget) {
         AiConfig config = new AiConfig();
         ReflectionTestUtils.setField(config, "apiKey", "fixture-only");

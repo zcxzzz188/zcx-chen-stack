@@ -6,6 +6,7 @@ import com.zcx.chenstack.rag.*;
 import org.springframework.ai.document.MetadataMode;
 import org.springframework.ai.openai.OpenAiEmbeddingModel;
 import org.springframework.ai.openai.OpenAiEmbeddingOptions;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -20,9 +21,10 @@ public class RagConfig {
     public ProductRagAnswerService productRagAnswerService(RagKnowledgeService knowledge,
             org.springframework.ai.openai.OpenAiChatModel model, org.springframework.ai.chat.memory.ChatMemory memory,
             ReleaseProviderBudget budget, AiKnowledgeProperties properties,
-            org.springframework.beans.factory.ObjectProvider<com.zcx.chenstack.wiki.WikiPublicationService> wiki) {
+            org.springframework.beans.factory.ObjectProvider<com.zcx.chenstack.wiki.WikiPublicationService> wiki,
+            @Value("${chen.rag.max-model-rounds:6}") int maxModelRounds) {
         return new ProductRagAnswerService(knowledge, org.springframework.ai.chat.client.ChatClient.create(model), memory,
-                budget, properties, "wiki".equals(properties.knowledgeMode()) ? wiki.getIfAvailable() : null);
+                budget, properties, "wiki".equals(properties.knowledgeMode()) ? wiki.getIfAvailable() : null, maxModelRounds);
     }
 
     @Bean

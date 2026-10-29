@@ -54,6 +54,7 @@ public final class ProductRagAnswerService {
     private final ReleaseProviderBudget budget;
     private final String knowledgeMode;
     private final WikiPublicationService wiki;
+    private final int maxModelRounds;
     private final ToolCallingManager toolManager = ToolCallingManager.builder().resolutionFallbackEnabled(false).build();
     private final Set<String> activeConversations = ConcurrentHashMap.newKeySet();
 
@@ -68,11 +69,21 @@ public final class ProductRagAnswerService {
 
     public ProductRagAnswerService(RagKnowledgeService knowledge, ChatClient client, ChatMemory memory,
                                    ReleaseProviderBudget budget, AiKnowledgeProperties properties, WikiPublicationService wiki) {
+        this(knowledge, client, memory, budget, properties, wiki, MAX_MODEL_ROUNDS);
+    }
+
+    public ProductRagAnswerService(RagKnowledgeService knowledge, ChatClient client, ChatMemory memory,
+                                   ReleaseProviderBudget budget, AiKnowledgeProperties properties, WikiPublicationService wiki,
+                                   int maxModelRounds) {
+        if (maxModelRounds < 1 || maxModelRounds > MAX_MODEL_ROUNDS) {
+            throw new IllegalArgumentException("chen.rag.max-model-rounds 必须为 1 到 6");
+        }
         this.knowledge = knowledge;
         this.client = client;
         this.memory = memory;
         this.knowledgeMode = properties.knowledgeMode();
         this.wiki = wiki;
+        this.maxModelRounds = maxModelRounds;
         if ("wiki".equals(knowledgeMode) && wiki == null) {
             throw new IllegalStateException("AI_KNOWLEDGE_MODE=wiki 需要启用 Wiki foundation/product 及有效迁移，不能回退为 rag");
         }
@@ -163,7 +174,7 @@ public final class ProductRagAnswerService {
                         usage.getPromptTokens(), usage.getCompletionTokens());
                 String finish = reply.getResult().getMetadata().getFinishReason();
                 if (reply.hasToolCalls()) {
-                    if (!"tool_calls".equalsIgnoreCase(finish) || round >= MAX_MODEL_ROUNDS - 1
+                    if (!"tool_calls".equalsIgnoreCase(finish) || round >= maxModelRounds - 1
                             || reply.getResult().getOutput().getToolCalls().size() > MAX_TOOL_CALLS_PER_ROUND) {
                         return Flux.error(CustomerServiceError.SSE_INCOMPLETE.exception());
                     }
