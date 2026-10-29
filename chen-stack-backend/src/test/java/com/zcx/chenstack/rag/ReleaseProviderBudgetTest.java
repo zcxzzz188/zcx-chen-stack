@@ -423,4 +423,80 @@ class ReleaseProviderBudgetTest {
         ReflectionTestUtils.setField(config, "maxTokens", 16);
         return config.openAiChatModel(budget);
     }
+
+    @Test void badRequestDiagnosticsPreserveWireBodyAndNeverEchoPrivateText() throws Exception {
+        var budget = budget(0, 1);
+        var received = new AtomicInteger();
+        String requestBody = "{\"model\":\"deepseek-flash\",\"messages\":[{\"role\":\"user\",\"content\":\"PRIVATE_REQUEST_CANARY\"}]}";
+        String errorBody = "{\"error\":{\"type\":\"invalid_request_error\",\"param\":\"model\",\"message\":\"invalid model PRIVATE_ERROR_CANARY\"}}";
+        var server = HttpServer.create(new java.net.InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/chat/completions", exchange -> {
+            if (requestBody.equals(new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8))) received.incrementAndGet();
+            byte[] body = errorBody.getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().set("x-request-id", "PRIVATE_TRACE_CANARY");
+            exchange.sendResponseHeaders(400, body.length); exchange.getResponseBody().write(body); exchange.close();
+        });
+        server.start();
+        var logger = (ch.qos.logback.classic.Logger) org.slf4j.LoggerFactory.getLogger(ReleaseProviderBudget.class);
+        var appender = new ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent>();
+        appender.start(); logger.addAppender(appender);
+        String endpoint = "http://127.0.0.1:" + server.getAddress().getPort() + "/chat/completions";
+        var client = budget.httpTransport(ReleaseProviderBudget.Kind.CHAT, Duration.ofSeconds(5), endpoint);
+        try {
+            var request = new okhttp3.Request.Builder().url(endpoint).header("Authorization", "Bearer PRIVATE_HEADER_CANARY")
+                    .post(okhttp3.RequestBody.create(requestBody, okhttp3.MediaType.get("application/json"))).build();
+            try (var response = client.newCall(request).execute()) { assertEquals(400, response.code()); assertEquals(errorBody, response.body().string()); }
+            assertEquals(1, received.get()); assertEquals(1L, budget.snapshot().get("chat"));
+            var lines = appender.list.stream().map(ch.qos.logback.classic.spi.ILoggingEvent::getFormattedMessage).toList();
+            assertTrue(lines.stream().anyMatch(line -> line.startsWith("PROVIDER_REQUEST_SCHEMA ") && line.contains("\"model\":\"deepseek-flash\"")));
+            assertTrue(lines.stream().anyMatch(line -> line.startsWith("PROVIDER_BAD_REQUEST ") && line.contains("status=400") && line.contains("\"param\":\"model\"")));
+            assertTrue(lines.stream().noneMatch(line -> line.contains("CANARY")));
+            assertTrue(appender.list.stream().allMatch(event -> event.getThrowableProxy() == null));
+        } finally { logger.detachAppender(appender); appender.stop(); client.connectionPool().evictAll(); server.stop(0); }
+    }
+
+    @Test void wireAuditCorrelatesCallsWithoutHeadersBodiesQueryOrFailureMessages() throws Exception {
+        var budget = budget(0, 3);
+        AtomicInteger received = new AtomicInteger();
+        HttpServer server = HttpServer.create(new java.net.InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/chat/completions", exchange -> {
+            received.incrementAndGet(); exchange.getRequestBody().readAllBytes();
+            byte[] body = "RESPONSE_BODY_CANARY".getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(200, body.length); exchange.getResponseBody().write(body); exchange.close();
+        });
+        server.start();
+        var logger = (ch.qos.logback.classic.Logger) org.slf4j.LoggerFactory.getLogger(ReleaseProviderBudget.class);
+        var appender = new ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent>();
+        appender.start(); logger.addAppender(appender);
+        var endpoint = "http://USERINFO_CANARY:USERINFO_PASSWORD_CANARY@127.0.0.1:" + server.getAddress().getPort()
+                + "/chat/completions?key=QUERY_CANARY";
+        var client = budget.httpTransport(ReleaseProviderBudget.Kind.CHAT, Duration.ofSeconds(5), endpoint);
+        var request = new okhttp3.Request.Builder().url(endpoint).header("Authorization", "Bearer HEADER_CANARY")
+                .post(okhttp3.RequestBody.create("REQUEST_BODY_CANARY", okhttp3.MediaType.get("application/json"))).build();
+        try {
+            for (int i = 0; i < 2; i++) {
+                try (var response = client.newCall(request).execute()) {
+                    assertEquals(200, response.code()); assertEquals("RESPONSE_BODY_CANARY", response.body().string());
+                }
+            }
+            var failing = client.newBuilder().addInterceptor(chain -> { throw new java.io.IOException("FAILURE_MESSAGE_CANARY"); }).build();
+            assertThrows(java.io.IOException.class, () -> failing.newCall(request).execute());
+            assertEquals(2, received.get()); assertEquals(3L, budget.snapshot().get("chat"));
+            var audit = appender.list.stream().filter(event -> event.getFormattedMessage().startsWith("RELEASE_HTTP_AUDIT ")).toList();
+            var sent = audit.stream().map(ch.qos.logback.classic.spi.ILoggingEvent::getFormattedMessage)
+                    .filter(line -> line.contains("event=request_headers_end ")).toList();
+            var responded = audit.stream().map(ch.qos.logback.classic.spi.ILoggingEvent::getFormattedMessage)
+                    .filter(line -> line.contains("event=response_headers_end ")).toList();
+            assertEquals(received.get(), sent.size()); assertEquals(received.get(), responded.size());
+            var ids = sent.stream().map(line -> line.split("audit_id=")[1].split(" ")[0]).collect(java.util.stream.Collectors.toSet());
+            assertEquals(2, ids.size());
+            assertTrue(sent.stream().allMatch(line -> line.contains("budget_id=synthetic kind=CHAT method=POST host=127.0.0.1 port=")));
+            assertTrue(sent.stream().allMatch(line -> line.endsWith("path=/chat/completions")));
+            assertTrue(responded.stream().allMatch(line -> line.endsWith("status=200")));
+            assertEquals(ids, responded.stream().map(line -> line.split("audit_id=")[1].split(" ")[0]).collect(java.util.stream.Collectors.toSet()));
+            assertEquals(1, audit.stream().filter(event -> event.getFormattedMessage().contains("event=call_failed ")).count());
+            assertTrue(audit.stream().anyMatch(event -> event.getFormattedMessage().endsWith("exception_class=java.io.IOException")));
+            for (var event : audit) { assertFalse(event.getFormattedMessage().contains("CANARY")); assertNull(event.getThrowableProxy()); }
+        } finally { logger.detachAppender(appender); appender.stop(); client.connectionPool().evictAll(); server.stop(0); }
+    }
 }

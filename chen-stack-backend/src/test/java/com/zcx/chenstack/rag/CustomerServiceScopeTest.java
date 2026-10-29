@@ -32,6 +32,30 @@ class CustomerServiceScopeTest {
         return fixture;
     }
 
+    @Test void classificationRequestsUsageAndAuditsOnlyNumericFields() {
+        var f = fixture();
+        f.scopeRespond = prompt -> Flux.just(new org.springframework.ai.chat.model.ChatResponse(
+                f.text("USER_HELP", "stop").getResults(),
+                org.springframework.ai.chat.metadata.ChatResponseMetadata.builder()
+                        .usage(new org.springframework.ai.chat.metadata.DefaultUsage(11, 2, 13)).build()));
+        var logger = (ch.qos.logback.classic.Logger) org.slf4j.LoggerFactory.getLogger(CustomerServiceScope.class);
+        var appender = new ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent>();
+        appender.start(); logger.addAppender(appender);
+        try {
+            assertTrue(new CustomerServiceScope(org.springframework.ai.chat.client.ChatClient.create(f.model))
+                    .permits("QUESTION_USAGE_CANARY", List.of()).block());
+            var prompt = org.mockito.ArgumentCaptor.forClass(Prompt.class);
+            verify(f.model).stream(prompt.capture());
+            assertEquals(Boolean.TRUE, ((org.springframework.ai.openai.OpenAiChatOptions) prompt.getValue().getOptions()).getStreamOptions().includeUsage());
+            var audit = appender.list.stream().filter(event -> event.getFormattedMessage().startsWith("CUSTOMER_SCOPE_USAGE ")).toList();
+            assertEquals(1, audit.size());
+            assertEquals("CUSTOMER_SCOPE_USAGE input_tokens=11 output_tokens=2 total_tokens=13", audit.getFirst().getFormattedMessage());
+            assertNull(audit.getFirst().getThrowableProxy());
+            assertFalse(audit.getFirst().getFormattedMessage().contains("QUESTION_USAGE_CANARY"));
+            assertFalse(audit.getFirst().getFormattedMessage().contains("USER_HELP"));
+        } finally { logger.detachAppender(appender); appender.stop(); }
+    }
+
     @Test void scopeDenialIsRoleIndependentAndPrecedesAllHelpAndBusinessTools() {
         for (int user : List.of(7, 1, 7200)) {
             var f = fixture();

@@ -18,14 +18,17 @@ import java.time.Duration;
 import java.time.format.DateTimeParseException;
 import java.util.HexFormat;
 import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /** 本轮运维费用账本；发送前落盘，失败或UNKNOWN不退款，目录ACL由可信运维账户维护。 */
+@lombok.extern.slf4j.Slf4j
 public final class ReleaseProviderBudget {
     public enum Kind { EMBEDDING, CHAT }
     private record HttpSend(AtomicBoolean dispatched) { }
     private final Path path;
     private final String header;
+    private final String budgetId;
     private final int embeddingLimit;
     private final int chatLimit;
 
@@ -34,6 +37,7 @@ public final class ReleaseProviderBudget {
     }
 
     private ReleaseProviderBudget(String ledgerPath, String budgetId, int embeddingLimit, int chatLimit, boolean checkLedger) {
+        this.budgetId = budgetId == null || budgetId.isBlank() ? "UNCONFIGURED" : budgetId;
         if ((ledgerPath == null || ledgerPath.isBlank()) && (budgetId == null || budgetId.isBlank())) {
             path = null; header = null; this.embeddingLimit = 0; this.chatLimit = 0;
             return;
@@ -59,6 +63,22 @@ public final class ReleaseProviderBudget {
         var url = okhttp3.HttpUrl.get(endpoint);
         return new okhttp3.OkHttpClient.Builder().connectTimeout(timeout).readTimeout(timeout).callTimeout(timeout)
                 .retryOnConnectionFailure(false).followRedirects(false).followSslRedirects(false)
+                .eventListenerFactory(call -> new okhttp3.EventListener() {
+                    private final String auditId = UUID.randomUUID().toString();
+                    @Override public void requestHeadersEnd(okhttp3.Call current, okhttp3.Request request) {
+                        var target = request.url();
+                        String path = java.util.Set.of("/chat/completions", "/v1/chat/completions", "/embeddings", "/v1/embeddings")
+                                .contains(target.encodedPath()) ? target.encodedPath() : "<redacted>";
+                        log.info("RELEASE_HTTP_AUDIT event=request_headers_end audit_id={} budget_id={} kind={} method={} host={} port={} path={}",
+                                auditId, budgetId, kind, request.method(), target.host(), target.port(), path);
+                    }
+                    @Override public void responseHeadersEnd(okhttp3.Call current, okhttp3.Response response) {
+                        log.info("RELEASE_HTTP_AUDIT event=response_headers_end audit_id={} status={}", auditId, response.code());
+                    }
+                    @Override public void callFailed(okhttp3.Call current, IOException failure) {
+                        log.info("RELEASE_HTTP_AUDIT event=call_failed audit_id={} exception_class={}", auditId, failure.getClass().getName());
+                    }
+                })
                 .addInterceptor(chain -> {
                     try { reserve(kind); }
                     catch (SecurityException denied) { throw new IOException("RELEASE_PROVIDER_SEND_BLOCKED", denied); }
@@ -71,8 +91,53 @@ public final class ReleaseProviderBudget {
                     if (send == null || !send.dispatched().compareAndSet(false, true)) {
                         throw new IOException("RELEASE_PROVIDER_RETRY_BLOCKED");
                     }
-                    return chain.proceed(chain.request());
+                    if (kind != Kind.CHAT) return chain.proceed(chain.request());
+                    String traceId = UUID.randomUUID().toString();
+                    var captured = new okio.Buffer();
+                    var oversized = new AtomicBoolean();
+                    var request = chain.request();
+                    if (request.body() != null) request = request.newBuilder()
+                            .method(request.method(), diagnosticBody(request.body(), captured, oversized)).build();
+                    okhttp3.Response response;
+                    try { response = chain.proceed(request); }
+                    finally {
+                        log.info("PROVIDER_REQUEST_SCHEMA budget_id={} trace_id={} summary={}", budgetId, traceId,
+                                ProviderDiagnostics.request(oversized.get() ? null : captured.readByteArray()));
+                    }
+                    if (response.code() == 400) {
+                        String summary;
+                        try { summary = ProviderDiagnostics.error(response.peekBody(65_537).bytes()); }
+                        catch (IOException unavailable) { summary = "{\"diagnostic\":\"ERROR_BODY_UNAVAILABLE\"}"; }
+                        String requestId = response.header("x-request-id", response.header("x-ds-request-id", ""));
+                        String requestIdHash;
+                        try { requestIdHash = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
+                                .digest(requestId.getBytes(StandardCharsets.UTF_8))); }
+                        catch (java.security.NoSuchAlgorithmException impossible) { throw new IllegalStateException(impossible); }
+                        log.warn("PROVIDER_BAD_REQUEST budget_id={} trace_id={} status=400 request_id_sha256={} summary={}",
+                                budgetId, traceId, requestIdHash, summary);
+                    }
+                    return response;
                 }).build();
+    }
+
+    private static okhttp3.RequestBody diagnosticBody(okhttp3.RequestBody body, okio.Buffer captured, AtomicBoolean oversized) {
+        return new okhttp3.RequestBody() {
+            @Override public okhttp3.MediaType contentType() { return body.contentType(); }
+            @Override public long contentLength() throws IOException { return body.contentLength(); }
+            @Override public boolean isOneShot() { return body.isOneShot(); }
+            @Override public boolean isDuplex() { return body.isDuplex(); }
+            @Override public void writeTo(okio.BufferedSink sink) throws IOException {
+                var tee = okio.Okio.buffer(new okio.ForwardingSink(sink) {
+                    @Override public void write(okio.Buffer source, long byteCount) throws IOException {
+                        if (!oversized.get() && captured.size() + byteCount <= 65_536) source.copyTo(captured, 0, byteCount);
+                        else { oversized.set(true); captured.clear(); }
+                        super.write(source, byteCount);
+                    }
+                });
+                body.writeTo(tee);
+                tee.flush();
+            }
+        };
     }
 
     public ClientHttpRequestInterceptor restInterceptor(Kind kind) {

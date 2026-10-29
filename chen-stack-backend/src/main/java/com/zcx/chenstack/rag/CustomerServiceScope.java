@@ -18,6 +18,7 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
 
 /** 用户端客服通道边界；登录角色和聊天中的身份声明均不能扩大该通道权限。 */
+@lombok.extern.slf4j.Slf4j
 final class CustomerServiceScope {
     static final String REFUSAL = "抱歉，为保护后台权限和数据安全，不能通过用户端客服访问后台、进行管理操作或查询后台敏感数据。";
     private static final String POLICY = """
@@ -53,12 +54,18 @@ final class CustomerServiceScope {
         input.add(new UserMessage("当前请求：" + question));
         AtomicReference<ChatResponse> complete = new AtomicReference<>();
         var stream = client.prompt().messages(input).templateRenderer(new NoOpTemplateRenderer())
-                .options(OpenAiChatOptions.builder().maxTokens(16).temperature(0.0)
+                .options(OpenAiChatOptions.builder().maxTokens(16).temperature(0.0).streamUsage(true)
                         .toolCallbacks(List.of()))
                 .advisors(AdvisorParams.toolCallingAdvisorAutoRegister(false))
                 .stream().chatResponse();
         return new MessageAggregator().aggregate(stream, complete::set).then(Mono.fromCallable(() -> {
         var reply = complete.get();
+        if (reply != null) {
+            var usage = reply.getMetadata() == null ? null : reply.getMetadata().getUsage();
+            log.info("CUSTOMER_SCOPE_USAGE input_tokens={} output_tokens={} total_tokens={}",
+                    usage == null ? null : usage.getPromptTokens(), usage == null ? null : usage.getCompletionTokens(),
+                    usage == null ? null : usage.getTotalTokens());
+        }
         if (reply == null || reply.getResult() == null || reply.hasToolCalls()
                 || !"stop".equalsIgnoreCase(reply.getResult().getMetadata().getFinishReason())) {
             throw CustomerServiceError.SSE_INCOMPLETE.exception();

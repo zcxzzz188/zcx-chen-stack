@@ -126,8 +126,9 @@ public final class ProductRagAnswerService {
                 if ("rag".equals(knowledgeMode)) callbacks.addAll(List.of(ToolCallbacks.from(help)));
                 if ("wiki".equals(knowledgeMode)) callbacks.addAll(List.of(ToolCallbacks.from(new WikiTools(help))));
                 if (tools != null) callbacks.addAll(List.of(ToolCallbacks.from(tools)));
-                OpenAiChatOptions options = OpenAiChatOptions.builder().maxTokens(2048)
-                        .toolCallbacks(callbacks).streamUsage(true).build();
+                // 保留 builder 到 ChatClient 合并模型配置，避免提前 build 注入 SDK 默认模型。
+                OpenAiChatOptions.Builder options = OpenAiChatOptions.builder().maxTokens(2048)
+                        .toolCallbacks(callbacks).streamUsage(true);
                 return round(messages, options, help, 0);
                 });
             });
@@ -158,11 +159,11 @@ public final class ProductRagAnswerService {
         return recent;
     }
 
-    private Flux<String> round(List<Message> messages, OpenAiChatOptions options, HelpTools help, int round) {
+    private Flux<String> round(List<Message> messages, OpenAiChatOptions.Builder options, HelpTools help, int round) {
         return Flux.defer(() -> {
             help.requireCurrent();
             AtomicReference<ChatResponse> complete = new AtomicReference<>();
-            Flux<ChatResponse> stream = client.prompt().messages(messages).options(options.mutate())
+            Flux<ChatResponse> stream = client.prompt().messages(messages).options(options)
                     .advisors(AdvisorParams.toolCallingAdvisorAutoRegister(false))
                     .templateRenderer(new NoOpTemplateRenderer()).stream().chatResponse();
             // 每轮完成后才释放正文，避免展示工具调用前的猜测、截断或未执行承诺。
@@ -184,7 +185,7 @@ public final class ProductRagAnswerService {
                         if (help.events != null) help.events.discardPending();
                         return Flux.just(CustomerServiceScope.REFUSAL);
                     }
-                    return Mono.fromCallable(() -> toolManager.executeToolCalls(new Prompt(messages, options), reply))
+                    return Mono.fromCallable(() -> toolManager.executeToolCalls(new Prompt(messages, options.build()), reply))
                             .subscribeOn(Schedulers.boundedElastic())
                             .flatMapMany(result -> {
                                 help.businessToolsUsed |= reply.getResult().getOutput().getToolCalls().stream()
