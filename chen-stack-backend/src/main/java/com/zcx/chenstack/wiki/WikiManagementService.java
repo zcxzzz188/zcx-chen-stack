@@ -141,7 +141,7 @@ public final class WikiManagementService {
             """;
     private WikiCompilationService requiredCompiler() {
         WikiCompilationService service = compiler.getIfAvailable();
-        if (service == null) throw new WikiProductException(503, "Wiki编译器未启用（本阶段仅允许受控Mock）");
+        if (service == null) throw new WikiProductException(503, "Wiki编译器未启用，请联系管理员检查配置");
         return service;
     }
     private static Source source(Candidate c, Long snapshot, Long generation, boolean active) {

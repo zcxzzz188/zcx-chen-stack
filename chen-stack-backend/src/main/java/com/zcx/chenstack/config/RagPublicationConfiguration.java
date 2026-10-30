@@ -6,6 +6,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.beans.factory.ObjectProvider;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -15,7 +16,10 @@ import java.util.List;
 @EnableConfigurationProperties(RagPublicationProperties.class)
 public class RagPublicationConfiguration {
     @Bean
-    public ReleaseProviderBudget releaseProviderBudget(RagPublicationProperties release) {
+    public ReleaseProviderBudget releaseProviderBudget(RagPublicationProperties release, ObjectProvider<NormalAiUsage> normal) {
+        NormalAiUsage usage = normal.getIfAvailable();
+        // 本地发布命令不扫描正式 Web 计量组件，仍使用独立限次授权。
+        if (usage != null && usage.enabled()) return ReleaseProviderBudget.continuous(usage, NormalAiUsage.Purpose.CHAT);
         return new ReleaseProviderBudget(release.getBudgetLedgerPath(), release.getBudgetId(),
                 release.getMaxEmbeddingHttpAttempts(), release.getMaxChatHttpAttempts());
     }

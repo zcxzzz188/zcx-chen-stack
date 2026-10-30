@@ -210,6 +210,44 @@ class WikiCompilationIntegrationIT {
         }
     }
 
+    @Test void normalUsageKeepsDraftIdempotencyAndRechecksRevokedSource() throws Exception {
+        List<Long> sources = authorize(1);
+        var usage = new com.zcx.chenstack.rag.NormalAiUsage(true, temporary.resolve("compiler-normal-" + UUID.randomUUID() + ".jsonl").toString());
+        try (MockHttp http = new MockHttp(false)) {
+            http.responseModel = "deepseek-flash";
+            URI endpoint = URI.create(http.uri() + "/chat/completions");
+            Draft draft;
+            try (var model = SpringAiWikiModel.continuousDeepseek(endpoint, "deepseek-flash", "synthetic", usage)) {
+                draft = service(model).compile("normal-success", sources, options());
+                assertEquals("DRAFT_READY", foundation.status("normal-success").state());
+                assertEquals(2, jdbc.queryForObject("SELECT COUNT(*) FROM wiki_compile_attempt WHERE state='SUCCEEDED' AND usage_tokens=23", Integer.class));
+            }
+            try (var restarted = SpringAiWikiModel.continuousDeepseek(endpoint, "deepseek-flash", "synthetic", usage)) {
+                assertEquals(draft, service(restarted).compile("normal-success", sources, options()));
+                assertEquals(2, http.requests.size());
+                foundation.revoke(key(1));
+                assertThrows(SecurityException.class, () -> service(restarted).compile("normal-revoked", sources, options()));
+                assertEquals(2, http.requests.size());
+            }
+        }
+    }
+
+    @Test void normalUsageStillStopsAtPerJobCallLimit() throws Exception {
+        List<Long> sources = authorize(1);
+        var usage = new com.zcx.chenstack.rag.NormalAiUsage(true, temporary.resolve("compiler-normal-limit-" + UUID.randomUUID() + ".jsonl").toString());
+        try (MockHttp http = new MockHttp(false)) {
+            http.responseModel = "deepseek-flash";
+            try (var model = SpringAiWikiModel.continuousDeepseek(URI.create(http.uri() + "/chat/completions"), "deepseek-flash", "synthetic", usage)) {
+                var singleCall = new WikiCompilationService.Options(1, 100_000, 1024, Duration.ofSeconds(10), Set.of());
+                var failure = assertThrows(IllegalStateException.class, () -> service(model).compile("normal-bounded", sources, singleCall));
+                assertEquals("WIKI_BUDGET_EXHAUSTED", failure.getMessage());
+                assertEquals(1, http.requests.size());
+                assertEquals("FAILED", foundation.status("normal-bounded").state());
+                assertEquals(0, count("wiki_draft"));
+            }
+        }
+    }
+
     @Test void providerMissingUsagePersistsUnknownAndHaltsOtherAuthorizedJobs() throws Exception {
         List<Long> sources = authorize(1);
         try (MockHttp http = new MockHttp(false)) {

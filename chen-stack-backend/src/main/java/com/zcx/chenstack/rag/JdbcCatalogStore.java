@@ -57,6 +57,25 @@ public final class JdbcCatalogStore implements AutoCloseable {
         }
     }
 
+    /** Wiki readers share the committed authority without becoming a second catalog writer. */
+    static State readOnlySnapshot(DataSource source) {
+        try (Connection connection = source.getConnection()) {
+            connection.setNetworkTimeout(Runnable::run, 3000);
+            connection.setTransactionIsolation(Connection.TRANSACTION_REPEATABLE_READ);
+            connection.setReadOnly(true);
+            connection.setAutoCommit(false);
+            try {
+                State recovered = readState(connection, false);
+                new KnowledgeCatalog(recovered.documents());
+                return recovered;
+            } finally {
+                connection.rollback();
+            }
+        } catch (Exception error) {
+            throw new IllegalStateException("CATALOG_READ_ONLY_RECOVERY_FAILED", error);
+        }
+    }
+
     /** 仅显式初始化空的专用表；不创建表，不覆盖既有状态，不发布来源。 */
     public static void initialize(DataSource source, List<KnowledgeDocument> documents) {
         initializeApproved(source, documents, null);
@@ -377,9 +396,14 @@ public final class JdbcCatalogStore implements AutoCloseable {
 
     private State read() throws Exception {
         requireOwner();
+        return readState(connection, true);
+    }
+
+    private static State readState(Connection connection, boolean lockState) throws Exception {
         long generation; String expected;
         try (Statement query = connection.createStatement();
-             ResultSet result = query.executeQuery("SELECT id,generation,snapshot_sha256,schema_version FROM rag_catalog_state FOR UPDATE")) {
+             ResultSet result = query.executeQuery("SELECT id,generation,snapshot_sha256,schema_version FROM rag_catalog_state"
+                     + (lockState ? " FOR UPDATE" : ""))) {
             if (!result.next() || result.getInt(1) != 1 || result.getInt(4) != 1 || result.getLong(2) < 0) {
                 throw new SQLException("CATALOG_STATE_MISSING_OR_INVALID");
             }

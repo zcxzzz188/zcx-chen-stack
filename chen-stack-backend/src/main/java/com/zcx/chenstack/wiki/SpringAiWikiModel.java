@@ -1,6 +1,7 @@
 package com.zcx.chenstack.wiki;
 
 import com.openai.core.ClientOptions;
+import com.zcx.chenstack.rag.NormalAiUsage;
 import com.zcx.chenstack.rag.ReleaseProviderBudget;
 import org.springframework.ai.chat.messages.SystemMessage;
 import org.springframework.ai.chat.messages.UserMessage;
@@ -22,11 +23,18 @@ public final class SpringAiWikiModel implements WikiModel, AutoCloseable {
     private final URI endpoint;
     private final String apiKey;
     private final WikiProviderAuthorization authorization;
+    private final NormalAiUsage normalUsage;
     private final Set<okhttp3.Call> active = ConcurrentHashMap.newKeySet();
     private volatile boolean closed;
 
     private SpringAiWikiModel(String id, URI endpoint, String apiKey, WikiProviderAuthorization authorization) {
-        this.id = id; this.endpoint = endpoint; this.apiKey = apiKey; this.authorization = authorization;
+        this(id, endpoint, apiKey, authorization, null);
+    }
+
+    private SpringAiWikiModel(String id, URI endpoint, String apiKey, WikiProviderAuthorization authorization,
+                              NormalAiUsage normalUsage) {
+        this.id = id; this.endpoint = endpoint; this.apiKey = apiKey;
+        this.authorization = authorization; this.normalUsage = normalUsage;
     }
 
     public static SpringAiWikiModel loopback(URI base, String modelId) {
@@ -39,26 +47,47 @@ public final class SpringAiWikiModel implements WikiModel, AutoCloseable {
     }
 
     public static SpringAiWikiModel deepseek(URI endpoint, String modelId, String apiKey, WikiProviderAuthorization authorization) {
+        requireDeepseek(endpoint, modelId, apiKey);
+        if (authorization == null) throw new IllegalArgumentException("WIKI_DEEPSEEK_CONFIGURATION_INVALID");
+        return new SpringAiWikiModel(modelId, endpoint, apiKey, authorization);
+    }
+
+    public static SpringAiWikiModel continuousDeepseek(URI endpoint, String modelId, String apiKey, NormalAiUsage usage) {
+        requireDeepseek(endpoint, modelId, apiKey);
+        if (usage == null || !usage.enabled()) throw new IllegalArgumentException("WIKI_NORMAL_USAGE_REQUIRED");
+        usage.checkReady();
+        return new SpringAiWikiModel(modelId, endpoint, apiKey, null, usage);
+    }
+
+    private static void requireDeepseek(URI endpoint, String modelId, String apiKey) {
         boolean local = "http".equals(endpoint.getScheme()) && "127.0.0.1".equals(endpoint.getHost()) && endpoint.getPort() > 0;
         boolean remote = "https".equals(endpoint.getScheme()) && "api.deepseek.com".equals(endpoint.getHost())
                 && (endpoint.getPort() == -1 || endpoint.getPort() == 443);
         if ((!local && !remote) || endpoint.getUserInfo() != null || endpoint.getRawQuery() != null || endpoint.getFragment() != null
                 || !("/chat/completions".equals(endpoint.getPath()) || "/v1/chat/completions".equals(endpoint.getPath()))
-                || !"deepseek-flash".equals(modelId) || apiKey == null || apiKey.isBlank() || authorization == null) {
+                || !"deepseek-flash".equals(modelId) || apiKey == null || apiKey.isBlank()) {
             throw new IllegalArgumentException("WIKI_DEEPSEEK_CONFIGURATION_INVALID");
         }
-        return new SpringAiWikiModel(modelId, endpoint, apiKey, authorization);
     }
 
     @Override public String id() { return id; }
-    @Override public boolean external() { return authorization != null; }
+    @Override public boolean external() { return authorization != null || normalUsage != null; }
 
     @Override public void authorize(String requestId, String manifestHash) {
-        if (external()) authorization.require(requestId, manifestHash);
+        if (normalUsage != null) {
+            if (requestId == null || !requestId.matches("[A-Za-z0-9_.:-]{1,80}")
+                    || manifestHash != null && !manifestHash.matches("[a-f0-9]{64}")) {
+                throw new SecurityException("WIKI_SEND_CONTEXT_REQUIRED");
+            }
+            normalUsage.checkReady();
+        } else if (authorization != null) {
+            authorization.require(requestId, manifestHash);
+        }
     }
 
     @Override public void outcomeUnknown() {
-        if (external()) authorization.halt();
+        // 持续策略的 UNKNOWN 留在任务及计量记录，不永久封停其他合法新任务。
+        if (authorization != null) authorization.halt();
     }
 
     @Override public Reply generate(String system, String data, int maxOutputTokens) {
@@ -68,10 +97,16 @@ public final class SpringAiWikiModel implements WikiModel, AutoCloseable {
 
     @Override public Reply generate(String system, String data, int maxOutputTokens, SendContext context) {
         if (external() && (context.requestId() == null || context.manifestHash() == null)) throw new SecurityException("WIKI_SEND_CONTEXT_REQUIRED");
-        ReleaseProviderBudget budget = external() ? authorization.budget(context.requestId(), context.manifestHash()) : new ReleaseProviderBudget("", "", 0, 0);
+        ReleaseProviderBudget budget = normalUsage != null
+                ? ReleaseProviderBudget.continuous(normalUsage, NormalAiUsage.Purpose.COMPILATION)
+                : authorization != null ? authorization.budget(context.requestId(), context.manifestHash())
+                : new ReleaseProviderBudget("", "", 0, 0);
         if (external()) {
             try { budget.checkChatCapacity(1); }
-            catch (SecurityException exhausted) { throw new SecurityException("WIKI_PROVIDER_BUDGET_EXHAUSTED"); }
+            catch (SecurityException exhausted) {
+                if (normalUsage != null) throw exhausted;
+                throw new SecurityException("WIKI_PROVIDER_BUDGET_EXHAUSTED");
+            }
         }
         return invoke(system, data, maxOutputTokens, context, budget);
     }
@@ -83,21 +118,28 @@ public final class SpringAiWikiModel implements WikiModel, AutoCloseable {
         AtomicBoolean dispatched = new AtomicBoolean();
         WikiCallDiagnostics diagnostics = context.diagnostics();
         var wireUsage = new java.util.concurrent.atomic.AtomicReference<com.fasterxml.jackson.databind.JsonNode>();
-        okhttp3.OkHttpClient.Builder transportBuilder = budget.httpTransport(ReleaseProviderBudget.Kind.CHAT, Duration.ofSeconds(30), endpoint.toString())
-                .newBuilder().proxy(java.net.Proxy.NO_PROXY);
-        transportBuilder.eventListener(new okhttp3.EventListener() {
+        okhttp3.OkHttpClient budgetTransport = budget.httpTransport(ReleaseProviderBudget.Kind.CHAT, Duration.ofSeconds(30), endpoint.toString());
+        okhttp3.OkHttpClient.Builder transportBuilder = budgetTransport.newBuilder().proxy(java.net.Proxy.NO_PROXY);
+        transportBuilder.eventListenerFactory(call -> {
+            okhttp3.EventListener accounting = budgetTransport.eventListenerFactory().create(call);
+            return new okhttp3.EventListener() {
             @Override public void requestHeadersEnd(okhttp3.Call call, okhttp3.Request request) {
+                accounting.requestHeadersEnd(call, request);
                 diagnostics.requestHeadersSent = true;
             }
             @Override public void requestBodyEnd(okhttp3.Call call, long byteCount) {
+                accounting.requestBodyEnd(call, byteCount);
                 diagnostics.requestBodySent = true;
             }
             @Override public void responseHeadersEnd(okhttp3.Call call, okhttp3.Response response) {
+                accounting.responseHeadersEnd(call, response);
                 diagnostics.responseHeaders(response, apiKey);
             }
             @Override public void callFailed(okhttp3.Call call, java.io.IOException failure) {
+                accounting.callFailed(call, failure);
                 diagnostics.transportFailure(failure, call.timeout().timeoutNanos());
             }
+            };
         });
         // 请求预检在计费预留之前；network interceptor 的一次性门禁还拦截 OkHttp 的503隐式follow-up。
         transportBuilder.interceptors().addFirst(chain -> {
@@ -154,7 +196,7 @@ public final class SpringAiWikiModel implements WikiModel, AutoCloseable {
         if (external() && (input == null || output == null || total == null || input <= 0 || output <= 0
                 || total != input + output || input > WikiProviderAuthorization.INPUT_TOKEN_CEILING || output > maxOutputTokens)) {
             diagnostics.failure(new IllegalStateException("WIKI_USAGE_UNKNOWN"));
-            authorization.halt();
+            outcomeUnknown();
             return new Reply(text, null, input, output);
         }
         Reply reply = new Reply(text, total != null && total > 0 ? total : null, input, output);
@@ -166,7 +208,7 @@ public final class SpringAiWikiModel implements WikiModel, AutoCloseable {
         return reply;
         } catch (RuntimeException failure) {
             diagnostics.failure(failure);
-            if (external() && dispatched.get()) authorization.halt();
+            if (external() && dispatched.get()) outcomeUnknown();
             if (!(failure instanceof KnownUsageFailure) && diagnostics.reliableUsage) {
                 throw new KnownUsageFailure("WIKI_MODEL_FAILED", new Reply(null, token(wireUsage.get(), "total_tokens"),
                         token(wireUsage.get(), "prompt_tokens"), token(wireUsage.get(), "completion_tokens")));

@@ -25,18 +25,21 @@ import java.util.concurrent.atomic.AtomicBoolean;
 @lombok.extern.slf4j.Slf4j
 public final class ReleaseProviderBudget {
     public enum Kind { EMBEDDING, CHAT }
-    private record HttpSend(AtomicBoolean dispatched) { }
+    private record HttpSend(AtomicBoolean dispatched, String usageId) { }
     private final Path path;
     private final String header;
     private final String budgetId;
     private final int embeddingLimit;
     private final int chatLimit;
+    private final NormalAiUsage normalUsage;
+    private final NormalAiUsage.Purpose purpose;
 
     public ReleaseProviderBudget(String ledgerPath, String budgetId, int embeddingLimit, int chatLimit) {
         this(ledgerPath, budgetId, embeddingLimit, chatLimit, true);
     }
 
     private ReleaseProviderBudget(String ledgerPath, String budgetId, int embeddingLimit, int chatLimit, boolean checkLedger) {
+        normalUsage = null; purpose = null;
         this.budgetId = budgetId == null || budgetId.isBlank() ? "UNCONFIGURED" : budgetId;
         if ((ledgerPath == null || ledgerPath.isBlank()) && (budgetId == null || budgetId.isBlank())) {
             path = null; header = null; this.embeddingLimit = 0; this.chatLimit = 0;
@@ -51,7 +54,19 @@ public final class ReleaseProviderBudget {
         if (checkLedger) snapshot(); // 不自动创建缺失账本，避免重启/路径拼错重置费用。
     }
 
-    public boolean configured() { return path != null; }
+    private ReleaseProviderBudget(NormalAiUsage usage, NormalAiUsage.Purpose purpose) {
+        if (usage == null || !usage.enabled() || purpose == null) throw new SecurityException("NORMAL_AI_USAGE_NOT_ENABLED");
+        usage.checkReady();
+        normalUsage = usage; this.purpose = purpose;
+        path = null; header = null; budgetId = "normal-" + purpose.name().toLowerCase(java.util.Locale.ROOT);
+        embeddingLimit = 0; chatLimit = 0;
+    }
+
+    public static ReleaseProviderBudget continuous(NormalAiUsage usage, NormalAiUsage.Purpose purpose) {
+        return new ReleaseProviderBudget(usage, purpose);
+    }
+
+    public boolean configured() { return path != null || normalUsage != null; }
 
     /** SDK 的同步与流式发送共用门禁；禁止底层重发和跨地址重定向。 */
     public com.openai.core.http.HttpClient httpClient(Kind kind, Duration timeout, String endpoint) {
@@ -61,11 +76,14 @@ public final class ReleaseProviderBudget {
     /** 独立调用可在同一安全 transport 上附加来源门禁和取消；不共享 G2 的账本实例。 */
     public okhttp3.OkHttpClient httpTransport(Kind kind, Duration timeout, String endpoint) {
         var url = okhttp3.HttpUrl.get(endpoint);
+        NormalAiUsage.Purpose requestPurpose = kind == Kind.EMBEDDING ? NormalAiUsage.Purpose.RETRIEVAL : purpose;
         return new okhttp3.OkHttpClient.Builder().connectTimeout(timeout).readTimeout(timeout).callTimeout(timeout)
                 .retryOnConnectionFailure(false).followRedirects(false).followSslRedirects(false)
                 .eventListenerFactory(call -> new okhttp3.EventListener() {
                     private final String auditId = UUID.randomUUID().toString();
                     @Override public void requestHeadersEnd(okhttp3.Call current, okhttp3.Request request) {
+                        HttpSend send = request.tag(HttpSend.class);
+                        if (normalUsage != null && send != null) normalUsage.sent(send.usageId(), requestPurpose, kind);
                         var target = request.url();
                         String path = java.util.Set.of("/chat/completions", "/v1/chat/completions", "/embeddings", "/v1/embeddings")
                                 .contains(target.encodedPath()) ? target.encodedPath() : "<redacted>";
@@ -73,17 +91,30 @@ public final class ReleaseProviderBudget {
                                 auditId, budgetId, kind, request.method(), target.host(), target.port(), path);
                     }
                     @Override public void responseHeadersEnd(okhttp3.Call current, okhttp3.Response response) {
+                        HttpSend send = response.request().tag(HttpSend.class);
+                        if (normalUsage != null && send != null) normalUsage.status(send.usageId(), requestPurpose, kind, response.code());
                         log.info("RELEASE_HTTP_AUDIT event=response_headers_end audit_id={} status={}", auditId, response.code());
                     }
                     @Override public void callFailed(okhttp3.Call current, IOException failure) {
+                        HttpSend send = current.request().tag(HttpSend.class);
+                        if (normalUsage != null && send != null) normalUsage.failed(send.usageId(), requestPurpose, kind, failure);
                         log.info("RELEASE_HTTP_AUDIT event=call_failed audit_id={} exception_class={}", auditId, failure.getClass().getName());
                     }
                 })
                 .addInterceptor(chain -> {
                     try { reserve(kind); }
                     catch (SecurityException denied) { throw new IOException("RELEASE_PROVIDER_SEND_BLOCKED", denied); }
-                    return chain.proceed(chain.request().newBuilder().url(url)
-                            .tag(HttpSend.class, new HttpSend(new AtomicBoolean())).build());
+                    String usageId = normalUsage == null ? null : normalUsage.begin(requestPurpose, kind);
+                    try {
+                        okhttp3.Response response = chain.proceed(chain.request().newBuilder().url(url)
+                                .tag(HttpSend.class, new HttpSend(new AtomicBoolean(), usageId)).build());
+                        // 应用拦截器读取透明解压后的正文；网络层仍只负责阻止重复发送。
+                        return normalUsage == null ? response : response.newBuilder()
+                                .body(normalUsage.response(usageId, requestPurpose, kind, response.body())).build();
+                    } catch (IOException failure) {
+                        if (normalUsage != null) normalUsage.failed(usageId, requestPurpose, kind, failure);
+                        throw failure;
+                    }
                 })
                 .addNetworkInterceptor(chain -> {
                     // 503 Retry-After:0 仍可能触发内部 follow-up；每个 Call 只放行一次网络发送。
@@ -91,7 +122,9 @@ public final class ReleaseProviderBudget {
                     if (send == null || !send.dispatched().compareAndSet(false, true)) {
                         throw new IOException("RELEASE_PROVIDER_RETRY_BLOCKED");
                     }
-                    if (kind != Kind.CHAT) return chain.proceed(chain.request());
+                    if (kind != Kind.CHAT) {
+                        return chain.proceed(chain.request());
+                    }
                     String traceId = UUID.randomUUID().toString();
                     var captured = new okio.Buffer();
                     var oversized = new AtomicBoolean();
@@ -141,22 +174,35 @@ public final class ReleaseProviderBudget {
     }
 
     public ClientHttpRequestInterceptor restInterceptor(Kind kind) {
-        return (request, body, execution) -> { reserve(kind); return execution.execute(request, body); };
+        return (request, body, execution) -> {
+            if (normalUsage != null) throw new SecurityException("NORMAL_AI_USAGE_REQUIRES_GUARDED_TRANSPORT");
+            reserve(kind); return execution.execute(request, body);
+        };
     }
 
     public ExchangeFilterFunction streamFilter(Kind kind) {
-        return (request, next) -> Mono.defer(() -> { reserve(kind); return next.exchange(request); });
+        return (request, next) -> Mono.defer(() -> {
+            if (normalUsage != null) throw new SecurityException("NORMAL_AI_USAGE_REQUIRES_GUARDED_TRANSPORT");
+            reserve(kind); return next.exchange(request);
+        });
     }
 
-    public synchronized void reserve(Kind kind) { access(kind, 0, null, null); }
+    public synchronized void reserve(Kind kind) {
+        if (normalUsage != null) { normalUsage.checkReady(); return; }
+        access(kind, 0, null, null);
+    }
 
-    public synchronized Map<String, Long> snapshot() { return access(null, 0, null, null); }
+    public synchronized Map<String, Long> snapshot() {
+        if (normalUsage != null) throw new IllegalStateException("NORMAL_AI_USAGE_REQUIRES_EVENT_ACCOUNTING");
+        return access(null, 0, null, null);
+    }
 
     /** 只检查发送所需余量，不预扣；真正发送仍须逐次 reserve。 */
     public synchronized void checkChatCapacity(int minimumAttempts) {
         if (minimumAttempts < 1 || minimumAttempts > 100) {
             throw new SecurityException("RELEASE_BUDGET_CAPACITY_CHECK_INVALID");
         }
+        if (normalUsage != null) { normalUsage.checkReady(); return; }
         access(null, minimumAttempts, null, null);
     }
 

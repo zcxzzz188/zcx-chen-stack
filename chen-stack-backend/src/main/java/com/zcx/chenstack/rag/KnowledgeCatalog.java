@@ -28,6 +28,15 @@ public final class KnowledgeCatalog {
         return catalog;
     }
 
+    /** Source reads still compare every document with its current database row; drift fails closed. */
+    public static KnowledgeCatalog readOnlySnapshot(javax.sql.DataSource dataSource) {
+        JdbcCatalogStore.State recovered = JdbcCatalogStore.readOnlySnapshot(dataSource);
+        CatalogLifecycle lifecycle = new CatalogLifecycle(true);
+        KnowledgeCatalog catalog = new KnowledgeCatalog(recovered.documents(), lifecycle, recovered.generation());
+        lifecycle.initialize(catalog);
+        return catalog;
+    }
+
     KnowledgeCatalog(List<KnowledgeDocument> documents, CatalogLifecycle lifecycle, long epoch) {
         this.lifecycle = lifecycle;
         this.epoch = epoch;

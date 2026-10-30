@@ -11,7 +11,7 @@ import java.util.concurrent.*;
 
 import static com.zcx.chenstack.wiki.WikiFoundation.*;
 
-/** 内部 admin 编译用例；独立 Provider 授权与预算，不自动调度或发布。 */
+/** 内部 admin 编译用例；来源授权和单任务安全限制始终保留，不自动发布。 */
 public final class WikiCompilationService {
     private static final org.slf4j.Logger LOG = org.slf4j.LoggerFactory.getLogger(WikiCompilationService.class);
     private record Reserved(WikiCompilationStore.Attempt attempt, String manifestHash) { }

@@ -13,12 +13,20 @@ public final class CatalogLifecycle implements AutoCloseable {
     private KnowledgeCatalog current;
     private boolean available = true;
     private final JdbcCatalogStore store;
+    private final boolean readOnly;
     private final Map<KnowledgeCatalog, Map<Thread, Integer>> releasing = new IdentityHashMap<>();
     private final java.util.concurrent.atomic.AtomicBoolean publicationRunning = new java.util.concurrent.atomic.AtomicBoolean();
 
-    CatalogLifecycle() { this(null); }
+    CatalogLifecycle() { this(null, false); }
 
-    CatalogLifecycle(JdbcCatalogStore store) { this.store = store; }
+    CatalogLifecycle(JdbcCatalogStore store) { this(store, false); }
+
+    CatalogLifecycle(boolean readOnly) { this(null, readOnly); }
+
+    private CatalogLifecycle(JdbcCatalogStore store, boolean readOnly) {
+        this.store = store;
+        this.readOnly = readOnly;
+    }
 
     synchronized void initialize(KnowledgeCatalog initial) {
         if (current != null) throw new IllegalStateException("CATALOG_ALREADY_INITIALIZED");
@@ -27,7 +35,7 @@ public final class CatalogLifecycle implements AutoCloseable {
 
     public String authorityId() { return authorityId; }
     boolean durable() { return store != null; }
-    boolean beginPublication() { return publicationRunning.compareAndSet(false, true); }
+    boolean beginPublication() { requireMutable(); return publicationRunning.compareAndSet(false, true); }
     void endPublication() { publicationRunning.set(false); }
     JdbcCatalogStore store() {
         if (store == null) throw new IllegalStateException("RELEASE_REQUIRES_DURABLE_CATALOG");
@@ -56,6 +64,7 @@ public final class CatalogLifecycle implements AutoCloseable {
 
     /** One Catalog transaction for the exact approved set; the operation checkpoint commits with it. */
     long publish(List<KnowledgeDocument> approved, long expectedEpoch, String operationId) {
+        requireMutable();
         KnowledgeCatalog previous;
         KnowledgeCatalog next;
         synchronized (this) {
@@ -93,6 +102,7 @@ public final class CatalogLifecycle implements AutoCloseable {
     }
 
     private long change(String id, KnowledgeDocument replacement, String event, Long expectedEpoch, String operationId) {
+        requireMutable();
         KnowledgeCatalog previous;
         KnowledgeCatalog next;
         RuntimeException commitFailure = null;
@@ -138,6 +148,10 @@ public final class CatalogLifecycle implements AutoCloseable {
             previous.invalidated.tryEmitEmpty();
         }
         return next.epoch();
+    }
+
+    private void requireMutable() {
+        if (readOnly) throw new IllegalStateException("CATALOG_READ_ONLY");
     }
 
     private synchronized void awaitReleased(long throughEpoch) {

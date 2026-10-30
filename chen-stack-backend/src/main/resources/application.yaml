@@ -158,6 +158,8 @@ chen-stack:
 chen:
   ai:
     knowledge-mode: ${AI_KNOWLEDGE_MODE:rag}
+    normal-usage-enabled: ${NORMAL_AI_USAGE:false}
+    usage-ledger-path: ${AI_USAGE_LEDGER_PATH:}
 logging:
   level:
     org.springframework.boot.autoconfigure: INFO

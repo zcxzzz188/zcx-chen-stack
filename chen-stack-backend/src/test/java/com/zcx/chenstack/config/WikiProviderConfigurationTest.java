@@ -1,12 +1,15 @@
 package com.zcx.chenstack.config;
 
 import com.zcx.chenstack.wiki.WikiModel;
+import com.zcx.chenstack.rag.NormalAiUsage;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 
 import static org.junit.jupiter.api.Assertions.*;
 
 class WikiProviderConfigurationTest {
+    @TempDir java.nio.file.Path temporary;
     private final ApplicationContextRunner runner = new ApplicationContextRunner()
             .withUserConfiguration(WikiProviderConfiguration.class);
 
@@ -46,6 +49,21 @@ class WikiProviderConfigurationTest {
         enabled().withPropertyValues("chen.wiki.compiler.provider=deepseek", "spring.ai.openai.base-url=https://example.com",
                 "spring.ai.openai.api-key=synthetic", "spring.ai.openai.chat.options.model=deepseek-flash")
                 .run(context -> assertNotNull(context.getStartupFailure()));
+    }
+
+    @Test void explicitNormalUsageUsesDurableMeterWithoutTemporaryGrant() {
+        enabled().withBean(NormalAiUsage.class,
+                () -> new NormalAiUsage(true, temporary.resolve("normal-compiler.jsonl").toString()))
+                .withPropertyValues("chen.wiki.compiler.provider=deepseek", "spring.ai.openai.base-url=https://api.deepseek.com",
+                        "spring.ai.openai.api-key=synthetic", "spring.ai.openai.chat.options.model=deepseek-flash")
+                .run(context -> {
+                    assertNull(context.getStartupFailure());
+                    WikiModel model = context.getBean(WikiModel.class);
+                    assertTrue(model.external());
+                    assertDoesNotThrow(() -> model.authorize("normal-admin-task", null));
+                    assertDoesNotThrow(() -> model.authorize("normal-admin-task", "a".repeat(64)));
+                    assertThrows(SecurityException.class, () -> model.generate("system", "data", 2048));
+                });
     }
 
     private ApplicationContextRunner enabled() {

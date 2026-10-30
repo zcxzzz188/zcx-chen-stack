@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpServer;
 import com.zcx.chenstack.rag.KnowledgeCatalog;
+import com.zcx.chenstack.rag.NormalAiUsage;
 import com.zcx.chenstack.rag.ReleaseProviderBudget;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -31,6 +32,57 @@ class WikiProviderProtocolTest {
     private static final String MANIFEST = "a".repeat(64);
     private static final String VALID_USAGE = "{\"prompt_tokens\":20,\"completion_tokens\":3,\"total_tokens\":23}";
     @TempDir Path temporary;
+
+    @Test void normalUsageContinuesPastHistoricalLimitAndPreservesExpiredGrantAndHalt() throws Exception {
+        try (Provider provider = new Provider()) {
+            GrantFiles legacy = grant(provider, Instant.now().minusSeconds(300));
+            Path halt = legacy.ledger().resolveSibling(legacy.ledger().getFileName() + ".halt");
+            Files.writeString(halt, "historical unknown retained\n");
+            byte[] oldGrant = Files.readAllBytes(legacy.grant()), oldLedger = Files.readAllBytes(legacy.ledger());
+            byte[] oldHalt = Files.readAllBytes(halt);
+            Path meter = temporary.resolve("normal-compiler.jsonl");
+            for (int i = 0; i < 17; i++) {
+                var usage = new NormalAiUsage(true, meter.toString());
+                try (var model = SpringAiWikiModel.continuousDeepseek(provider.endpoint(), MODEL, "synthetic", usage)) {
+                    assertEquals(23L, invoke(model, MANIFEST).usageTokens());
+                }
+            }
+            assertEquals(17, provider.calls.get());
+            String records = Files.readString(meter);
+            assertTrue(records.contains("COMPILATION"));
+            assertFalse(records.contains("synthetic"));
+            assertFalse(records.contains("system"));
+            int sent = 0, knownUsage = 0;
+            for (String line : records.lines().toList()) {
+                JsonNode event = JSON.readTree(line);
+                if ("HTTP_SENT".equals(event.path("event").asText())) sent++;
+                if ("USAGE".equals(event.path("event").asText()) && event.path("totalTokens").asLong() == 23L) knownUsage++;
+            }
+            assertEquals(17, sent, "Wiki diagnostics must preserve the transport accounting listener");
+            assertEquals(17, knownUsage);
+            assertArrayEquals(oldGrant, Files.readAllBytes(legacy.grant()));
+            assertArrayEquals(oldLedger, Files.readAllBytes(legacy.ledger()));
+            assertArrayEquals(oldHalt, Files.readAllBytes(halt));
+        }
+    }
+
+    @Test void normalUsageFailedCallNeverRetriesAndDoesNotPermanentlyHaltNewJobs() throws Exception {
+        try (Provider provider = new Provider()) {
+            var usage = new NormalAiUsage(true, temporary.resolve("normal-failures.jsonl").toString());
+            try (var model = SpringAiWikiModel.continuousDeepseek(provider.endpoint(), MODEL, "synthetic", usage)) {
+                assertThrows(SecurityException.class, () -> model.authorize("invalid request", MANIFEST));
+                assertThrows(SecurityException.class, () -> model.authorize("case", "invalid-manifest"));
+                assertThrows(SecurityException.class, () -> model.generate("system", "data", 2048));
+                assertEquals(0, provider.calls.get());
+                provider.status = 503;
+                assertThrows(RuntimeException.class, () -> invoke(model, MANIFEST));
+                assertEquals(1, provider.calls.get());
+                provider.status = 200;
+                assertEquals(23L, invoke(model, MANIFEST).usageTokens());
+                assertEquals(2, provider.calls.get());
+            }
+        }
+    }
 
     @Test void absentExpiredOrMismatchedAuthorizationCannotSend() throws Exception {
         try (Provider provider = new Provider()) {

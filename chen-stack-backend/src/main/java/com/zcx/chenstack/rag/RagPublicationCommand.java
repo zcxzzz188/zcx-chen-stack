@@ -48,7 +48,8 @@ public class RagPublicationCommand {
     @Bean
     public KnowledgeCatalog knowledgeCatalog(ObjectMapper mapper, RagProperties properties, DataSource dataSource,
             ObjectProvider<RagPublicationConfiguration.Prepared> prepared) throws java.io.IOException {
-        return new RagConfig().knowledgeCatalog(mapper, properties, dataSource, prepared);
+        return new RagConfig().knowledgeCatalog(mapper, properties, dataSource,
+                new com.zcx.chenstack.config.AiKnowledgeProperties("rag"), prepared);
     }
 
     @Bean(destroyMethod = "close")

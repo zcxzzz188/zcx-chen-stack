@@ -1,0 +1,14 @@
+# Optional supported overlay: durable normal AI metering, separate from release/test budgets.
+# Supply AI_USAGE_DIRECTORY as an existing, access-controlled directory outside the repository.
+services:
+  backend:
+    environment:
+      NORMAL_AI_USAGE: "true"
+      AI_USAGE_LEDGER_PATH: /ai-usage/events.jsonl
+    volumes:
+      - type: bind
+        source: ${AI_USAGE_DIRECTORY:?Select the persistent normal AI usage directory}
+        target: /ai-usage
+        read_only: false
+        bind:
+          create_host_path: false
