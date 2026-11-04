@@ -476,8 +476,13 @@ const sendMessage = async () => {
     const structured = response.headers?.get?.('content-type')?.includes('text/event-stream')
     const protocol = structured ? createCustomerServiceDecoder(event => {
       const target = messageList.value[messageIndex]
-      if (target.incomplete && event.type !== 'ERROR_STATE') return
-      if (event.type === 'TEXT') target.content += event.text || ''
+      if (target.usageLimited || (target.incomplete && event.type !== 'ERROR_STATE')) return
+      if (event.type === 'USAGE_LIMIT' || event.errorCode === 'DAILY_LIMIT_REACHED') {
+        target.content = customerServiceError('DAILY_LIMIT_REACHED').message
+        target.events = []
+        target.usageLimited = true
+        target.incomplete = false
+      } else if (event.type === 'TEXT') target.content += event.text || ''
       else if (event.type === 'KNOWLEDGE_STATUS') {
         target.supportStatus = event.supportStatus
         if (event.errorCode === 'KNOWLEDGE_UNAVAILABLE') target.knowledgeWarning = event.text || customerServiceError(event.errorCode).message
@@ -515,6 +520,7 @@ const sendMessage = async () => {
     if (!messageList.value[messageIndex].content.trim() && !messageList.value[messageIndex].events.length) throw customerServiceError('SSE_INCOMPLETE')
   } catch (error) {
     if (!isCurrentRequest()) return
+    if (aiMessage?.usageLimited) return
     const failure = aiMessage?.errorReason ? { message: aiMessage.errorReason, errorCode: aiMessage.errorCode }
       : customerServiceError(timedOut || error.name === 'TimeoutError' ? 'MODEL_TIMEOUT'
         : error.name === 'TypeError' ? 'MODEL_NETWORK_ERROR' : error.errorCode)

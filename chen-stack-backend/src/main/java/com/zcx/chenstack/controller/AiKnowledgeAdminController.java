@@ -25,7 +25,8 @@ public class AiKnowledgeAdminController {
     @PreAuthorize("@adminSecurity.isAdmin()")
     public Result<Mode> mode(HttpServletResponse response) {
         response.setHeader("Cache-Control", "no-store");
-        return Result.success(new Mode(properties.knowledgeMode(), List.of("chat", "rag", "wiki"), List.of("hybrid", "auto")));
+        // activeMode 是部署默认值；管理员实际生效的模式由 /admin/ai-config 提供。
+        return Result.success(new Mode(properties.knowledgeMode(), List.of("rag", "wiki", "hybrid"), List.of("auto")));
     }
 
     @ExceptionHandler(AccessDeniedException.class)

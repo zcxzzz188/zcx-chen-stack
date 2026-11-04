@@ -13,6 +13,43 @@ import static org.junit.jupiter.api.Assertions.*;
 class WikiDraftCompilerTest {
     private static final ObjectMapper JSON = new ObjectMapper();
 
+    @Test void requestedTopicKeysGuideEverySourceMapInsteadOfOnlyFilteringAfterPaidCalls() {
+        String requested = "辰栈账号注册";
+        List<JsonNode> maps = new ArrayList<>();
+        var result = new WikiDraftCompiler(JSON).compile(input("注册需要验证邮箱。", "注册密码应符合页面要求。"),
+                Set.of(requested), Set.of("redis"), (phase, system, data) -> {
+            JsonNode supplied = read(data);
+            if (phase.equals("MAP")) {
+                maps.add(supplied);
+                String chosen = supplied.path("requestedTopics").path(0).asText("redis");
+                String quote = supplied.path("text").asText();
+                return reply(Map.of("facts", List.of(Map.of("topic", chosen, "key", "注册条件", "value", quote, "quote", quote))));
+            }
+            assertEquals(requested, supplied.path("topic").asText());
+            return reply(synthesis(supplied, List.of()));
+        });
+        assertEquals(2, maps.size());
+        for (JsonNode supplied : maps) {
+            assertEquals(List.of(requested), JSON.convertValue(supplied.path("requestedTopics"), List.class));
+            assertTrue(JSON.convertValue(supplied.path("candidateTopics"), Set.class).contains(requested));
+        }
+        assertEquals(Set.of(requested), result.dependencies().keySet());
+        assertEquals(Set.of(1L, 2L), result.dependencies().get(requested));
+    }
+
+    @Test void modelChoosingAnUnrequestedTopicStillCannotSatisfyRequestedCoverage() {
+        String quote = "注册需要验证邮箱。";
+        AtomicInteger calls = new AtomicInteger();
+        var failure = assertThrows(IllegalArgumentException.class, () -> new WikiDraftCompiler(JSON)
+                .compile(input(quote), Set.of("辰栈账号注册"), Set.of("redis"), (phase, system, data) -> {
+                    calls.incrementAndGet();
+                    assertEquals("MAP", phase);
+                    return reply(Map.of("facts", List.of(fact("注册条件", quote, quote))));
+                }));
+        assertEquals("WIKI_TOPIC_SET_INVALID", failure.getMessage());
+        assertEquals(1, calls.get());
+    }
+
     @Test void currentTopicIsNotOfferedAndHarmlessSelfNavigationIsFiltered() {
         String quote = "TTL不是缓存与数据库强一致性的保证。";
         var result = new WikiDraftCompiler(JSON).compile(input(quote), Set.of(), Set.of("redis"), (phase, system, data) -> {

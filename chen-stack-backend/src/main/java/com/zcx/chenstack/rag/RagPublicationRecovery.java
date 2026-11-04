@@ -10,6 +10,11 @@ import java.util.Set;
 public final class RagPublicationRecovery {
     private RagPublicationRecovery() { }
 
+    /** Only a verified management chain may boot with retrieval blocked for explicit operator recovery. */
+    public static final class PendingManagementRecovery extends IllegalStateException {
+        private PendingManagementRecovery() { super("MANAGEMENT_INDEX_RECOVERY_REQUIRED"); }
+    }
+
     public static Map<String, Object> restore(CatalogLifecycle lifecycle, RagKnowledgeService knowledge,
             byte[] manifestBytes, String operator, String environment,
             PublicationManifest.RuntimeIdentity runtime, Map<String, byte[]> resources) {
@@ -22,6 +27,7 @@ public final class RagPublicationRecovery {
             var receipt = store.completedReceipt(PublicationManifest.sha256(manifestBytes));
             var operation = receipt.operation();
             KnowledgeCatalog catalog = lifecycle.snapshot();
+            var chain = store.managementChain(receipt);
             PublicationManifest.require(PublicationManifest.safeText(operator, 128)
                     && PublicationManifest.validEnvironment(environment) && environment.equals(manifest.environment())
                     && manifest.operation() != PublicationManifest.Operation.REVOKE
@@ -34,18 +40,21 @@ public final class RagPublicationRecovery {
                     && operation.collection().equals(manifest.collection())
                     && operation.maxEmbeddingRequests() >= 0 && operation.maxEmbeddingRequests() <= Integer.MAX_VALUE
                     && operation.expectedGeneration() == manifest.expectedGeneration()
-                    && catalog.epoch() == (manifest.operation() == PublicationManifest.Operation.PUBLISH
+                    && operation.appliedGeneration() != null
+                    && operation.appliedGeneration() == (manifest.operation() == PublicationManifest.Operation.PUBLISH
                         || manifest.operation() == PublicationManifest.Operation.UPDATE
                         ? Math.incrementExact(manifest.expectedGeneration()) : manifest.expectedGeneration())
                     && operation.embeddingRequests() >= 0 && operation.embeddingRequests() <= operation.maxEmbeddingRequests()
                     && operation.targetInitialized() && operation.indexAuthority() != null
                     && operation.indexAuthority().matches("[0-9a-f-]{36}")
-                    && Objects.equals(operation.appliedGeneration(), catalog.epoch())
-                    && Objects.equals(operation.indexEpoch(), catalog.epoch())
-                    && store.snapshotHash().equals(operation.appliedSnapshotHash()), "RECOVERY_RECEIPT_STATE_MISMATCH");
+                    && Objects.equals(operation.indexEpoch(), operation.appliedGeneration()), "RECOVERY_RECEIPT_STATE_MISMATCH");
             Set<String> approvedIds = PublicationManifest.userSourceIds();
+            // 管理员人工新增的知识有独立的已完成操作回执；发布清单仍只覆盖原始主题。
+            Set<String> adminSources = new java.util.LinkedHashSet<>(chain.changedSources());
+            adminSources.addAll(store.createdSources(manifest.environment(), manifest.collection()));
             for (KnowledgeDocument draft : drafts) {
                 KnowledgeDocument actual = catalog.source(draft.sourceId());
+                if (chain.changedSources().contains(draft.sourceId())) continue;
                 PublicationManifest.require(actual != null && actual.version().equals(draft.version())
                         && KnowledgeCatalog.normalize(actual.text()).equals(KnowledgeCatalog.normalize(draft.text()))
                         && Objects.equals(actual.title(), draft.title()) && Objects.equals(actual.sourceType(), draft.sourceType())
@@ -55,17 +64,20 @@ public final class RagPublicationRecovery {
                             || "PUBLIC".equals(actual.visibility()) && "DOCUMENT_REVIEWED".equals(actual.reviewStatus())),
                         "RECOVERY_SOURCE_DRIFT");
             }
-            PublicationManifest.require(catalog.documents().stream().filter(d -> !approvedIds.contains(d.sourceId()))
+            PublicationManifest.require(catalog.documents().stream()
+                    .filter(d -> !approvedIds.contains(d.sourceId()) && !adminSources.contains(d.sourceId()))
                     .noneMatch(d -> "PUBLIC".equals(d.visibility()) || "DOCUMENT_REVIEWED".equals(d.reviewStatus())),
                     "RECOVERY_EXCLUDED_SOURCE_APPROVED");
             String owner = KnowledgeCatalog.hash("chen-release-v1|" + manifest.environment() + "|" + manifest.collection()
                     + "|" + store.databaseIdentityHash());
+            if (!chain.complete()) throw new PendingManagementRecovery();
             knowledge.preparePublicationTarget(false, owner);
-            String fingerprint = knowledge.verifyPublicationIndex(operation.indexAuthority(), operation.indexEpoch());
-            PublicationManifest.require(receipt.indexHash().equals(fingerprint), "RECOVERY_INDEX_DIGEST_MISMATCH");
+            var effective = chain.effective();
+            String fingerprint = knowledge.verifyPublicationIndex(effective.operation().indexAuthority(), effective.operation().indexEpoch());
+            PublicationManifest.require(effective.indexHash().equals(fingerprint), "RECOVERY_INDEX_DIGEST_MISMATCH");
             store.requireUnchanged();
-            knowledge.confirmPublication(catalog, operation.indexAuthority(), operation.indexEpoch());
-            return Map.of("status", "READ_ONLY_RECOVERED", "operationId", operation.id(), "generation", catalog.epoch());
+            knowledge.confirmPublication(catalog, effective.operation().indexAuthority(), effective.operation().indexEpoch());
+            return Map.of("status", "READ_ONLY_RECOVERED", "operationId", effective.operation().id(), "generation", catalog.epoch());
         } catch (RuntimeException error) {
             knowledge.blockPublication();
             throw error;

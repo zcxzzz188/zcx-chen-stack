@@ -45,24 +45,24 @@ defineProps({
     align-items: center;
     gap: 16px;
     padding: 18px 20px;
-    border: 1px solid var(--border);
+    border: 1px solid var(--el-border-color-light);
     border-radius: 18px;
-    background: var(--bg-card);
-    box-shadow: var(--shadow-card);
+    background: var(--el-bg-color-overlay);
+    box-shadow: var(--el-box-shadow-lighter);
   }
 
   .page-title {
     margin: 0 0 6px;
     font-size: 22px;
     font-weight: 700;
-    color: var(--text-primary);
+    color: var(--el-text-color-primary);
     letter-spacing: -0.03em;
   }
 
   .page-description {
     margin: 0;
     font-size: 13px;
-    color: var(--text-muted);
+    color: var(--el-text-color-secondary);
   }
 
   .header-actions {

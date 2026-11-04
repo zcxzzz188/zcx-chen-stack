@@ -12,10 +12,11 @@ const selection = () => ({ type: 'ARTICLE_SELECTION', text: '请选择文章', a
 let store, wrapper
 const render = () => { wrapper = mount(Cards, { props: { event: selection() }, global: { stubs: { ElButton: { template: '<button><slot /></button>' } } } }); return wrapper }
 
-it('显示服务端核验的公开文章来源，标题按文本渲染', () => {
+it('保留已核验来源事件，客户默认不显示技术来源列表', () => {
   wrapper = mount(Cards, { props: { event: { type: 'KNOWLEDGE_SOURCES', sources: [{ title: '<img src=x>', url: '/user/7/article/1', version: 'v1' }] } } })
-  expect(wrapper.get('a').attributes('href')).toBe('/user/7/article/1')
-  expect(wrapper.get('a').text()).toBe('<img src=x>')
+  expect(wrapper.props('event').sources[0].version).toBe('v1')
+  expect(wrapper.text()).toBe('')
+  expect(wrapper.find('a').exists()).toBe(false)
   expect(wrapper.find('img').exists()).toBe(false)
 })
 beforeEach(() => { vi.clearAllMocks(); setActivePinia(createPinia()); store = useUserStore(); store.user = { id: 7 } })

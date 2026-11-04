@@ -158,6 +158,7 @@ chen-stack:
 chen:
   ai:
     knowledge-mode: ${AI_KNOWLEDGE_MODE:rag}
+    runtime-scope: ${AI_RUNTIME_SCOPE:user-assistant}
     normal-usage-enabled: ${NORMAL_AI_USAGE:false}
     usage-ledger-path: ${AI_USAGE_LEDGER_PATH:}
 logging:

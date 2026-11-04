@@ -149,7 +149,7 @@
         node-key="id"
         :default-expand-all="false"
         :expand-on-click-node="false"
-        :check-strictly="false"
+        :check-strictly="restoringMenuChecks"
         show-checkbox
         :default-checked-keys="selectedMenuIds"
         :default-expanded-keys="defaultExpandedKeys"
@@ -377,6 +377,7 @@ const handleDialogClose = () => {
 // 分配菜单弹窗
 const authorizeMenuDialogVisible = ref(false)
 const menuTreeRef = ref(null)
+const restoringMenuChecks = ref(false)
 const currentMenuRole = ref(null)
 const menuTreeData = ref([])
 const menuTreeProps = {
@@ -432,11 +433,14 @@ const handleAuthorizeMenu = async (row) => {
     }
   }
 
+  restoringMenuChecks.value = true
   authorizeMenuDialogVisible.value = true
   defaultExpandedKeys.value = collectMenuIds(menuTreeData.value)
 
   await nextTick()
+  // 回填持久授权不级联；人工勾选仍沿用原来的父子联动。
   menuTreeRef.value?.setCheckedKeys(selectedMenuIds.value)
+  restoringMenuChecks.value = false
 }
 
 const buildMenuTree = (menus) => {

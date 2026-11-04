@@ -32,7 +32,6 @@ import org.springframework.context.annotation.Lazy;
 import org.springframework.security.authentication.AuthenticationManager;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.Authentication;
-import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
@@ -43,7 +42,6 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.Collections;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
@@ -317,6 +315,38 @@ public class SysUserServiceImpl extends ServiceImpl<SysUserMapper, SysUser> impl
 
         // 清除验证码
         redisComponent.cleanEmailCheckCode(resetPasswordDto.getEmail(), MailEnum.RESET_PASSWORD.getType());
+    }
+
+    @Override
+    public void changePassword(ChangePasswordDto changePasswordDto) {
+        Integer userId = SecurityUtils.getUserId();
+        if (userId == null || userId <= 0) {
+            throw new BlogException(BlogConstants.LoginRequired);
+        }
+        changePassword(userId, changePasswordDto);
+    }
+
+    /** 包内可见入口便于定向测试；始终只修改传入的当前用户。 */
+    void changePassword(Integer userId, ChangePasswordDto changePasswordDto) {
+        if (userId == null || userId <= 0 || changePasswordDto == null) {
+            throw new BlogException(BlogConstants.LoginRequired);
+        }
+        SysUser currentUser = sysUserMapper.selectById(userId);
+        if (currentUser == null) {
+            throw new BlogException(BlogConstants.NotFoundUser);
+        }
+        if (!passwordEncoder.matches(changePasswordDto.getOldPassword(), currentUser.getPassword())) {
+            throw new BlogException(BlogConstants.OldPasswordError);
+        }
+        if (passwordEncoder.matches(changePasswordDto.getNewPassword(), currentUser.getPassword())) {
+            throw new BlogException(BlogConstants.NewPasswordSameAsOld);
+        }
+        int updated = sysUserMapper.updateById(new SysUser().setId(userId)
+                .setPassword(passwordEncoder.encode(changePasswordDto.getNewPassword())));
+        if (updated != 1) {
+            throw new BlogException(BlogConstants.ChangePasswordFailed);
+        }
+        log.info("用户 [ID: {}] 修改密码成功", userId);
     }
 
     @Override

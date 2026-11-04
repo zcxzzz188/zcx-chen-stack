@@ -1,5 +1,5 @@
 <template>
-  <el-container class="layout-container">
+  <el-container class="layout-container" :class="{ compact: compactSidebar }">
     <!-- 侧边栏 -->
     <el-aside class="sidebar">
       <div class="logo-container">
@@ -8,11 +8,7 @@
       </div>
       <div class="sidebar-divider"></div>
       <!-- pc端菜单 -->
-      <el-menu :default-active="activeMenu" class="el-menu-pc" :background-color="sidebarBg" :text-color="sidebarText" :active-text-color="sidebarActiveText" :router="true">
-        <el-menu-item v-if="isWikiAdmin" index="/wiki">
-          <el-icon :size="18"><Document /></el-icon>
-          <span>Wiki 知识管理</span>
-        </el-menu-item>
+      <el-menu :default-active="activeMenu" class="el-menu-pc" :router="true" :collapse="compactSidebar" :collapse-transition="false">
         <template v-for="menu in menus" :key="menu.id">
           <el-sub-menu v-if="menu.children && menu.children.length > 0" :index="menu.path">
             <template #title>
@@ -97,6 +93,7 @@
             </span>
             <template #dropdown>
               <el-dropdown-menu>
+                <el-dropdown-item @click="openPasswordDialog">修改密码</el-dropdown-item>
                 <el-dropdown-item @click="handleLogout">退出登录</el-dropdown-item>
               </el-dropdown-menu>
             </template>
@@ -127,6 +124,25 @@
       <el-descriptions-item label="创建时间">{{ currentMessage ? formatTime(currentMessage.createTime) : '-' }}</el-descriptions-item>
     </el-descriptions>
   </el-dialog>
+
+  <el-dialog v-model="passwordVisible" title="修改密码" width="460px" :close-on-click-modal="false" @closed="resetPasswordForm">
+    <el-alert title="修改成功后请使用新密码重新登录。" type="info" :closable="false" show-icon style="margin-bottom: 16px" />
+    <el-form ref="passwordFormRef" :model="passwordForm" :rules="passwordRules" label-position="top">
+      <el-form-item label="当前密码" prop="oldPassword">
+        <el-input v-model="passwordForm.oldPassword" type="password" show-password autocomplete="current-password" placeholder="请输入当前密码" />
+      </el-form-item>
+      <el-form-item label="新密码" prop="newPassword">
+        <el-input v-model="passwordForm.newPassword" type="password" show-password autocomplete="new-password" placeholder="6～20 位，字母、数字或 !@#$%^&*._-" />
+      </el-form-item>
+      <el-form-item label="确认新密码" prop="confirmPassword">
+        <el-input v-model="passwordForm.confirmPassword" type="password" show-password autocomplete="new-password" placeholder="请再次输入新密码" />
+      </el-form-item>
+    </el-form>
+    <template #footer>
+      <el-button :disabled="passwordSaving" @click="passwordVisible = false">取消</el-button>
+      <el-button type="primary" :loading="passwordSaving" @click="submitPassword">确认修改</el-button>
+    </template>
+  </el-dialog>
 </template>
 
 <script setup>
@@ -147,13 +163,14 @@
  * ```
  */
 
-import { ref, computed, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useUserStore } from '@/stores/userStore'
 import { ElMessage } from 'element-plus'
 import Dark from '@/components/common/Dark.vue'
 import { getMessagesCount, getMessageList, readAdminMessages } from '@/api/message'
-import { Bell, Document, Message, User } from '@element-plus/icons-vue'
+import { changePassword as changePasswordApi } from '@/api/user'
+import { Bell, Message, User } from '@element-plus/icons-vue'
 import { formatTime } from '@/utils/FormatTime'
 import { onUnmounted } from 'vue'
 
@@ -161,6 +178,11 @@ const LAST_LOGOUT_USERNAME_KEY = 'chen_stack_admin_last_logout_username'
 
 const userStore = useUserStore()
 const router = useRouter()
+const sidebarQuery = window.matchMedia?.('(max-width: 768px)')
+const compactSidebar = ref(sidebarQuery?.matches ?? false)
+const syncCompactSidebar = (event) => { compactSidebar.value = event.matches }
+onMounted(() => sidebarQuery?.addEventListener('change', syncCompactSidebar))
+onUnmounted(() => sidebarQuery?.removeEventListener('change', syncCompactSidebar))
 
 // 消息相关状态
 const unreadCount = ref(0)
@@ -292,7 +314,6 @@ const handleMessageClick = async (message) => {
 
 // 页面加载时获取消息数量
 onMounted(() => {
-  userStore.checkWikiAccess()
   fetchUnreadCount()
   // 可以添加一个定时器，定期刷新消息数量
   const intervalId = setInterval(fetchUnreadCount, 60000) // 每分钟刷新一次
@@ -303,17 +324,12 @@ onMounted(() => {
 const menus = computed(() => {
   return userStore.menus
 })
-const isWikiAdmin = computed(() => userStore.wikiAccess)
 
 // 当前激活的菜单
 const activeMenu = computed(() => {
   return router.currentRoute.value.path
 })
 
-// 侧边栏菜单颜色（支持亮暗模式）
-const sidebarBg = computed(() => getComputedStyle(document.documentElement).getPropertyValue('--sidebar-bg').trim() || '#1e293b')
-const sidebarText = computed(() => getComputedStyle(document.documentElement).getPropertyValue('--sidebar-text').trim() || '#cbd5e1')
-const sidebarActiveText = computed(() => getComputedStyle(document.documentElement).getPropertyValue('--sidebar-active-text').trim() || '#4ade80')
 
 // 用户信息
 const user = computed(() => {
@@ -336,6 +352,68 @@ const handleLogout = () => {
   router.push('/login')
   ElMessage.success('退出登录成功')
 }
+
+// 修改当前登录账号的密码；成功后清理本地会话，要求使用新密码重新登录。
+const passwordVisible = ref(false)
+const passwordSaving = ref(false)
+const passwordFormRef = ref(null)
+const passwordForm = reactive({ oldPassword: '', newPassword: '', confirmPassword: '' })
+const passwordRules = {
+  oldPassword: [{ required: true, message: '请输入当前密码', trigger: 'blur' }],
+  newPassword: [
+    { required: true, message: '请输入新密码', trigger: 'blur' },
+    { min: 6, max: 20, message: '新密码长度必须为 6～20 位', trigger: 'blur' },
+    { pattern: /^[a-zA-Z0-9!@#$%^&*._-]+$/, message: '新密码只能包含字母、数字及 !@#$%^&*._-', trigger: 'blur' },
+    {
+      validator: (rule, value, callback) => {
+        if (value && value === passwordForm.oldPassword) callback(new Error('新密码不能与当前密码相同'))
+        else callback()
+      },
+      trigger: 'blur',
+    },
+  ],
+  confirmPassword: [
+    { required: true, message: '请再次输入新密码', trigger: 'blur' },
+    {
+      validator: (rule, value, callback) => {
+        if (value !== passwordForm.newPassword) callback(new Error('两次输入的新密码不一致'))
+        else callback()
+      },
+      trigger: 'blur',
+    },
+  ],
+}
+const resetPasswordForm = () => {
+  passwordForm.oldPassword = ''
+  passwordForm.newPassword = ''
+  passwordForm.confirmPassword = ''
+  passwordFormRef.value?.clearValidate()
+}
+const openPasswordDialog = () => {
+  resetPasswordForm()
+  passwordVisible.value = true
+}
+const submitPassword = async () => {
+  if (!passwordFormRef.value || passwordSaving.value) return
+  try {
+    await passwordFormRef.value.validate()
+  } catch {
+    return
+  }
+  passwordSaving.value = true
+  try {
+    await changePasswordApi({ oldPassword: passwordForm.oldPassword, newPassword: passwordForm.newPassword })
+    passwordVisible.value = false
+    ElMessage.success('密码已修改，请使用新密码重新登录')
+    saveLastLogoutUsername()
+    userStore.clearUser()
+    router.push('/login')
+  } catch {
+    // 请求拦截器已展示后端的具体校验提示，保留当前对话框供修改。
+  } finally {
+    passwordSaving.value = false
+  }
+}
 </script>
 
 <style lang="scss" scoped>
@@ -343,6 +421,18 @@ const handleLogout = () => {
   height: 100vh;
   display: flex;
   overflow: hidden;
+
+  &.compact .sidebar {
+    width: 64px !important;
+
+    .logo-container {
+      justify-content: center;
+      padding: 8px 0;
+    }
+
+    .logo-icon { margin-right: 0; }
+    .logo-text { display: none; }
+  }
 
   // 侧边栏样式
   .sidebar {
@@ -401,6 +491,10 @@ const handleLogout = () => {
 
     // 菜单样式
     .el-menu-pc {
+      --el-menu-bg-color: var(--sidebar-bg);
+      --el-menu-text-color: var(--sidebar-text);
+      --el-menu-active-color: var(--sidebar-active-text);
+      --el-menu-hover-bg-color: var(--sidebar-menu-hover);
       border-right: none;
       height: calc(100% - 49px); // 48px logo + 1px divider
       overflow-y: auto;

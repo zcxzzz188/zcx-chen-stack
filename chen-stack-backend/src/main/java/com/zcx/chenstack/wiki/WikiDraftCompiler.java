@@ -18,6 +18,8 @@ public final class WikiDraftCompiler {
             WIKI_MAP_V3. Return only JSON: {"facts":[{"topic":"canonical topic key","key":"fact property",
             "value":"fact value","quote":"exact contiguous source text"}]}.
             Discover technical topics from this ONE source, reuse matching candidate topic keys where appropriate.
+            When requestedTopics is nonempty, assign relevant facts to those exact keys, preserving their spelling.
+            Do not invent alternative keys or force unrelated source text into a requested topic; return no facts if unrelated.
             Keep unrelated topics separate. Extract up to 32 facts; quote each fact exactly, no invented evidence.
             Value must be an exact contiguous part of quote, in the source language, never a translation.
             Quote the complete factual statement, preserving negation, numbers, conditions and scope.
@@ -53,10 +55,11 @@ public final class WikiDraftCompiler {
     public Result compile(CompilationInput input, Set<String> requestedTopics, Set<String> knownTopics, Calls calls) {
         Map<String, Fact> unique = new LinkedHashMap<>();
         Set<String> candidates = new TreeSet<>(knownTopics);
+        candidates.addAll(requestedTopics);
         for (Snapshot snapshot : input.sources()) {
             String text = snapshot.material().text();
             if (bytes(text) > 32_000) throw invalid("SOURCE_TOO_LARGE");
-            String data = encode(Map.of("text", text, "candidateTopics", candidates));
+            String data = encode(Map.of("text", text, "candidateTopics", candidates, "requestedTopics", new TreeSet<>(requestedTopics)));
             JsonNode mapped = parse(calls.call("MAP", MAP, data).json(), Set.of("facts"));
             for (JsonNode item : array(mapped, "facts", 32)) {
                 fields(item, Set.of("topic", "key", "value", "quote"));

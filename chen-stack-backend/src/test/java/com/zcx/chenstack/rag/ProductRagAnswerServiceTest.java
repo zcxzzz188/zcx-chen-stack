@@ -130,6 +130,51 @@ class ProductRagAnswerServiceTest {
         assertEquals(1, events.stream().filter(event -> "NAVIGATION_ACTION".equals(event.type())).count());
     }
 
+    @Test void wikiPageButtonDescriptionsPassTheActualTwoRoundProductAnswerWithoutInventingReplyActions() {
+        var wiki = mock(com.zcx.chenstack.wiki.WikiPublicationService.class);
+        String body = "可在专栏管理页新建和编辑专栏。这里没有添加已有文章按钮。点击“编辑”按钮打开表单。";
+        var card = new com.zcx.chenstack.wiki.WikiViews.Card(10, "专栏管理", "摘要", List.of("专栏"), 1, "now");
+        var page = new com.zcx.chenstack.wiki.WikiViews.PublishedPage(10, card.title(), body, 1, "now", List.of("专栏"),
+                List.of(new com.zcx.chenstack.wiki.WikiViews.Citation("专栏帮助", "/user/7/article/1", "v1")), List.of());
+        when(wiki.list(anyString(), isNull(), eq(1), anyInt()))
+                .thenReturn(new com.zcx.chenstack.wiki.WikiViews.Page<>(List.of(card), 1, 1, 50, List.of("专栏")));
+        when(wiki.read(10)).thenReturn(page);
+        service = new ProductRagAnswerService(knowledge, ChatClient.create(model), memory, null,
+                new com.zcx.chenstack.config.AiKnowledgeProperties("wiki"), wiki);
+        scopeRespond = prompt -> Flux.just(text("PLATFORM_KNOWLEDGE", "stop"));
+        respond = prompt -> Flux.just(prompts.size() == 1
+                ? tools(call("readPublishedWiki", "{\"title\":\"专栏管理\"}")) : text(body, "stop"));
+        assertEquals(body, run("如何管理专栏", "wiki-page-buttons"));
+        assertEquals(2, prompts.size());
+        assertTrue(events.stream().anyMatch(event -> "KNOWLEDGE_SOURCES".equals(event.type())));
+        assertTrue(events.stream().noneMatch(event -> "NAVIGATION_ACTION".equals(event.type())));
+        assertTrue(memory.get("wiki:7:wiki-page-buttons").toString().contains(body));
+        verify(wiki, atLeast(2)).read(10);
+        verify(knowledge, never()).retrieve(anyString());
+    }
+
+    @Test void failureDiagnosticsExposeOnlyExceptionClassAndFixedReasonCode() {
+        var logger = (ch.qos.logback.classic.Logger) org.slf4j.LoggerFactory.getLogger(ProductRagAnswerService.class);
+        var appender = new ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent>();
+        appender.start(); logger.addAppender(appender);
+        try {
+            respond = prompt -> Flux.just(text("下方有支付中心按钮。", "stop"));
+            assertThrows(RuntimeException.class, () -> run("PRIVATE_QUESTION_CANARY", "known-navigation-error"));
+            respond = prompt -> Flux.error(new IllegalStateException("PRIVATE_EXCEPTION_MESSAGE_CANARY"));
+            assertThrows(RuntimeException.class, () -> run("PRIVATE_QUESTION_CANARY", "unknown-error"));
+            var failures = appender.list.stream().filter(event -> event.getFormattedMessage().startsWith("xiaochen failure ")).toList();
+            assertEquals(2, failures.size());
+            assertEquals("xiaochen failure exception_class=java.lang.IllegalStateException reason_code=NAVIGATION_DESTINATION_UNCONFIRMED", failures.getFirst().getFormattedMessage());
+            assertEquals("xiaochen failure exception_class=java.lang.IllegalStateException reason_code=UNCLASSIFIED", failures.getLast().getFormattedMessage());
+            for (var failure : failures) {
+                assertNull(failure.getThrowableProxy());
+                assertFalse(failure.getFormattedMessage().contains("PRIVATE_QUESTION_CANARY"));
+                assertFalse(failure.getFormattedMessage().contains("PRIVATE_EXCEPTION_MESSAGE_CANARY"));
+                assertFalse(failure.getFormattedMessage().contains("支付中心"));
+            }
+        } finally { logger.detachAppender(appender); appender.stop(); }
+    }
+
     @Test void unknownNavigationAndTextOnlyPromisesCannotBeReleasedOrRemembered() {
         respond = prompt -> Flux.just(text("下方按钮可直接进入支付中心。", "stop"));
         assertThrows(RuntimeException.class, () -> run("打开入口", "unknown-page"));
@@ -240,6 +285,138 @@ class ProductRagAnswerServiceTest {
         assertTrue(events.stream().noneMatch(event -> "SUPPORTED".equals(event.supportStatus())));
     }
 
+    @Test void ragSourceEventsPreserveVerifiedPublicReferencesWithoutInternalIdsOrUrls() {
+        respond = prompt -> Flux.just(prompts.size() == 1
+                ? tools(call("readPlatformHelp", "{\"topicTitle\":\"草稿帮助\"}")) : text("草稿仅本人可见。", "stop"));
+        assertEquals("草稿仅本人可见。", run("草稿谁能看到", "rag-source-trace"));
+        CustomerServiceEvent traced = events.stream().filter(event -> "KNOWLEDGE_SOURCES".equals(event.type()))
+                .findFirst().orElseThrow();
+        assertEquals(List.of(new CustomerServiceEvent.KnowledgeSource("草稿帮助", null, "fixture-1")), traced.sources());
+    }
+
+    private Flux<ChatResponse> platformScope(Prompt prompt) {
+        return Flux.just(text(prompt.getSystemMessage().getText().contains("PLATFORM_KNOWLEDGE")
+                ? "PLATFORM_KNOWLEDGE" : "USER_HELP", "stop"));
+    }
+
+    private void useTwoReviewedTopics() {
+        catalog = new KnowledgeCatalog(List.of(catalog.source("draft"), new KnowledgeDocument("current-topic", "当前主题帮助",
+                "CURRENT_TOPIC_FACT_CANARY：当前流程需要单独核验，不沿用草稿规则。", "current-1", "PLATFORM_HELP",
+                "/", "PUBLIC", "DOCUMENT_REVIEWED", Instant.EPOCH, List.of("当前流程"))));
+    }
+
+    private void awaitTerminalCleanup() {
+        org.awaitility.Awaitility.await().atMost(Duration.ofSeconds(2)).until(() ->
+                ((java.util.Set<?>) ReflectionTestUtils.getField(service, "activeConversations")).isEmpty());
+    }
+
+    @Test void platformFollowupCannotReleaseAReplyUsingOnlyPreviousTopicEvidence() {
+        useTwoReviewedTopics();
+        scopeRespond = this::platformScope;
+        AtomicInteger rounds = new AtomicInteger();
+        respond = prompt -> Flux.just(switch (rounds.incrementAndGet()) {
+            case 1 -> tools(call("readPlatformHelp", "{\"topicTitle\":\"草稿帮助\"}"));
+            case 2 -> text("OLD_TOPIC_ANSWER_CANARY", "stop");
+            case 3 -> text("UNSUPPORTED_CURRENT_ANSWER_CANARY", "stop");
+            case 4 -> tools(call("readPlatformHelp", "{\"topicTitle\":\"当前主题帮助\"}"));
+            default -> text("CURRENT_TOPIC_ANSWER_CANARY", "stop");
+        });
+        assertEquals("OLD_TOPIC_ANSWER_CANARY", run("草稿流程的规则是什么", "current-turn-gate"));
+        awaitTerminalCleanup();
+        assertEquals("CURRENT_TOPIC_ANSWER_CANARY", run("当前流程需要什么条件", "current-turn-gate"));
+        assertEquals(5, prompts.size());
+        assertTrue(prompts.get(2).getInstructions().toString().contains("OLD_TOPIC_ANSWER_CANARY"));
+        assertTrue(prompts.get(2).getInstructions().toString().contains("草稿仅本人可见"));
+        assertFalse(memory.get("7:current-turn-gate").toString().contains("UNSUPPORTED_CURRENT_ANSWER_CANARY"));
+        verify(knowledge).retrieveByTitle("当前主题帮助");
+    }
+
+    @Test void currentSourcesAndUsageExcludeHistoryButKeepHistoryForUnderstanding(@TempDir Path directory) {
+        when(knowledge.chatTimeoutSeconds()).thenReturn(30);
+        useTwoReviewedTopics();
+        var usage = new NormalAiUsage(true, directory.resolve("current-sources.jsonl").toString());
+        service = new ProductRagAnswerService(knowledge, ChatClient.create(model), memory, null,
+                new com.zcx.chenstack.config.AiKnowledgeProperties("rag"), null, 6, usage);
+        AtomicInteger rounds = new AtomicInteger();
+        respond = prompt -> Flux.just(switch (rounds.incrementAndGet()) {
+            case 1 -> tools(call("readPlatformHelp", "{\"topicTitle\":\"草稿帮助\"}"));
+            case 2 -> text("OLD_CONTEXT_CANARY", "stop");
+            case 3 -> tools(call("readPlatformHelp", "{\"topicTitle\":\"当前主题帮助\"}"));
+            default -> text("CURRENT_CONTEXT_CANARY", "stop");
+        });
+        answer("草稿规则", "source-audit", 7).collectList().block(Duration.ofSeconds(35));
+        awaitTerminalCleanup();
+        events.clear();
+        answer("当前流程规则", "source-audit", 7).collectList().block(Duration.ofSeconds(35));
+        assertTrue(prompts.get(2).getInstructions().toString().contains("OLD_CONTEXT_CANARY"));
+        CustomerServiceEvent traced = events.stream().filter(event -> "KNOWLEDGE_SOURCES".equals(event.type())).findFirst().orElseThrow();
+        assertEquals(List.of(new CustomerServiceEvent.KnowledgeSource("当前主题帮助", null, "current-1")), traced.sources());
+        var currentAudit = usage.recentKnowledgeUses(20).getFirst();
+        assertTrue(currentAudit.get("sources").toString().contains("current-topic"));
+        assertFalse(currentAudit.get("sources").toString().contains("draft"));
+    }
+
+    @Test void platformFirstTurnRequiresToolsAndReturnsToAutoAfterReadingCurrentEvidence() {
+        scopeRespond = this::platformScope;
+        respond = prompt -> Flux.just(prompts.size() == 1
+                ? tools(call("readPlatformHelp", "{\"topicTitle\":\"草稿帮助\"}")) : text("草稿仅本人可见。", "stop"));
+        assertEquals("草稿仅本人可见。", run("草稿对谁可见", "first-current-evidence"));
+        assertEquals("required", ((OpenAiChatOptions) prompts.getFirst().getOptions()).getToolChoice());
+        assertEquals("auto", ((OpenAiChatOptions) prompts.getLast().getOptions()).getToolChoice());
+        var names = ((OpenAiChatOptions) prompts.getFirst().getOptions()).getToolCallbacks().stream()
+                .map(callback -> callback.getToolDefinition().name()).toList();
+        assertTrue(names.containsAll(List.of("readPlatformHelp", "searchPlatformHelp", "showNavigation", "listMyEditableArticles")));
+        verify(model, times(3)).stream(any(Prompt.class)); // 同一分类请求，加两次正文请求。
+    }
+
+    @Test void ignoredRequiredToolChoiceGetsAtMostOneCorrectionWithinTheOriginalRoundLimit() {
+        for (int limit : List.of(1, 2, 6)) {
+            var f = new ProductRagAnswerServiceTest(); f.setup();
+            f.scopeRespond = f::platformScope;
+            f.service = new ProductRagAnswerService(f.knowledge, ChatClient.create(f.model), f.memory, null,
+                    new com.zcx.chenstack.config.AiKnowledgeProperties("rag"), null, limit);
+            f.respond = prompt -> Flux.just(f.text("UNVERIFIED_ANSWER_CANARY", "stop"));
+            assertTrue(f.run("当前功能需要哪些条件", "ignored-required").contains("没有查到"));
+            assertEquals(Math.min(2, limit), f.prompts.size());
+            assertTrue(f.prompts.stream().allMatch(prompt -> "required".equals(((OpenAiChatOptions) prompt.getOptions()).getToolChoice())));
+            assertFalse(f.memory.get("7:ignored-required").toString().contains("UNVERIFIED_ANSWER_CANARY"));
+            assertTrue(f.events.stream().anyMatch(event -> "UNKNOWN".equals(event.supportStatus())));
+            assertTrue(f.events.stream().noneMatch(event -> "KNOWLEDGE_SOURCES".equals(event.type())));
+            verify(f.model, times(1 + Math.min(2, limit))).stream(any(Prompt.class));
+        }
+    }
+
+    @Test void emptyFailedAndInvalidCurrentReadsCannotReleaseAnInventedKnowledgeAnswer() {
+        for (String result : List.of("empty", "failed", "invalid")) {
+            var f = new ProductRagAnswerServiceTest(); f.setup();
+            f.scopeRespond = f::platformScope;
+            if ("empty".equals(result)) when(f.knowledge.retrieveByTitle(anyString())).thenReturn(new KnowledgeEvidence(List.of(), f.catalog));
+            if ("failed".equals(result)) when(f.knowledge.retrieveByTitle(anyString())).thenThrow(new RagFailure(RagFailure.Code.INDEX_MISMATCH));
+            String title = "invalid".equals(result) ? "不存在的标题" : "草稿帮助";
+            f.respond = prompt -> Flux.just(f.prompts.size() == 1
+                    ? f.tools(f.call("readPlatformHelp", "{\"topicTitle\":\"" + title + "\"}")) : f.text("INVENTED_RULE_CANARY", "stop"));
+            assertTrue(f.run("当前功能规则是什么", result).contains("没有查到"));
+            assertEquals(2, f.prompts.size());
+            assertFalse(f.memory.get("7:" + result).toString().contains("INVENTED_RULE_CANARY"));
+            assertTrue(f.events.stream().noneMatch(event -> "KNOWLEDGE_SOURCES".equals(event.type())));
+            if (!"invalid".equals(result)) assertTrue(f.events.stream().anyMatch(event -> "KNOWLEDGE_STATUS".equals(event.type())));
+            if ("failed".equals(result)) assertTrue(f.events.stream().anyMatch(event -> "KNOWLEDGE_UNAVAILABLE".equals(event.errorCode())));
+        }
+    }
+
+    @Test void nonKnowledgeFollowupKeepsContextWithoutClaimingHistoricalSources() {
+        respond = prompt -> Flux.just(prompts.size() == 1
+                ? tools(call("readPlatformHelp", "{\"topicTitle\":\"草稿帮助\"}")) : text("OLD_CONTEXT_CANARY", "stop"));
+        run("草稿规则", "ordinary-followup");
+        awaitTerminalCleanup(); events.clear();
+        respond = prompt -> Flux.just(text("不客气。", "stop"));
+        assertEquals("不客气。", run("谢谢", "ordinary-followup"));
+        assertTrue(prompts.getLast().getInstructions().toString().contains("OLD_CONTEXT_CANARY"));
+        assertEquals("auto", ((OpenAiChatOptions) prompts.getLast().getOptions()).getToolChoice());
+        assertTrue(events.stream().noneMatch(event -> "KNOWLEDGE_SOURCES".equals(event.type())));
+        verify(knowledge, times(1)).retrieveByTitle(anyString());
+    }
+
     @Test void revokedKnowledgeAnswerIsNotReusedAsFollowupContext() {
         respond = prompt -> Flux.just(prompts.size() == 1
                 ? tools(call("searchPlatformHelp", "{\"query\":\"如何保存草稿\"}")) : text("OLD_RULE_RESPONSE", "stop"));
@@ -247,6 +424,10 @@ class ProductRagAnswerServiceTest {
         catalog.lifecycle().revoke("draft", catalog.epoch());
         respond = prompt -> {
             assertTrue(prompt.getInstructions().stream().noneMatch(message -> message.getText().contains("OLD_RULE_RESPONSE")));
+            var turns = prompt.getInstructions().stream().filter(message -> message instanceof org.springframework.ai.chat.messages.UserMessage
+                    || message instanceof AssistantMessage).toList();
+            assertEquals(3, turns.size());
+            assertInstanceOf(AssistantMessage.class, turns.get(1));
             return Flux.just(text("请重新核实当前资料", "stop"));
         };
         assertEquals("请重新核实当前资料", run("接着说刚才那个", "history-revoke"));
@@ -272,6 +453,27 @@ class ProductRagAnswerServiceTest {
         assertEquals(4, prompts.size());
         assertEquals(4, reservations.get());
         verifyNoInteractions(articles);
+    }
+
+    @Test void unconfirmedNavigationGetsOneModelCorrectionWithoutPublishingPartialActions() {
+        respond = prompt -> Flux.just(text(prompts.size() == 1
+                ? "下方有去登录按钮。下方有支付中心按钮。" : "你好，我可以解答辰栈使用问题。", "stop"));
+        assertEquals("你好，我可以解答辰栈使用问题。", run("介绍一下你能帮我做什么", "intro-correction"));
+        assertEquals(2, prompts.size());
+        assertEquals(1, reservations.get());
+        assertTrue(prompts.getLast().getInstructions().toString().contains("尚未展示给用户"));
+        assertTrue(events.stream().noneMatch(event -> "NAVIGATION_ACTION".equals(event.type())));
+        assertFalse(memory.get("7:intro-correction").toString().contains("支付中心"));
+        verifyNoInteractions(articles);
+    }
+
+    @Test void repeatedUnconfirmedNavigationStillFailsWithinTheOriginalRoundLimit() {
+        respond = prompt -> Flux.just(text("下方有支付中心按钮。", "stop"));
+        assertThrows(RuntimeException.class, () -> run("你好", "invalid-intro"));
+        assertEquals(2, prompts.size());
+        assertEquals(1, reservations.get());
+        assertTrue(events.isEmpty());
+        assertTrue(memory.get("7:invalid-intro").isEmpty());
     }
 
     @Test void helpAndPrivateBusinessToolsCanCooperateWithoutSendingPrivateResultsToModel() {
@@ -495,8 +697,11 @@ class ProductRagAnswerServiceTest {
         server.start();
         try {
             OpenAiChatModel loopback = loopback(server, new ReleaseProviderBudget("", "", 64, 20));
+            // 本机 HTTP 客户端冷启动使用与相邻协议测试一致的预算。
+            when(knowledge.chatTimeoutSeconds()).thenReturn(30);
             service = new ProductRagAnswerService(knowledge, ChatClient.create(loopback), memory);
-            assertTrue(run("我之前码的那些文字还能接着改吗", "wire").contains("卡片"));
+            assertTrue(String.join("", answer("我之前码的那些文字还能接着改吗", "wire", 7)
+                    .collectList().block(Duration.ofSeconds(35))).contains("卡片"));
             assertEquals(2, wires.size());
             assertEquals(1, scopeWires.size());
             assertFalse(scopeWires.getFirst().contains("PRIVATE_TITLE_SENTINEL"));
@@ -509,6 +714,42 @@ class ProductRagAnswerServiceTest {
             }
         } finally { server.stop(0); }
     }
+    @Test void realSpringAiWireRequiresCurrentKnowledgeThenAllowsTheFinalAnswer() throws Exception {
+        List<com.fasterxml.jackson.databind.JsonNode> wires = new CopyOnWriteArrayList<>();
+        ObjectMapper json = new ObjectMapper();
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/chat/completions", exchange -> {
+            var request = json.readTree(exchange.getRequestBody());
+            wires.add(request);
+            boolean classification = request.path("messages").get(0).path("content").asText().startsWith("你是用户端客服的请求范围分类器");
+            boolean read = !classification && wires.size() == 2;
+            Object delta = classification ? Map.of("role", "assistant", "content", "PLATFORM_KNOWLEDGE")
+                    : read ? Map.of("role", "assistant", "tool_calls", List.of(Map.of("index", 0, "id", "call_current",
+                    "type", "function", "function", Map.of("name", "readPlatformHelp", "arguments", "{\"topicTitle\":\"草稿帮助\"}"))))
+                    : Map.of("role", "assistant", "content", "草稿仅本人可见。");
+            byte[] body = ("data: " + json.writeValueAsString(Map.of("id", "current-evidence-loopback", "object", "chat.completion.chunk",
+                    "created", 1, "model", "fixture", "choices", List.of(Map.of("index", 0, "delta", delta,
+                    "finish_reason", read ? "tool_calls" : "stop")))) + "\n\ndata: [DONE]\n\n").getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().set("Content-Type", "text/event-stream");
+            exchange.sendResponseHeaders(200, body.length); exchange.getResponseBody().write(body); exchange.close();
+        });
+        server.start();
+        try {
+            when(knowledge.chatTimeoutSeconds()).thenReturn(30);
+            var provider = loopback(server, new ReleaseProviderBudget("", "", 64, 20));
+            service = new ProductRagAnswerService(knowledge, ChatClient.create(provider), memory);
+            assertEquals("草稿仅本人可见。", String.join("", answer("草稿对谁可见", "required-wire", 7)
+                    .collectList().block(Duration.ofSeconds(35))));
+            assertEquals(3, wires.size());
+            assertFalse(wires.getFirst().hasNonNull("tool_choice"));
+            assertEquals("required", wires.get(1).path("tool_choice").asText());
+            assertEquals("auto", wires.get(2).path("tool_choice").asText());
+            assertEquals("disabled", wires.get(1).path("thinking").path("type").asText());
+            assertTrue(wires.get(2).path("messages").toString().contains("草稿仅本人可见"));
+            verify(knowledge).retrieveByTitle("草稿帮助");
+        } finally { server.stop(0); }
+    }
+
     private OpenAiChatModel loopback(HttpServer server, ReleaseProviderBudget budget) {
         AiConfig config = new AiConfig();
         ReflectionTestUtils.setField(config, "apiKey", "offline-fixture-only");

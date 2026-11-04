@@ -21,6 +21,8 @@ public class BlogConstants {
     public static final String LoginRequired = "请先登录";
     public static final String LoginExpired = "登录已过期，请重新登录";
     public static final String NewPasswordSameAsOld = "新密码不能与原密码相同";
+    public static final String OldPasswordError = "当前密码不正确";
+    public static final String ChangePasswordFailed = "密码修改失败，请稍后重试";
     public static final String UserIdRequired = "用户ID不能为空";
     public static final String UpdateUserInfoError = "更新用户信息失败";
 
@@ -160,7 +162,7 @@ public class BlogConstants {
     public static final String NotFoundOperationlog = "操作日志不存在";
 
     // AI相关错误信息
-    public static final String AiDailyLimitExceeded = "今日AI调用次数已达上限，请明天再试";
+    public static final String AiDailyLimitExceeded = "今日可用次数已用完，请明天再来。";
     public static final String AiContentTooShort = "文章内容过短（少于100字），无需AI生成摘要";
     public static final String AiContentEmpty = "文章内容不能为空";
     public static final String AiDuplicateRequest = "请勿重复提交相同内容";

@@ -69,7 +69,7 @@ public final class WikiFoundation {
 
     /** 操作者必须先查看 inspect 的当前材料，授权精确 hash；公开可读本身不是编译授权。 */
     public Snapshot authorize(SourceKey key, String reviewedFingerprint) {
-        int actor = operator();
+        int actor = operator("ai:source:manage");
         hash(reviewedFingerprint);
         Objects.requireNonNull(key);
         return reader.withAuthority(List.of(key), () -> transaction.execute(status -> {
@@ -109,13 +109,13 @@ public final class WikiFoundation {
     }
 
     public void revoke(SourceKey key) {
-        operator();
+        operator("ai:source:manage");
         transaction.executeWithoutResult(status -> disable(source(key)));
     }
 
     /** P1只持久化编译意图，不调度或调用 Provider；同 requestId 不允许换输入或编译合同。 */
     public Job prepare(String requestId, List<Long> snapshotIds, String contractHash) {
-        operator();
+        operator("ai:wiki:compile");
         requestId(requestId); hash(contractHash);
         List<Long> ids = ids(snapshotIds);
         return checked(() -> load(ids), sources -> {
@@ -137,6 +137,48 @@ public final class WikiFoundation {
         });
     }
 
+    /** 管理员人工编写的草稿：仍绑定已授权来源快照，不调用模型、不伪造编译结果。 */
+    public Draft createManualDraft(String requestId, List<Long> snapshotIds, String title, String summary,
+                                   String markdown) {
+        int actor = operator("ai:wiki:edit");
+        requestId(requestId);
+        if (title == null || title.isBlank() || title.length() > 160 || summary == null || summary.isBlank()
+                || summary.length() > 500 || markdown == null || markdown.isBlank()
+                || markdown.getBytes(StandardCharsets.UTF_8).length > 900_000) {
+            throw new IllegalArgumentException("WIKI_MANUAL_CONTENT_INVALID");
+        }
+        List<Long> ids = ids(snapshotIds);
+        String contract = KnowledgeCatalog.hash("WIKI_MANUAL_AUTHORING_V1|user:" + actor);
+        return checked(() -> load(ids), sources -> {
+            String manifest = KnowledgeCatalog.hash(contract + ":" +
+                    sources.stream().map(s -> s.id() + ":" + s.material().fingerprint()).toList());
+            jdbc.update("""
+                    INSERT INTO wiki_compile_job(request_id,manifest_hash,contract_hash,state)
+                    VALUES(?,?,?,'DRAFT_READY') ON DUPLICATE KEY UPDATE request_id=request_id
+                    """, requestId, manifest, contract);
+            Job job = job(requestId);
+            if (!manifest.equals(job.manifestHash()) || !contract.equals(job.contractHash())
+                    || !"DRAFT_READY".equals(job.state())) {
+                throw new IllegalStateException("WIKI_REQUEST_ID_CONFLICT");
+            }
+            for (Snapshot snapshot : sources) {
+                jdbc.update("INSERT INTO wiki_job_source(request_id,snapshot_id) VALUES(?,?) ON DUPLICATE KEY UPDATE snapshot_id=snapshot_id",
+                        requestId, snapshot.id());
+            }
+            String bodyHash = KnowledgeCatalog.hash(markdown);
+            List<Draft> existing = drafts(requestId);
+            if (!existing.isEmpty()) {
+                if (!bodyHash.equals(existing.getFirst().bodyHash()) || !markdown.equals(existing.getFirst().markdown())) {
+                    throw new IllegalStateException("WIKI_DRAFT_CONFLICT");
+                }
+                return existing.getFirst();
+            }
+            jdbc.update("INSERT INTO wiki_draft(request_id,markdown,body_hash,state) VALUES(?,?,?,'DRAFT')",
+                    requestId, markdown, bodyHash);
+            return new Draft(requestId, markdown, bodyHash);
+        });
+    }
+
     /** 仅内部编译调用；每次发送输入前重新调用，不能信任第三方导出的来源声明。 */
     public CompilationInput inputs(String requestId) {
         return withCurrentInputs(requestId, Function.identity());
@@ -155,7 +197,7 @@ public final class WikiFoundation {
 
     /** 认领及预算初始化共享短事务；回调只允许本地 SQL。 */
     CompilationInput start(String requestId, java.util.function.Consumer<CompilationInput> initialize) {
-        operator(); requestId(requestId);
+        operator("ai:wiki:compile"); requestId(requestId);
         return checked(() -> load(jobSources(requestId)), sources -> {
             Job current = job(requestId);
             if (!"QUEUED".equals(current.state())) throw new IllegalStateException("WIKI_JOB_ALREADY_CLAIMED");
@@ -172,7 +214,7 @@ public final class WikiFoundation {
     }
 
     void stop(String requestId, String state) {
-        operator(); requestId(requestId);
+        operator("ai:wiki:compile"); requestId(requestId);
         if (!Set.of("FAILED", "INVALIDATED").contains(state)) throw new IllegalArgumentException("WIKI_STOP_STATE_INVALID");
         transaction.executeWithoutResult(status -> jdbc.update(
                 "UPDATE wiki_compile_job SET state=? WHERE request_id=? AND state='RUNNING'", state, requestId));
@@ -180,7 +222,7 @@ public final class WikiFoundation {
 
     /** 恢复只收敛状态，不读取/释放已失效来源。 */
     void recover(String requestId, Runnable expiredAttempt) {
-        operator(); requestId(requestId);
+        operator("ai:wiki:compile"); requestId(requestId);
         transaction.executeWithoutResult(status -> {
             String current = job(requestId).state();
             if (!Set.of("RUNNING", "CANCELLED").contains(current)) return;
@@ -242,7 +284,7 @@ public final class WikiFoundation {
     }
 
     void cancel(String requestId, Runnable metadata) {
-        operator(); requestId(requestId);
+        operator("ai:wiki:compile"); requestId(requestId);
         transaction.executeWithoutResult(status -> {
             job(requestId);
             if (jdbc.update("UPDATE wiki_compile_job SET state='CANCELLED' WHERE request_id=? AND state IN ('QUEUED','RUNNING')", requestId) == 1) {
@@ -345,10 +387,12 @@ public final class WikiFoundation {
                 (rs, n) -> new Draft(rs.getString(1), rs.getString(2), rs.getString(3)), id);
     }
 
-    private int operator() {
+    private int operator() { return operator("ai:wiki:read"); }
+
+    private int operator(String permission) {
         Integer actor = SecurityUtils.getUserId();
         var authentication = org.springframework.security.core.context.SecurityContextHolder.getContext().getAuthentication();
-        if (authentication == null || !authentication.isAuthenticated() || actor == null || actor <= 0 || !security.isAdmin()) {
+        if (authentication == null || !authentication.isAuthenticated() || actor == null || actor <= 0 || !(security.isAdmin() || security.hasKnowledgePermission(permission))) {
             throw new SecurityException("WIKI_OPERATOR_REQUIRED");
         }
         return actor;

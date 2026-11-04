@@ -18,14 +18,7 @@ const router = createRouter({
       name: 'layout',
       redirect: '/home',
       component: () => import('@/components/layout/Layout.vue'),
-      children: [
-        {
-          path: '/wiki',
-          name: 'wikiAdmin',
-          component: () => import('@/views/wiki/index.vue'),
-          meta: { title: 'Wiki 知识管理', wikiAdmin: true },
-        },
-      ],
+      children: [],
     },
   ],
 })
@@ -179,11 +172,6 @@ router.beforeEach(async (to, from, next) => {
       next({ path: '/login' })
       return
     }
-  }
-
-  if (to.meta.wikiAdmin && !await userStore.checkWikiAccess()) {
-    next({ path: '/home' })
-    return
   }
 
   // 用户信息已加载，但路由未添加

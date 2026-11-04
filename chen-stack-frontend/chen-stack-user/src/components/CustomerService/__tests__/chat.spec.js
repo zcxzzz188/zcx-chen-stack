@@ -35,6 +35,22 @@ beforeEach(() => {
 afterEach(() => { wrapper.unmount(); localStorage.clear(); vi.useRealTimers(); vi.unstubAllGlobals() })
 const send = async () => { await wrapper.find('textarea').setValue('如何创建专栏？'); await wrapper.find('.send-button').trigger('click'); await flushPromises() }
 
+it.each(['USAGE_LIMIT', 'ERROR_STATE'])('每日额度用尽通过 %s 展示普通提示，不报错也不自动重试', async type => {
+  const reason = '今日可用次数已用完，请明天再来。'
+  api.customerServiceEvents.mockResolvedValue(response([
+    { type, text: reason, ...(type === 'ERROR_STATE' ? { errorCode: 'DAILY_LIMIT_REACHED' } : {}) },
+    { type: 'DONE' },
+  ]))
+  await send()
+  const last = wrapper.findAll('.ai-message').at(-1)
+  expect(last.text()).toContain(reason)
+  expect(last.find('.incomplete-indicator').exists()).toBe(false)
+  expect(last.text()).not.toMatch(/回答失败|请求失败|生成失败|系统异常|网络异常|回答未完成/)
+  expect(api.error).not.toHaveBeenCalled()
+  expect(api.customerServiceEvents).toHaveBeenCalledTimes(1)
+  expect(wrapper.find('textarea').element.disabled).toBe(false)
+})
+
 it('正常 TEXT、工具导航卡片与 DONE 完成后保留按钮并恢复输入', async () => {
   api.customerServiceEvents.mockResolvedValue(response([{ type: 'TEXT', text: '请到专栏管理创建专栏。' }, { type: 'NAVIGATION_ACTION', action: 'OPEN_COLUMN_MANAGE', text: '专栏管理' }, { type: 'DONE' }]))
   await send()

@@ -36,7 +36,7 @@ class AiKnowledgeConfigurationTest {
 
     @Test void actualYamlBindsTheEnvironmentVariableAndDefaultsToRag() throws Exception {
         var yaml = new YamlPropertySourceLoader().load("actual-application", new ClassPathResource("application.yaml")).getFirst();
-        for (String mode : List.of("DEFAULT", "chat", "rag", "wiki")) {
+        for (String mode : List.of("DEFAULT", "chat", "rag", "wiki", "hybrid")) {
             new ApplicationContextRunner().withUserConfiguration(Binding.class).withInitializer(context -> {
                 context.getEnvironment().getPropertySources().addLast(yaml);
                 if (!mode.equals("DEFAULT")) context.getEnvironment().getPropertySources().addFirst(
@@ -48,11 +48,17 @@ class AiKnowledgeConfigurationTest {
         }
     }
 
-    @Test void invalidAndUnimplementedModesPreventStartupInsteadOfBecomingRag() {
-        for (String mode : List.of("", "RAG", "invalid", "hybrid", "auto")) {
+    @Test void invalidModesPreventStartupInsteadOfBecomingRag() {
+        for (String mode : List.of("", "RAG", "invalid", "auto", "HYBRID")) {
             new ApplicationContextRunner().withUserConfiguration(Binding.class)
                     .withPropertyValues("chen.ai.knowledge-mode=" + mode).run(context -> assertNotNull(context.getStartupFailure(), mode));
         }
+    }
+
+    @Test void hybridIsAnAcceptedDeploymentDefaultWhileChatOnlyRemainsLegacyReadable() {
+        assertEquals("hybrid", new AiKnowledgeProperties("hybrid").knowledgeMode());
+        assertEquals("chat", new AiKnowledgeProperties("chat").knowledgeMode());
+        assertEquals("rag", new AiKnowledgeProperties(null).knowledgeMode());
     }
 
     @Test void wikiWithoutPublishedAuthorityPreventsServiceStartup() {

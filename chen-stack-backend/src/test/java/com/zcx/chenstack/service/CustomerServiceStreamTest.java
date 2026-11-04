@@ -61,6 +61,19 @@ class CustomerServiceStreamTest {
         return request;
     }
 
+    @Test void dailyLimitIsACompletedConversationNoticeAndLegacyTextUsesTheSameMessage() {
+        var limit = CustomerServiceError.DAILY_LIMIT_REACHED;
+        when(answers.answer(anyString(), anyString(), eq(42), any(BooleanSupplier.class), any(CustomerServiceTools.class)))
+                .thenReturn(Flux.error(limit.exception()));
+        var events = orchestrator.chat("你好", "same", 42).collectList().block(Duration.ofSeconds(5));
+        assertEquals(List.of("USAGE_LIMIT", "DONE"), events.stream().map(CustomerServiceEvent::type).toList());
+        assertEquals("今日可用次数已用完，请明天再来。", events.getFirst().text());
+        assertFalse(events.toString().contains("ERROR_STATE"));
+        when(answers.answer(anyString(), anyString(), eq(42), any(BooleanSupplier.class)))
+                .thenReturn(Flux.error(limit.exception()));
+        assertEquals(List.of(events.getFirst().text()), service.customerServiceChat("你好", "same").collectList().block());
+    }
+
     @Test void defaultAndLegacyModesKeepConversationAndReserveForServerIdentity() {
         when(quota.tryReserveUsage(42)).thenReturn(true);
         when(answers.answer(anyString(), anyString(), eq(42), any(BooleanSupplier.class))).thenAnswer(call -> {

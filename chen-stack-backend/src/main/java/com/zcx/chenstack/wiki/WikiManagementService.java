@@ -60,11 +60,11 @@ public final class WikiManagementService {
     }
 
     public Source authorize(SourceKey key, String fingerprint) {
-        publication.operator(); Snapshot snapshot = foundation.authorize(key, fingerprint);
+        publication.operator("ai:source:manage"); Snapshot snapshot = foundation.authorize(key, fingerprint);
         return source(snapshot.material(), snapshot.id(), snapshot.generation(), true);
     }
 
-    public void revoke(SourceKey key) { publication.operator(); foundation.revoke(key); }
+    public void revoke(SourceKey key) { publication.operator("ai:source:manage"); foundation.revoke(key); }
 
     public Page<WikiViews.Job> jobs(int page, int size) {
         publication.operator(); WikiPublicationService.pagination(page, size);
@@ -74,7 +74,7 @@ public final class WikiManagementService {
     }
 
     public WikiViews.Job createJob(String requestId, List<Long> snapshots, Set<String> topics) {
-        publication.operator(); WikiCompilationService service = requiredCompiler();
+        publication.operator("ai:wiki:compile"); WikiCompilationService service = requiredCompiler();
         if (!workers.tryAcquire()) throw new WikiProductException(429, "编译任务已满，请稍后重试");
         boolean handedOff = false;
         try {
@@ -101,7 +101,7 @@ public final class WikiManagementService {
     }
 
     public void cancel(String requestId) {
-        publication.operator();
+        publication.operator("ai:wiki:compile");
         foundation.cancel(requestId, () -> new WikiCompilationStore(jdbc).stop(requestId, "CANCELLED"));
     }
 

@@ -1,32 +1,32 @@
 <template>
   <div class="table-actions">
     <!-- 查看按钮 -->
-    <el-button v-if="showView" type="info" size="small" :icon="View" class="action-btn view-btn" @click="handleAction('view')">
+    <el-button v-if="showView" type="info" size="small" :icon="View" :disabled="disabled || disabledActions.includes('view')" class="action-btn view-btn" @click="handleAction('view')">
       {{ viewText }}
     </el-button>
 
     <!-- 详情按钮 -->
-    <el-button v-if="showDetail" type="default" size="small" :icon="InfoFilled" class="action-btn detail-btn" @click="handleAction('detail')">
+    <el-button v-if="showDetail" type="default" size="small" :icon="InfoFilled" :disabled="disabled || disabledActions.includes('detail')" class="action-btn detail-btn" @click="handleAction('detail')">
       {{ detailText }}
     </el-button>
 
     <!-- 编辑按钮 -->
-    <el-button v-if="showEdit" type="primary" size="small" :icon="Edit" class="action-btn edit-btn" @click="handleAction('edit')">
+    <el-button v-if="showEdit" type="primary" size="small" :icon="Edit" :disabled="disabled || disabledActions.includes('edit')" class="action-btn edit-btn" @click="handleAction('edit')">
       {{ editText }}
     </el-button>
 
     <!-- 审核按钮 -->
-    <el-button v-if="showAudit" type="primary" size="small" :icon="Check" class="action-btn audit-btn" @click="handleAction('audit')">
+    <el-button v-if="showAudit" type="primary" size="small" :icon="Check" :disabled="disabled || disabledActions.includes('audit')" class="action-btn audit-btn" @click="handleAction('audit')">
       {{ auditText }}
     </el-button>
 
     <!-- 拒绝按钮 -->
-    <el-button v-if="showReject" type="warning" size="small" :icon="Close" class="action-btn reject-btn" @click="handleAction('reject')">
+    <el-button v-if="showReject" type="warning" size="small" :icon="Close" :disabled="disabled || disabledActions.includes('reject')" class="action-btn reject-btn" @click="handleAction('reject')">
       {{ rejectText }}
     </el-button>
 
     <!-- 删除按钮 -->
-    <el-button v-if="showDelete" type="danger" size="small" :icon="Delete" class="action-btn delete-btn" @click="handleAction('delete')">
+    <el-button v-if="showDelete" type="danger" size="small" :icon="Delete" :disabled="disabled || disabledActions.includes('delete')" class="action-btn delete-btn" @click="handleAction('delete')">
       {{ deleteText }}
     </el-button>
 
@@ -110,6 +110,10 @@ const props = defineProps({
     type: Boolean,
     default: false,
   },
+  disabledActions: {
+    type: Array,
+    default: () => [],
+  },
 })
 
 // Emits
@@ -117,7 +121,7 @@ const emit = defineEmits(['view', 'detail', 'edit', 'audit', 'reject', 'delete',
 
 // 处理按钮点击
 const handleAction = (action) => {
-  if (props.disabled) return
+  if (props.disabled || props.disabledActions.includes(action)) return
   emit(action)
   emit('action', action)
 }
@@ -219,6 +223,12 @@ const handleAction = (action) => {
       border-color: var(--action-delete-hover-border);
       box-shadow: 0 2px 8px var(--action-delete-shadow);
     }
+  }
+
+  .action-btn.is-disabled:disabled {
+    color: var(--el-disabled-text-color);
+    background-color: var(--el-disabled-bg-color);
+    border-color: var(--el-disabled-border-color);
   }
 }
 

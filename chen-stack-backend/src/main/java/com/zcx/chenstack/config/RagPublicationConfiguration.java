@@ -74,18 +74,24 @@ public class RagPublicationConfiguration {
         if (release.isEnabled() || !rag.isEnabled()) throw new SecurityException("RECOVERY_REQUIRES_EXCLUSIVE_READ_ONLY_MODE");
         rag.validate();
         return arguments -> {
-            try {
-                byte[] manifestBytes = input(release.getManifestPath(), 65_536);
-                var identity = PublicationBuildIdentity.read(Path.of(release.getArtifactPath()));
-                var runtime = new PublicationManifest.RuntimeIdentity(identity.gitCommit(), identity.artifactSha256(),
-                        release.getEnvironment(), rag.getCollection(),
-                        KnowledgeCatalog.hash(rag.getEmbeddingBaseUrl() + "|" + rag.getEmbeddingModel() + "|1024|chunk-v1"),
-                        lifecycle.snapshot().epoch(), "UNUSED_READ_ONLY_RECOVERY");
-                RagPublicationRecovery.restore(lifecycle, knowledge, manifestBytes, release.getOperator(),
-                        release.getEnvironment(), runtime, identity.resources());
-            } catch (Exception error) {
-                throw new SecurityException("PUBLICATION_READ_ONLY_RECOVERY_REJECTED");
-            }
+            Runnable restoreReadAuthority = () -> {
+                try {
+                    byte[] manifestBytes = input(release.getManifestPath(), 65_536);
+                    var identity = PublicationBuildIdentity.read(Path.of(release.getArtifactPath()));
+                    var runtime = new PublicationManifest.RuntimeIdentity(identity.gitCommit(), identity.artifactSha256(),
+                            release.getEnvironment(), rag.getCollection(),
+                            KnowledgeCatalog.hash(rag.getEmbeddingBaseUrl() + "|" + rag.getEmbeddingModel() + "|1024|chunk-v1"),
+                            lifecycle.snapshot().epoch(), "UNUSED_READ_ONLY_RECOVERY");
+                    RagPublicationRecovery.restore(lifecycle, knowledge, manifestBytes, release.getOperator(),
+                            release.getEnvironment(), runtime, identity.resources());
+                } catch (RagPublicationRecovery.PendingManagementRecovery pending) {
+                    // The verified pending operation is recoverable through authenticated management; chat stays blocked.
+                } catch (Exception error) {
+                    throw new SecurityException("PUBLICATION_READ_ONLY_RECOVERY_REJECTED", error);
+                }
+            };
+            restoreReadAuthority.run();
+            lifecycle.recoverOwnerWith(restoreReadAuthority);
         };
     }
 

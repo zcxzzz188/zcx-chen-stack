@@ -26,7 +26,9 @@ public class CustomerServiceOrchestrator {
                     .subscribeOn(Schedulers.boundedElastic())
                     .subscribe(part -> sink.next(CustomerServiceEvent.text(part)), error -> {
                         CustomerServiceError failure = CustomerServiceError.classify(error);
-                        sink.next(CustomerServiceEvent.failure(failure.name(), failure.description(), null));
+                        sink.next(failure == CustomerServiceError.DAILY_LIMIT_REACHED
+                                ? CustomerServiceEvent.state("USAGE_LIMIT", failure.description(), null, null)
+                                : CustomerServiceEvent.failure(failure.name(), failure.description(), null));
                         sink.next(CustomerServiceEvent.state("DONE", null, null, null));
                         sink.complete();
                     }, () -> {

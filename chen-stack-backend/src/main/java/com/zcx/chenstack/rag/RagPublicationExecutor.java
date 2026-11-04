@@ -112,26 +112,42 @@ public final class RagPublicationExecutor {
                 knowledge.preparePublicationTarget(manifest.createCollection(), owner);
             }
             if (reuseIndex) {
-                var receipt = store.latestCompletedReceipt(manifest.environment(), manifest.collection());
+                var contentAnchor = store.latestControlledReceipt(manifest.collection());
+                var chain = store.managementChain(contentAnchor);
+                PublicationManifest.require(chain.complete(), "RECOVERY_MANAGEMENT_INDEX_PENDING");
+                var receipt = chain.effective();
                 var indexed = receipt.operation();
                 PublicationManifest.require(!indexed.manifestHash().equals(grant.manifestSha256())
                         && indexed.targetInitialized() && indexed.indexAuthority() != null
                         && indexed.indexAuthority().matches("[0-9a-f-]{36}")
-                        && indexed.operator().equals(grant.operator())
-                        && indexed.maxEmbeddingRequests() >= 0 && indexed.maxEmbeddingRequests() <= Integer.MAX_VALUE
+                        && contentAnchor.operation().operator().equals(grant.operator())
+                        && indexed.maxEmbeddingRequests() >= 0
                         && indexed.embeddingRequests() >= 0 && indexed.embeddingRequests() <= indexed.maxEmbeddingRequests()
                         && before.epoch() == ("PUBLISH".equals(indexed.type()) || "UPDATE".equals(indexed.type())
+                            || "KNOWLEDGE_UPDATE".equals(indexed.type()) || "KNOWLEDGE_REVOKE".equals(indexed.type())
                             ? Math.incrementExact(indexed.expectedGeneration()) : indexed.expectedGeneration())
                         && Objects.equals(indexed.indexEpoch(), before.epoch())
-                        && ("PUBLISH".equals(indexed.type()) || "UPDATE".equals(indexed.type()) || "RECOVER".equals(indexed.type()))
+                        && ("PUBLISH".equals(indexed.type()) || "UPDATE".equals(indexed.type()) || "RECOVER".equals(indexed.type())
+                            || "KNOWLEDGE_UPDATE".equals(indexed.type()) || "KNOWLEDGE_REVOKE".equals(indexed.type()))
                         && PublicationManifest.validHash(indexed.operationHash())
                         && !receipt.completedAt().isAfter(java.time.Instant.now()), "RECOVERY_INDEX_RECEIPT_MISMATCH");
                 String indexHash = knowledge.verifyPublicationIndex(indexed.indexAuthority(), indexed.indexEpoch());
                 PublicationManifest.require(receipt.indexHash().equals(indexHash), "RECOVERY_INDEX_DIGEST_MISMATCH");
+                if (!chain.changedSources().isEmpty()) store.inheritManagedContent(grant.operationId(), contentAnchor);
                 // 只新增本次运维回执，复用旧向量的 authority/epoch；不重新发布、嵌入或写索引。
                 store.checkpoint(grant.operationId(), "COMPLETED", true, indexed.indexAuthority(), indexed.indexEpoch(), indexHash);
                 knowledge.confirmPublication(before, indexed.indexAuthority(), indexed.indexEpoch());
                 return result("COMPLETED");
+            }
+            if (manifest.operation() == PublicationManifest.Operation.RECOVER && store.hasManagedChanges()) {
+                var contentAnchor = store.latestControlledReceipt(manifest.collection());
+                var chain = store.managementChain(contentAnchor);
+                PublicationManifest.require(chain.complete(), "RECOVERY_MANAGEMENT_INDEX_PENDING");
+                if (!chain.changedSources().isEmpty()) {
+                    PublicationManifest.require(contentAnchor.operation().environment().equals(manifest.environment())
+                            && contentAnchor.operation().operator().equals(grant.operator()), "RECOVERY_MANAGED_ORIGIN_SCOPE_MISMATCH");
+                    store.inheritManagedContent(grant.operationId(), contentAnchor);
+                }
             }
             if (applied == null && manifest.operation() != PublicationManifest.Operation.RECOVER) {
                 store.checkpoint(grant.operationId(), "VALIDATED", manifest.operation() != PublicationManifest.Operation.REVOKE, null, null);
@@ -179,10 +195,20 @@ public final class RagPublicationExecutor {
     }
 
     private void validateSources(KnowledgeCatalog catalog) {
+        Set<String> managed = Set.of();
+        Set<String> adminSources = new java.util.LinkedHashSet<>();
+        if (manifest.operation() == PublicationManifest.Operation.RECOVER && lifecycle.store().hasManagedChanges()) {
+            var anchor = lifecycle.store().latestControlledReceipt(manifest.collection());
+            managed = lifecycle.store().managementChain(anchor).changedSources();
+            adminSources.addAll(managed);
+            // 管理员新增来源可能早于本次受控恢复锚点；按已完成且已核验的操作回执接受。
+            adminSources.addAll(lifecycle.store().createdSources(manifest.environment(), manifest.collection()));
+        }
         Set<String> ids = drafts.stream().map(KnowledgeDocument::sourceId).collect(Collectors.toSet());
         PublicationManifest.require(ids.equals(PublicationManifest.userSourceIds()) && drafts.size() == 39, "RELEASE_SCOPE_INVALID");
         for (KnowledgeDocument draft : drafts) {
             KnowledgeDocument actual = catalog.source(draft.sourceId());
+            if (manifest.operation() == PublicationManifest.Operation.RECOVER && managed.contains(draft.sourceId())) continue;
             if (manifest.operation() == PublicationManifest.Operation.UPDATE) {
                 PublicationManifest.require(actual != null && "PUBLIC".equals(actual.visibility())
                         && "DOCUMENT_REVIEWED".equals(actual.reviewStatus()), "RELEASE_UPDATE_SOURCE_NOT_PUBLISHED");
@@ -197,7 +223,8 @@ public final class RagPublicationExecutor {
                 PublicationManifest.require(!"REVOKED".equals(actual.reviewStatus()), "RELEASE_SOURCE_REVOKED");
             }
         }
-        PublicationManifest.require(catalog.documents().stream().filter(d -> !ids.contains(d.sourceId()))
+        PublicationManifest.require(catalog.documents().stream()
+                .filter(d -> !ids.contains(d.sourceId()) && !adminSources.contains(d.sourceId()))
                 .noneMatch(d -> "PUBLIC".equals(d.visibility()) || "DOCUMENT_REVIEWED".equals(d.reviewStatus())), "RELEASE_EXCLUDED_SOURCE_APPROVED");
     }
 

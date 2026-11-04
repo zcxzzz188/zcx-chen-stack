@@ -9,6 +9,14 @@ import java.util.*;
 /** 不可变内容快照；授权有效性由所属生命周期管理器决定，向量只用于定位。 */
 public final class KnowledgeCatalog {
     private static final Set<String> HELP_ROUTES = Set.of("/", "/register", "/login", "/reset", "/search", "/editor", "/creation/articlemanage", "/creation/columnmanage", "/article", "/setting");
+
+    /** 管理端新增知识只允许关联真实存在的用户端页面，不接受任意URL。 */
+    public static boolean validSourceUrl(String url) {
+        return url != null && HELP_ROUTES.contains(url);
+    }
+
+    public static Set<String> helpRoutes() { return HELP_ROUTES; }
+
     private final Map<String, KnowledgeDocument> sources;
     private final Map<String, Document> chunks;
     private final CatalogLifecycle lifecycle;

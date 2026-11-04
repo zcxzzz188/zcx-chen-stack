@@ -14,7 +14,12 @@ public final class WikiViews {
                         String createdAt, List<Source> sources, List<String> topics, List<String> conflicts) {}
     public record Revision(long id, long pageId, int version, String requestId, String title, String summary,
                            String markdown, String state, String bodyHash, String manifestHash, String createdAt, boolean current) {}
-    public record ManagedPage(long id, String title, Integer currentVersion, boolean withdrawn, boolean publicEligible) {}
+    public record ManagedPage(long id, String title, Integer currentVersion, boolean withdrawn, boolean publicEligible,
+                              String summary, String updatedAt, String publishedAt, String statusReason) {}
+    public record ManagedPageDetail(long id, String title, Integer version, String summary, String markdown,
+                                    String publishedAt, List<String> topics, List<Citation> citations,
+                                    boolean publicEligible, String statusReason, String statusDetail,
+                                    List<Revision> versions) {}
     public record Card(long id, String title, String summary, List<String> topics, int version, String publishedAt) {}
     public record Citation(String title, String url, String version) {}
     public record PublishedPage(long id, String title, String markdown, int version, String publishedAt,

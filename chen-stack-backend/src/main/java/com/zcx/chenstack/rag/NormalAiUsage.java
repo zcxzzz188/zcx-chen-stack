@@ -15,6 +15,8 @@ import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.time.Instant;
 import java.util.LinkedHashMap;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -58,6 +60,51 @@ public final class NormalAiUsage {
     public boolean enabled() { return enabled; }
 
     public void checkReady() { access(null); }
+
+    public record KnowledgeReference(String id, String title, String version) {
+        public KnowledgeReference {
+            if (id == null || !id.matches("[a-z0-9:_-]{1,96}") || title == null || title.isBlank()
+                    || title.length() > 160 || version == null || version.isBlank() || version.length() > 40) {
+                throw new IllegalArgumentException("KNOWLEDGE_REFERENCE_INVALID");
+            }
+        }
+    }
+
+    public void knowledgeUsed(String mode, List<KnowledgeReference> sources) {
+        if (!List.of("chat", "rag", "wiki", "hybrid").contains(mode) || sources == null || sources.size() > 96) {
+            throw new IllegalArgumentException("KNOWLEDGE_USAGE_INVALID");
+        }
+        event(UUID.randomUUID().toString(), Purpose.CHAT, "KNOWLEDGE_USED",
+                Map.of("kind", "KNOWLEDGE", "knowledgeMode", mode, "sources", List.copyOf(sources)));
+    }
+
+    /** 只返回最近审计窗口，不读取或暴露模型请求正文。 */
+    public List<Map<String, Object>> recentKnowledgeUses(int limit) {
+        if (limit < 1 || limit > 50) throw new IllegalArgumentException("KNOWLEDGE_USAGE_LIMIT_INVALID");
+        if (!enabled) return List.of();
+        synchronized (monitor) {
+            checkReady();
+            try (FileChannel channel = FileChannel.open(path, StandardOpenOption.READ, StandardOpenOption.WRITE);
+                 var lock = channel.tryLock()) {
+                if (lock == null) throw closed();
+                long start = Math.max(0, channel.size() - 1048576);
+                ByteBuffer bytes = ByteBuffer.allocate((int) (channel.size() - start));
+                channel.position(start);
+                while (bytes.hasRemaining()) if (channel.read(bytes) < 0) throw closed();
+                String tail = new String(bytes.array(), StandardCharsets.UTF_8);
+                if (start > 0) tail = tail.substring(tail.indexOf('\n') + 1);
+                String[] rows = tail.split("\n");
+                List<Map<String, Object>> result = new ArrayList<>();
+                for (int i = rows.length - 1; i >= 0 && result.size() < limit; i--) {
+                    JsonNode row = JSON.readTree(rows[i]);
+                    if ("KNOWLEDGE_USED".equals(row.path("event").asText())) {
+                        result.add(JSON.convertValue(row, new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() {}));
+                    }
+                }
+                return List.copyOf(result);
+            } catch (IOException | java.nio.channels.OverlappingFileLockException failure) { throw closed(); }
+        }
+    }
 
     String begin(Purpose purpose, ReleaseProviderBudget.Kind kind) {
         String id = UUID.randomUUID().toString();

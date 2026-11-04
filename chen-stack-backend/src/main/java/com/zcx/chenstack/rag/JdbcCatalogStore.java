@@ -21,25 +21,49 @@ public final class JdbcCatalogStore implements AutoCloseable {
         State { rows = List.copyOf(rows); }
         List<KnowledgeDocument> documents() { return rows.stream().filter(row -> !row.deleted()).map(Row::document).toList(); }
     }
-    private final Connection connection;
+    private final DataSource source;
+    private Connection connection;
     private final String lockName;
     private State state;
+    private boolean closed;
+
+    public static final class OwnerLost extends IllegalStateException {
+        private OwnerLost(SQLException cause) { super("CATALOG_OWNER_LOST", cause); }
+    }
 
     private JdbcCatalogStore(DataSource source) throws SQLException {
+        this.source = source;
         connection = source.getConnection();
         lockName = "chen-rag-" + KnowledgeCatalog.hash(Objects.requireNonNull(connection.getCatalog())).substring(0, 40);
         try {
-            connection.setNetworkTimeout(Runnable::run, 3000);
-            connection.setAutoCommit(false);
-            try (PreparedStatement query = connection.prepareStatement("SELECT GET_LOCK(?,0)")) {
-                query.setString(1, lockName);
-                try (ResultSet result = query.executeQuery()) {
-                    if (!result.next() || result.getInt(1) != 1) { throw new SQLException("CATALOG_OWNER_BUSY"); }
-                }
-            }
+            acquireOwner(connection);
         } catch (Exception error) {
             connection.close();
             throw error;
+        }
+    }
+
+    private void acquireOwner(Connection target) throws SQLException {
+        target.setNetworkTimeout(Runnable::run, 3000);
+        target.setAutoCommit(false);
+        // A pooled physical session may already hold this exact lock; do not increment its reentrant count.
+        if (ownsSessionLock(target)) return;
+        try (PreparedStatement query = target.prepareStatement("SELECT GET_LOCK(?,0)")) {
+            query.setQueryTimeout(3);
+            query.setString(1, lockName);
+            try (ResultSet result = query.executeQuery()) {
+                if (!result.next() || result.getInt(1) != 1) throw new SQLException("CATALOG_OWNER_BUSY");
+            }
+        }
+    }
+
+    private boolean ownsSessionLock(Connection target) throws SQLException {
+        try (PreparedStatement query = target.prepareStatement("SELECT IS_USED_LOCK(?) = CONNECTION_ID()")) {
+            query.setQueryTimeout(3); query.setString(1, lockName);
+            try (ResultSet result = query.executeQuery()) {
+                if (!result.next()) throw new SQLException("CATALOG_OWNER_STATE_UNAVAILABLE");
+                return result.getBoolean(1);
+            }
         }
     }
 
@@ -132,12 +156,54 @@ public final class JdbcCatalogStore implements AutoCloseable {
     }
 
     synchronized void requireOwner() {
-        try (PreparedStatement query = connection.prepareStatement("SELECT IS_USED_LOCK(?) = CONNECTION_ID()")) {
-            query.setString(1, lockName);
-            try (ResultSet result = query.executeQuery()) {
-                if (!result.next() || !result.getBoolean(1)) { throw new SQLException("CATALOG_OWNER_LOST"); }
+        try {
+            if (!ownsSessionLock(connection)) throw new SQLException("CATALOG_OWNER_LOST");
+        } catch (SQLException error) { throw new OwnerLost(error); }
+    }
+
+    /** Reconnection only restores the same committed authority; callers must reverify its index before serving reads. */
+    synchronized void reconnectUnchanged() {
+        if (closed) throw new IllegalStateException("CATALOG_STORE_CLOSED");
+        disconnectOwner();
+        Connection replacement = null;
+        try {
+            replacement = source.getConnection();
+            acquireOwner(replacement);
+            State recovered = readState(replacement, true);
+            if (state.generation() != recovered.generation() || !digest(state).equals(digest(recovered))) {
+                throw new IllegalStateException("CATALOG_RECOVERY_STATE_CHANGED");
             }
-        } catch (SQLException error) { throw new IllegalStateException("CATALOG_OWNER_LOST", error); }
+            replacement.commit();
+            connection = replacement;
+        } catch (Exception error) {
+            if (replacement != null) releaseOwner(replacement, false);
+            throw new IllegalStateException("CATALOG_OWNER_RECONNECT_REJECTED", error);
+        }
+    }
+
+    synchronized void disconnectOwner() { releaseOwner(connection, false); }
+
+    private void releaseOwner(Connection target, boolean reportClose) {
+        boolean discard = false;
+        try { target.rollback(); } catch (SQLException ignored) { discard = true; }
+        try (PreparedStatement release = target.prepareStatement("SELECT RELEASE_LOCK(?)")) {
+            release.setQueryTimeout(3);
+            release.setString(1, lockName); release.execute();
+            discard |= ownsSessionLock(target);
+        } catch (SQLException ignored) { discard = true; }
+        // Proxy close only returns a pooled lease; an uncertain or reentrant lock needs physical termination.
+        SQLException abortFailure = null;
+        if (discard) {
+            try { target.abort(Runnable::run); }
+            catch (SQLException error) { abortFailure = error; }
+        }
+        try { target.close(); }
+        catch (SQLException error) {
+            if (abortFailure != null) error.addSuppressed(abortFailure);
+            // Hikari may fail to reset a physically aborted session while still returning its lease.
+            if (reportClose && !(discard && abortFailure == null)) throw new IllegalStateException("CATALOG_STORE_CLOSE_FAILED", error);
+        }
+        if (reportClose && abortFailure != null) throw new IllegalStateException("CATALOG_STORE_ABORT_FAILED", abortFailure);
     }
 
     synchronized void commit(String id, String event, KnowledgeCatalog next, long expectedGeneration) {
@@ -229,7 +295,18 @@ public final class JdbcCatalogStore implements AutoCloseable {
                 id = result.getString(1);
                 if (result.next()) throw new IllegalStateException("RECOVERY_RECEIPT_AMBIGUOUS");
             }
+            return completedOperationReceipt(id);
+        } catch (SQLException error) { throw new IllegalStateException("RECOVERY_RECEIPT_READ_FAILED", error); }
+        finally { rollback(); }
+    }
+
+    private synchronized ReleaseReceipt completedOperationReceipt(String id) {
+        requireUnchanged();
+        try {
             ReleaseOperation operation = operation(id);
+            if (operation == null || !"CONTROLLED_OPERATOR".equals(operation.authorizationMode()) || !"COMPLETED".equals(operation.status())) {
+                throw new IllegalStateException("RECOVERY_COMPLETED_RECEIPT_REQUIRED");
+            }
             java.time.Instant validated = null, completed = null;
             String hash = null;
             try (PreparedStatement events = connection.prepareStatement(
@@ -263,9 +340,9 @@ public final class JdbcCatalogStore implements AutoCloseable {
 
     synchronized ReleaseReceipt latestCompletedReceipt(String environment, String collection) {
         requireUnchanged();
-        String manifestHash;
+        String operationId;
         try (PreparedStatement query = connection.prepareStatement("""
-                SELECT op.manifest_sha256 FROM rag_release_operation op
+                SELECT op.operation_id FROM rag_release_operation op
                 JOIN rag_release_event ev ON ev.operation_id=op.operation_id AND ev.event_type='COMPLETED'
                 WHERE op.status='COMPLETED' AND op.approver_id='CONTROLLED_OPERATOR'
                   AND op.environment=? AND op.target_collection=?
@@ -276,11 +353,16 @@ public final class JdbcCatalogStore implements AutoCloseable {
             query.setLong(3, state.generation()); query.setString(4, snapshotHash());
             try (ResultSet result = query.executeQuery()) {
                 if (!result.next()) throw new IllegalStateException("RECOVERY_COMPLETED_RECEIPT_REQUIRED");
-                manifestHash = result.getString(1);
+                operationId = result.getString(1);
             }
         } catch (SQLException error) { throw new IllegalStateException("RECOVERY_RECEIPT_READ_FAILED", error); }
         finally { rollback(); }
-        return completedReceipt(manifestHash);
+        ReleaseReceipt receipt = completedOperationReceipt(operationId);
+        ReleaseOperation operation = receipt.operation();
+        if (!environment.equals(operation.environment()) || !collection.equals(operation.collection())
+                || !Objects.equals(state.generation(), operation.appliedGeneration())
+                || !snapshotHash().equals(operation.appliedSnapshotHash())) throw new IllegalStateException("RECOVERY_RECEIPT_STATE_MISMATCH");
+        return receipt;
     }
 
     synchronized ReleaseOperation operation(String id) {
@@ -330,7 +412,237 @@ public final class JdbcCatalogStore implements AutoCloseable {
             insert.setString(7, requested.type()); insert.setLong(8, requested.expectedGeneration());
             insert.setString(9, requested.collection()); insert.setLong(10, requested.maxEmbeddingRequests()); insert.executeUpdate();
         }
-        appendEvent(requested.id(), "VALIDATED", state.generation(), "LOCAL_OPERATOR_AND_SCOPE_VERIFIED");
+        appendEvent(requested.id(), "VALIDATED", state.generation(),
+                "AUTHENTICATED_KNOWLEDGE_ADMIN".equals(requested.authorizationMode())
+                        ? "AUTHENTICATED_PERMISSION_AND_SCOPE_VERIFIED" : "LOCAL_OPERATOR_AND_SCOPE_VERIFIED");
+    }
+
+    synchronized void bindManagement(String id, String previousHash, String sourceId) {
+        try {
+            requireOwner();
+            String previous = eventDetail(id, "PREVIOUS_SNAPSHOT");
+            String source = eventDetail(id, "MANAGED_SOURCE");
+            if (previous == null && source == null) {
+                appendEvent(id, "PREVIOUS_SNAPSHOT", state.generation(), previousHash);
+                appendEvent(id, "MANAGED_SOURCE", state.generation(), sourceId);
+            } else if (!previousHash.equals(previous) || !sourceId.equals(source)) {
+                throw new IllegalStateException("MANAGEMENT_OPERATION_REPLAY");
+            }
+            connection.commit();
+        } catch (Exception error) { rollback(); throw new IllegalStateException("MANAGEMENT_BINDING_FAILED", error); }
+    }
+
+    private String eventDetail(String id, String type) throws SQLException {
+        try (PreparedStatement query = connection.prepareStatement(
+                "SELECT details_code FROM rag_release_event WHERE operation_id=? AND event_type=? ORDER BY id")) {
+            query.setString(1, id); query.setString(2, type);
+            try (ResultSet result = query.executeQuery()) {
+                if (!result.next()) return null;
+                String value = result.getString(1);
+                if (result.next()) throw new IllegalStateException("MANAGEMENT_EVENT_AMBIGUOUS");
+                return value;
+            }
+        }
+    }
+
+    synchronized void resumeUnappliedManagement(String id) {
+        try (PreparedStatement update = connection.prepareStatement("""
+                UPDATE rag_release_operation SET status='VALIDATED',last_error_code=NULL
+                WHERE operation_id=? AND approver_id='AUTHENTICATED_KNOWLEDGE_ADMIN'
+                  AND status='FAILED' AND applied_generation IS NULL
+                """)) {
+            requireOwner(); update.setString(1, id);
+            if (update.executeUpdate() > 0) appendEvent(id, "RETRY_REQUESTED", state.generation(), "EXPLICIT_AUTHENTICATED_RETRY");
+            connection.commit();
+        } catch (Exception error) { rollback(); throw new IllegalStateException("MANAGEMENT_RETRY_FAILED", error); }
+    }
+
+    synchronized void inheritManagedContent(String id, ReleaseReceipt previous) {
+        try {
+            requireOwner();
+            String hash = previous.operation().manifestHash();
+            String existing = eventDetail(id, "INHERITED_CONTENT");
+            if (existing == null) appendEvent(id, "INHERITED_CONTENT", state.generation(), hash);
+            else if (!existing.equals(hash)) throw new IllegalStateException("RECOVERY_CONTENT_ORIGIN_REPLAY");
+            connection.commit();
+        } catch (Exception error) { rollback(); throw new IllegalStateException("RECOVERY_CONTENT_ORIGIN_FAILED", error); }
+    }
+
+    synchronized String managedSource(String id) {
+        requireOwner();
+        try { return eventDetail(id, "MANAGED_SOURCE"); }
+        catch (SQLException error) { throw new IllegalStateException("MANAGEMENT_SOURCE_READ_FAILED", error); }
+        finally { rollback(); }
+    }
+
+    /** 只读查询后释放当前连接上的事务状态，不改变已提交快照。 */
+    synchronized void rollbackQuietly() { rollback(); }
+
+    /**
+     * 已由认证管理员新增且完成索引核验的来源。发布清单只覆盖原始40个主题，
+     * 正常重启仍需接受这些新增来源，但不接受任意数据库行或未完成操作。
+     */
+    synchronized Set<String> createdSources(String environment, String collection) {
+        requireOwner();
+        try {
+            Set<String> result = new LinkedHashSet<>();
+            try (PreparedStatement query = connection.prepareStatement("""
+                    SELECT o.operation_id FROM rag_release_operation o
+                    JOIN rag_release_event ev ON ev.operation_id=o.operation_id AND ev.event_type='COMPLETED'
+                    WHERE o.approver_id='AUTHENTICATED_KNOWLEDGE_ADMIN' AND o.operation_type='KNOWLEDGE_CREATE'
+                      AND o.status='COMPLETED' AND o.applied_generation IS NOT NULL
+                      AND o.index_authority IS NOT NULL AND o.index_epoch=o.applied_generation
+                      AND o.environment=? AND o.target_collection=?
+                      AND ev.details_code LIKE 'INDEX_SHA256:%'
+                    ORDER BY o.applied_generation,o.operation_id
+                    """)) {
+                query.setString(1, environment);
+                query.setString(2, collection);
+                List<String> ids = new ArrayList<>();
+                try (ResultSet resultSet = query.executeQuery()) { while (resultSet.next()) ids.add(resultSet.getString(1)); }
+                for (String id : ids) {
+                    String source = eventDetail(id, "MANAGED_SOURCE");
+                    if (source == null || !source.matches("help-managed-[a-z0-9-]{1,64}")) continue;
+                    if (state.rows().stream().anyMatch(row -> row.document().sourceId().equals(source))) result.add(source);
+                }
+            }
+            return Set.copyOf(result);
+        } catch (SQLException error) {
+            throw new IllegalStateException("MANAGEMENT_SOURCE_READ_FAILED", error);
+        } finally { rollback(); }
+    }
+
+    synchronized void recordManagementRecovery(String id, int actorId) {
+        try {
+            requireOwner();
+            ReleaseOperation operation = operation(id);
+            if (actorId <= 0 || operation == null || !"AUTHENTICATED_KNOWLEDGE_ADMIN".equals(operation.authorizationMode())
+                    || operation.appliedGeneration() == null) throw new IllegalArgumentException("MANAGEMENT_RECOVERY_INVALID");
+            appendEvent(id, "RECOVERY_REQUESTED", state.generation(), "user:" + actorId);
+            connection.commit();
+        } catch (Exception error) { rollback(); throw new IllegalStateException("MANAGEMENT_RECOVERY_AUDIT_FAILED", error); }
+    }
+
+    record ManagementChain(ReleaseReceipt effective, Set<String> changedSources, boolean complete) {
+        ManagementChain { changedSources = Set.copyOf(changedSources); }
+    }
+
+    synchronized boolean hasManagedChanges() {
+        requireOwner();
+        try (PreparedStatement query = connection.prepareStatement("""
+                SELECT COUNT(*) FROM rag_release_operation
+                WHERE approver_id='AUTHENTICATED_KNOWLEDGE_ADMIN' AND applied_generation IS NOT NULL
+                """); ResultSet result = query.executeQuery()) {
+            if (!result.next()) throw new IllegalStateException("MANAGEMENT_HISTORY_UNAVAILABLE");
+            return result.getLong(1) > 0;
+        } catch (SQLException error) { throw new IllegalStateException("MANAGEMENT_HISTORY_UNAVAILABLE", error); }
+        finally { rollback(); }
+    }
+
+    synchronized ReleaseReceipt latestControlledReceipt(String collection) {
+        requireUnchanged();
+        String operationId;
+        try (PreparedStatement query = connection.prepareStatement("""
+                SELECT op.operation_id FROM rag_release_operation op
+                JOIN rag_release_event ev ON ev.operation_id=op.operation_id AND ev.event_type='COMPLETED'
+                WHERE op.status='COMPLETED' AND op.approver_id='CONTROLLED_OPERATOR' AND op.target_collection=?
+                ORDER BY ev.id DESC LIMIT 1
+                """)) {
+            query.setString(1, collection);
+            try (ResultSet result = query.executeQuery()) {
+                if (!result.next()) throw new IllegalStateException("RECOVERY_COMPLETED_RECEIPT_REQUIRED");
+                operationId = result.getString(1);
+            }
+        } catch (SQLException error) { throw new IllegalStateException("RECOVERY_RECEIPT_READ_FAILED", error); }
+        finally { rollback(); }
+        ReleaseReceipt receipt = completedOperationReceipt(operationId);
+        if (!collection.equals(receipt.operation().collection())) throw new IllegalStateException("RECOVERY_RECEIPT_STATE_MISMATCH");
+        return receipt;
+    }
+
+    /** Management extends an existing controlled receipt; it never impersonates its authorization. */
+    synchronized ManagementChain managementChain(ReleaseReceipt anchor) {
+        requireUnchanged();
+        try {
+            List<ReleaseReceipt> anchors = new ArrayList<>();
+            Set<String> lineage = new LinkedHashSet<>();
+            ReleaseReceipt cursor = anchor;
+            while (true) {
+                ReleaseOperation entry = cursor.operation();
+                if (!lineage.add(entry.manifestHash()) || lineage.size() > 64) throw new IllegalStateException("MANAGEMENT_ORIGIN_INVALID");
+                if (entry.appliedGeneration() == null || entry.appliedGeneration() > state.generation()
+                        || !Set.of("PUBLISH", "UPDATE", "RECOVER").contains(entry.type())
+                        || entry.appliedGeneration() != entry.expectedGeneration() + ("RECOVER".equals(entry.type()) ? 0 : 1)
+                        || !Objects.equals(entry.indexEpoch(), entry.appliedGeneration())
+                        || !entry.targetInitialized() || !PublicationManifest.validHash(entry.appliedSnapshotHash())
+                        || !PublicationManifest.validHash(entry.operationHash())) throw new IllegalStateException("MANAGEMENT_ORIGIN_INVALID");
+                anchors.add(cursor);
+                String parent = eventDetail(entry.id(), "INHERITED_CONTENT");
+                if (parent == null) break;
+                ReleaseReceipt previous = completedReceipt(parent);
+                if (!entry.environment().equals(previous.operation().environment())
+                        || !entry.collection().equals(previous.operation().collection())
+                        || !entry.operator().equals(previous.operation().operator())
+                        || !"RECOVER".equals(entry.type())
+                        || previous.operation().appliedGeneration() > entry.appliedGeneration()
+                        || previous.completedAt().isAfter(cursor.completedAt())) throw new IllegalStateException("MANAGEMENT_ORIGIN_INVALID");
+                cursor = previous;
+            }
+            ReleaseOperation base = cursor.operation();
+            long generation = Objects.requireNonNull(base.appliedGeneration());
+            String snapshot = base.appliedSnapshotHash();
+            ReleaseReceipt effective = cursor;
+            Set<String> sources = new LinkedHashSet<>();
+            String placeholders = String.join(",", java.util.Collections.nCopies(lineage.size(), "?"));
+            try (PreparedStatement query = connection.prepareStatement("""
+                    SELECT operation_id FROM rag_release_operation
+                    WHERE approver_id='AUTHENTICATED_KNOWLEDGE_ADMIN' AND manifest_sha256 IN (
+                    """ + placeholders + ") AND applied_generation>? ORDER BY applied_generation,operation_id")) {
+                int parameter = 1;
+                for (String hash : lineage) query.setString(parameter++, hash);
+                query.setLong(parameter, generation);
+                List<String> ids = new ArrayList<>();
+                try (ResultSet result = query.executeQuery()) { while (result.next()) ids.add(result.getString(1)); }
+                for (String id : ids) {
+                    ReleaseOperation operation = operation(id);
+                    String source = eventDetail(id, "MANAGED_SOURCE");
+                    boolean knownSource = source != null && (PublicationManifest.userSourceIds().contains(source)
+                            || state.rows().stream().anyMatch(row -> row.document().sourceId().equals(source)));
+                    if (!operation.environment().equals(base.environment()) || !operation.collection().equals(base.collection())
+                            || !operation.operator().matches("user:[1-9][0-9]*")
+                            || !Set.of("KNOWLEDGE_CREATE", "KNOWLEDGE_UPDATE", "KNOWLEDGE_REVOKE").contains(operation.type())
+                            || !PublicationManifest.validHash(operation.operationHash())
+                            || operation.embeddingRequests() < 0 || operation.embeddingRequests() > operation.maxEmbeddingRequests()
+                            || operation.expectedGeneration() != generation || operation.appliedGeneration() != generation + 1
+                            || !snapshot.equals(eventDetail(id, "PREVIOUS_SNAPSHOT"))
+                            || !PublicationManifest.validHash(operation.appliedSnapshotHash())
+                            || !knownSource
+                            || !"AUTHENTICATED_PERMISSION_AND_SCOPE_VERIFIED".equals(eventDetail(id, "VALIDATED"))) {
+                        throw new IllegalStateException("MANAGEMENT_CHAIN_INVALID");
+                    }
+                    generation = operation.appliedGeneration(); snapshot = operation.appliedSnapshotHash(); sources.add(source);
+                    for (ReleaseReceipt checkpoint : anchors) {
+                        if (checkpoint.operation().appliedGeneration() == generation
+                                && !snapshot.equals(checkpoint.operation().appliedSnapshotHash())) throw new IllegalStateException("MANAGEMENT_ORIGIN_STATE_DRIFT");
+                    }
+                    boolean completed = "COMPLETED".equals(operation.status());
+                    String code = completed ? eventDetail(id, "COMPLETED") : null;
+                    String hash = code != null && code.startsWith("INDEX_SHA256:") ? code.substring(13) : null;
+                    if (completed && (!PublicationManifest.validHash(hash) || !operation.targetInitialized()
+                            || operation.indexAuthority() == null || !operation.indexAuthority().matches("[0-9a-f-]{36}")
+                            || !Objects.equals(operation.indexEpoch(), generation))) throw new IllegalStateException("MANAGEMENT_RECEIPT_INVALID");
+                    if (!completed && (generation != state.generation()
+                            || !Set.of("FAILED", "CATALOG_APPLIED", "INDEXING").contains(operation.status()))) {
+                        throw new IllegalStateException("MANAGEMENT_INCOMPLETE_CHAIN");
+                    }
+                    effective = new ReleaseReceipt(operation, anchor.validatedAt(), anchor.completedAt(), hash);
+                }
+            }
+            if (generation != state.generation() || !snapshot.equals(snapshotHash())) throw new IllegalStateException("MANAGEMENT_CHAIN_STATE_DRIFT");
+            if (anchor.operation().appliedGeneration() == generation) effective = anchor;
+            return new ManagementChain(effective, sources, "COMPLETED".equals(effective.operation().status()));
+        } catch (SQLException error) { throw new IllegalStateException("MANAGEMENT_CHAIN_READ_FAILED", error); }
+        finally { rollback(); }
     }
 
     synchronized void checkpoint(String id, String status, boolean initialized, String authority, Long epoch) {
@@ -451,10 +763,7 @@ public final class JdbcCatalogStore implements AutoCloseable {
     private static String digest(State state) throws Exception { return KnowledgeCatalog.hash(JSON.writeValueAsString(state)); }
 
     @Override public synchronized void close() {
-        try { connection.rollback(); } catch (SQLException ignored) { }
-        try (PreparedStatement release = connection.prepareStatement("SELECT RELEASE_LOCK(?)")) {
-            release.setString(1, lockName); release.execute();
-        } catch (SQLException ignored) { }
-        try { connection.close(); } catch (SQLException error) { throw new IllegalStateException("CATALOG_STORE_CLOSE_FAILED", error); }
+        closed = true;
+        releaseOwner(connection, true);
     }
 }

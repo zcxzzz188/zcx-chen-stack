@@ -1,0 +1,85 @@
+.ai-management {
+  min-width: 0;
+  color: var(--el-text-color-primary);
+
+  .data-table, .knowledge-content { min-width: 0; }
+  .keyword-search { max-width: 100%; }
+  .pagination-container { max-width: 100%; overflow-x: auto; }
+  .source-picker { width: 100%; }
+  .compile-card { margin-bottom: 12px; }
+  .section-title { font-size: 16px; margin: 24px 0 12px; }
+  .result { padding: 16px 0; border-bottom: 1px solid var(--el-border-color-light); }
+  .excerpt { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.8; }
+  .sources { padding-left: 18px; margin: 0; }
+  .affected { margin-top: 24px; }
+  .selected-sources .el-tag { max-width: 100%; }
+  .selected-sources .el-tag__content { overflow: hidden; text-overflow: ellipsis; }
+  .config-card { margin-bottom: 16px; }
+  .config-card .el-card__header { font-weight: 600; }
+  .config-card .el-radio-group { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
+  .config-card .mode-option { height: auto; margin: 4px 0; white-space: normal; align-items: flex-start; }
+  .config-card .mode-option .el-radio__label { white-space: normal; line-height: 1.7; }
+  .config-card .mode-summary { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 10px 0 16px; }
+  .config-card .quota-row { display: flex; flex-wrap: wrap; gap: 14px; align-items: center; margin: 12px 0; }
+  .config-card .quota-row .el-input-number { width: 180px; max-width: 100%; }
+  .config-card .recent-table { margin-top: 8px; }
+}
+
+.ai-management, .ai-management-dialog {
+  .hint { color: var(--el-text-color-secondary); font-size: 13px; line-height: 1.8; overflow-wrap: anywhere; }
+  .notice { margin-bottom: 12px; }
+  .toolbar, .selected-sources, .revision-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; margin: 12px 0; }
+  .toolbar > .el-button, .revision-actions > .el-button { margin-left: 0; }
+  .toolbar .el-select { width: 260px; max-width: 100%; }
+  .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  .form-grid .el-select { width: 100%; }
+}
+
+.ai-management-dialog {
+  overflow-wrap: anywhere;
+  .el-checkbox { height: auto; align-items: flex-start; }
+  .el-checkbox__label { white-space: normal; }
+  .editor { margin-top: 16px; }
+  .document-text, .source-text { padding: 18px; background: var(--el-fill-color-light); border-radius: 8px; max-height: 50vh; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .draft-preview { margin: 20px 0; padding: 18px; border: 1px solid var(--el-border-color); border-radius: 8px; max-height: 55vh; overflow: auto; }
+}
+
+// #app 的浅色变量遮蔽了 html.dark 的继承变量，仅在 AI 页桥接现有主题 token。
+html.dark .ai-management, html.dark .ai-management-dialog {
+  --text-primary: var(--el-text-color-primary);
+  --text-regular: var(--el-text-color-regular);
+  --text-muted: var(--el-text-color-secondary);
+  --text-placeholder: var(--el-text-color-placeholder);
+  --badge-success-bg: var(--el-color-success-light-9);
+  --badge-success-color: var(--el-color-success);
+  --badge-warning-bg: var(--el-color-warning-light-9);
+  --badge-warning-color: var(--el-color-warning);
+  --badge-unaudited-bg: var(--el-color-info-light-9);
+  --badge-unaudited-color: var(--el-color-info);
+  --badge-default-bg: var(--el-fill-color);
+  --badge-default-color: var(--el-text-color-secondary);
+  --btn-search-bg: var(--el-fill-color);
+  --btn-search-border: var(--el-border-color);
+  --btn-search-color: var(--el-text-color-regular);
+  --btn-search-hover-bg: var(--el-color-primary-light-9);
+  --btn-search-hover-border: var(--el-color-primary);
+  --btn-search-hover-color: var(--el-color-primary);
+  --btn-reset-bg: var(--action-view-bg-dark);
+  --btn-reset-border: var(--action-view-border-dark);
+  --btn-reset-color: var(--action-view-color-dark);
+  --btn-reset-hover-bg: var(--action-view-hover-bg-dark);
+  --btn-reset-hover-border: var(--action-view-hover-border-dark);
+  --btn-reset-hover-color: var(--action-view-color-dark);
+}
+
+@media (max-width: 700px) {
+  .ai-management .card-filters > .keyword-search { flex: 0 0 100%; }
+  .ai-management .keyword-search .search-input { min-width: 0; }
+  .ai-management .pagination-container { overflow: visible; }
+  .ai-management .el-pagination { flex-wrap: wrap; justify-content: flex-end; width: 100%; height: auto; row-gap: 8px; }
+  .ai-management .form-grid, .ai-management-dialog .form-grid { grid-template-columns: 1fr; gap: 0; }
+  .ai-management .config-card .quota-row .el-input-number,
+  .ai-management .config-card .quota-row .el-button { width: 100%; margin-left: 0; }
+  .ai-management .config-card .toolbar { align-items: stretch; }
+  .ai-management .config-card .toolbar > .el-button { width: 100%; }
+}

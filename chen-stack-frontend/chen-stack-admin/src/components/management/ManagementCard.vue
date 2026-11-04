@@ -23,7 +23,7 @@
       </div>
 
       <!-- 分页（可选） -->
-      <Pagination v-if="showPagination" v-model:current-page="currentPage" v-model:page-size="pageSize" :total="total" @size-change="handleSizeChange" @current-change="handleCurrentChange" />
+      <Pagination v-if="showPagination" v-model:current-page="currentPage" v-model:page-size="pageSize" :total="total" :layout="paginationLayout" @size-change="handleSizeChange" @current-change="handleCurrentChange" />
     </div>
 
     <!-- 额外插槽（对话框等） -->
@@ -81,6 +81,10 @@ const props = defineProps({
   showPagination: {
     type: Boolean,
     default: true,
+  },
+  paginationLayout: {
+    type: String,
+    default: 'prev, pager, next, jumper',
   },
   modelCurrentPage: {
     type: Number,

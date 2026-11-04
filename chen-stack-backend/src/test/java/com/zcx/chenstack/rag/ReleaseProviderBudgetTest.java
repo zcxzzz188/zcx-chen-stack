@@ -213,7 +213,7 @@ class ReleaseProviderBudgetTest {
                         try { budget.reserve(ReleaseProviderBudget.Kind.CHAT); reserved.incrementAndGet(); }
                         catch (SecurityException error) {
                             assertTrue(error.getMessage().equals("RELEASE_PROVIDER_HTTP_BUDGET_EXHAUSTED")
-                                    || error.getMessage().equals("RELEASE_BUDGET_PERSISTENCE_FAILED_CLOSED"));
+                                    || error.getMessage().equals("RELEASE_BUDGET_PERSISTENCE_FAILED_CLOSED"), error.getMessage());
                         }
                     }
                 }));
@@ -227,6 +227,46 @@ class ReleaseProviderBudgetTest {
         assertEquals(100L, new ReleaseProviderBudget(file.toString(), "synthetic", 64, 100).snapshot().get("chat"));
         assertThrows(SecurityException.class, () -> budgets[1].reserve(ReleaseProviderBudget.Kind.CHAT));
         assertEquals(0L, budgets[0].snapshot().get("embedding"));
+    }
+
+    @Test void concurrentConstructorsPreflightsAndBothKindsSerializeAcrossNormalizedPathAliases() throws Exception {
+        budget(32, 20);
+        Path file = directory.resolve("attempts.ledger");
+        Path alias = directory.resolve(".").resolve("attempts.ledger");
+        AtomicInteger chats = new AtomicInteger();
+        AtomicInteger embeddings = new AtomicInteger();
+        CountDownLatch start = new CountDownLatch(1);
+        try (var executor = Executors.newFixedThreadPool(8)) {
+            var tasks = new ArrayList<Future<?>>();
+            for (int worker = 0; worker < 8; worker++) {
+                int index = worker;
+                tasks.add(executor.submit(() -> {
+                    try { start.await(); }
+                    catch (InterruptedException error) { Thread.currentThread().interrupt(); throw new AssertionError(error); }
+                    for (int attempt = 0; attempt < 32; attempt++) {
+                        var instance = new ReleaseProviderBudget((index % 2 == 0 ? file : alias).toString(), "synthetic", 32, 20);
+                        var observed = instance.snapshot();
+                        assertTrue(observed.get("embedding") <= 32 && observed.get("chat") <= 20);
+                        try { instance.checkChatCapacity(1); }
+                        catch (SecurityException denied) { assertEquals("RELEASE_PROVIDER_HTTP_BUDGET_EXHAUSTED", denied.getMessage()); }
+                        try {
+                            var kind = index % 2 == 0 ? ReleaseProviderBudget.Kind.CHAT : ReleaseProviderBudget.Kind.EMBEDDING;
+                            instance.reserve(kind);
+                            (kind == ReleaseProviderBudget.Kind.CHAT ? chats : embeddings).incrementAndGet();
+                        } catch (SecurityException denied) {
+                            // 没有外部持锁者；协作实例不能因自身并发而误报持久化失败或损坏。
+                            assertEquals("RELEASE_PROVIDER_HTTP_BUDGET_EXHAUSTED", denied.getMessage());
+                        }
+                    }
+                }));
+            }
+            start.countDown();
+            for (Future<?> task : tasks) task.get();
+        }
+        assertEquals(20, chats.get());
+        assertEquals(32, embeddings.get());
+        assertEquals(Map.of("embedding", 32L, "chat", 20L), new ReleaseProviderBudget(alias.toString(), "synthetic", 32, 20).snapshot());
+        assertEquals(53, Files.readAllLines(file).size());
     }
 
     @Test void zeroBudgetBlocksTransportAndDisabledDefaultHasNoFileDependency() throws Exception {

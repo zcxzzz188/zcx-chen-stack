@@ -5,14 +5,18 @@ import com.zcx.chenstack.domain.constants.RedisConstants;
 import com.zcx.chenstack.service.AiUsageService;
 import com.zcx.chenstack.utils.RedisUtils;
 import jakarta.annotation.Resource;
+import jakarta.annotation.PostConstruct;
+import jakarta.annotation.PreDestroy;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
+import org.springframework.data.redis.connection.RedisStandaloneConfiguration;
+import org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
-import java.time.Duration;
-import java.time.LocalDateTime;
+import java.time.Clock;
+import java.time.ZoneId;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 
@@ -26,27 +30,33 @@ import java.util.concurrent.TimeUnit;
 @Slf4j
 public class AiUsageServiceImpl implements AiUsageService {
 
-    private int dailyLimit = 50;
+    private int dailyLimit = 100;
+    private Clock clock = Clock.system(ZoneId.of("Asia/Shanghai"));
 
-    @Value("${chen-stack.ai.daily-limit:50}")
+    /** 管理员可视配置优先；缺失或读取失败时回退部署默认值，历史计数保持不变。 */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.zcx.chenstack.service.AiRuntimeConfigurationService runtimeConfiguration;
+
+    @Value("${chen-stack.ai.daily-limit:100}")
     void configureDailyLimit(int dailyLimit) {
         if (dailyLimit < 1) {
             throw new IllegalArgumentException("chen-stack.ai.daily-limit must be positive");
         }
         this.dailyLimit = dailyLimit;
     }
+
+    @Value("${spring.jackson.time-zone:Asia/Shanghai}")
+    void configureTimeZone(String timeZone) {
+        clock = Clock.system(ZoneId.of(timeZone));
+    }
+    // 单次写入同时保存计数与期限，避免旧版 Redis 在受限默认 ACL 下丢弃 AOF 事务。
     private static final DefaultRedisScript<Long> RESERVE_DAILY_USAGE = new DefaultRedisScript<>("""
             local current = redis.call('GET', KEYS[1])
             if current and tonumber(current) >= tonumber(ARGV[1]) then
-                if redis.call('TTL', KEYS[1]) < 0 then
-                    redis.call('EXPIRE', KEYS[1], ARGV[2])
-                end
+                redis.call('EXPIREAT', KEYS[1], ARGV[2])
                 return 0
             end
-            redis.call('INCR', KEYS[1])
-            if redis.call('TTL', KEYS[1]) < 0 then
-                redis.call('EXPIRE', KEYS[1], ARGV[2])
-            end
+            redis.call('SET', KEYS[1], (tonumber(current) or 0) + 1, 'EXAT', ARGV[2])
             return 1
             """, Long.class);
 
@@ -55,6 +65,45 @@ public class AiUsageServiceImpl implements AiUsageService {
 
     @Resource
     private StringRedisTemplate stringRedisTemplate;
+
+    @Value("${chen-stack.ai.quota-redis-host:}")
+    private String quotaRedisHost;
+    @Value("${chen-stack.ai.quota-redis-port:6379}")
+    private int quotaRedisPort;
+    @Value("${chen-stack.ai.quota-redis-username:}")
+    private String quotaRedisUsername;
+    @Value("${chen-stack.ai.quota-redis-password:}")
+    private String quotaRedisPassword;
+    @Value("${chen-stack.ai.quota-redis-database:0}")
+    private int quotaRedisDatabase;
+    private LettuceConnectionFactory quotaConnectionFactory;
+
+    @PostConstruct
+    void configureQuotaStore() {
+        if (quotaRedisHost == null || quotaRedisHost.isBlank()) {
+            return;
+        }
+        // 独立 Wiki 仅共享日额度，不切换其会话和其他业务缓存。
+        RedisStandaloneConfiguration configuration = new RedisStandaloneConfiguration(quotaRedisHost, quotaRedisPort);
+        configuration.setDatabase(quotaRedisDatabase);
+        if (quotaRedisUsername != null && !quotaRedisUsername.isBlank()) {
+            configuration.setUsername(quotaRedisUsername);
+        }
+        if (quotaRedisPassword != null && !quotaRedisPassword.isBlank()) {
+            configuration.setPassword(quotaRedisPassword);
+        }
+        quotaConnectionFactory = new LettuceConnectionFactory(configuration);
+        quotaConnectionFactory.afterPropertiesSet();
+        quotaConnectionFactory.start();
+        stringRedisTemplate = new StringRedisTemplate(quotaConnectionFactory);
+    }
+
+    @PreDestroy
+    void closeQuotaStore() {
+        if (quotaConnectionFactory != null) {
+            quotaConnectionFactory.destroy();
+        }
+    }
 
     @Override
     public boolean tryReserveUsage(Integer userId) {
@@ -67,7 +116,7 @@ public class AiUsageServiceImpl implements AiUsageService {
                 RESERVE_DAILY_USAGE,
                 List.of(key),
                 String.valueOf(getDailyLimit(userId)),
-                String.valueOf(getSecondsUntilMidnight()));
+                String.valueOf(nextMidnight().getEpochSecond()));
         return Long.valueOf(1L).equals(reserved);
     }
 
@@ -80,14 +129,14 @@ public class AiUsageServiceImpl implements AiUsageService {
     @Override
     public boolean checkDailyLimit(Integer userId) {
         String key = RedisConstants.AiUsage + userId;
-        Object countObj = redisUtils.get(key);
+        String countObj = stringRedisTemplate.opsForValue().get(key);
         int dailyLimit = getDailyLimit(userId);
 
         if (countObj == null) {
             return true;
         }
 
-        Long count = Long.valueOf(countObj.toString());
+        Long count = Long.valueOf(countObj);
         boolean allowed = count < dailyLimit;
         if (!allowed) {
             log.warn("用户 [ID: {}] 今日AI调用次数已达上限 ({}/{})", userId, count, dailyLimit);
@@ -105,12 +154,11 @@ public class AiUsageServiceImpl implements AiUsageService {
     @Override
     public void recordUsage(Integer userId) {
         String key = RedisConstants.AiUsage + userId;
-        Long count = redisUtils.incr(key, 1);
+        Long count = stringRedisTemplate.opsForValue().increment(key);
 
         // 首次调用时设置过期时间为当天剩余时间（到第二天凌晨过期）
         if (count == 1) {
-            long secondsUntilMidnight = getSecondsUntilMidnight();
-            redisUtils.expire(key, secondsUntilMidnight, TimeUnit.SECONDS);
+            stringRedisTemplate.expireAt(key, nextMidnight());
         }
     }
 
@@ -123,25 +171,25 @@ public class AiUsageServiceImpl implements AiUsageService {
     @Override
     public int getRemainingQuota(Integer userId) {
         String key = RedisConstants.AiUsage + userId;
-        Object countObj = redisUtils.get(key);
+        String countObj = stringRedisTemplate.opsForValue().get(key);
         int dailyLimit = getDailyLimit(userId);
 
         if (countObj == null) {
             return dailyLimit;
         }
 
-        Long count = Long.valueOf(countObj.toString());
+        Long count = Long.valueOf(countObj);
         return Math.max(0, dailyLimit - count.intValue());
     }
 
     @Override
     public int getDailyLimit() {
-        return dailyLimit;
+        return runtimeConfiguration == null ? dailyLimit : runtimeConfiguration.dailyLimit();
     }
 
     @Override
     public int getDailyLimit(Integer userId) {
-        return dailyLimit;
+        return getDailyLimit();
     }
 
     /**
@@ -185,14 +233,8 @@ public class AiUsageServiceImpl implements AiUsageService {
         redisUtils.set(key, "1", RedisConstants.AI_CONTENT_HASH_EXPIRE_TIME, TimeUnit.SECONDS);
     }
 
-    /**
-     * 计算到第二天凌晨0点的秒数
-     *
-     * @return 秒数
-     */
-    private long getSecondsUntilMidnight() {
-        LocalDateTime now = LocalDateTime.now();
-        LocalDateTime midnight = now.toLocalDate().plusDays(1).atStartOfDay();
-        return Math.max(1, Duration.between(now, midnight).getSeconds());
+    private java.time.Instant nextMidnight() {
+        return clock.instant().atZone(clock.getZone()).toLocalDate().plusDays(1)
+                .atStartOfDay(clock.getZone()).toInstant();
     }
 }

@@ -41,7 +41,7 @@ public final class WikiPublicationService {
     }
 
     public Revision create(String requestId, Long pageId, String title, String summary, String markdown) {
-        int actor = operator();
+        int actor = operator("ai:wiki:edit");
         text(title, 160); text(summary, 500);
         if (pageId != null) positive(pageId);
         return foundation.withValidDraft(requestId, (draft, sources) -> {
@@ -81,7 +81,7 @@ public final class WikiPublicationService {
     }
 
     private Revision review(long id, String expectedHash, boolean approve) {
-        int actor = operator(); positive(id);
+        int actor = operator(approve ? "ai:wiki:review" : "ai:wiki:edit"); positive(id);
         Row initial = row(id, false);
         return foundation.withValidDraft(initial.view().requestId(), (draft, sources) -> {
             Row current = row(id, true); verify(current, false);
@@ -98,18 +98,18 @@ public final class WikiPublicationService {
     }
 
     public Revision publish(long id, String expectedHash, Integer expectedCurrentVersion) {
-        operator(); positive(id);
+        operator("ai:wiki:publish"); positive(id);
         if (!Objects.equals(row(id, false).view().bodyHash(), expectedHash)) throw conflict();
         return point(id, null, expectedCurrentVersion, false);
     }
 
     public Revision restore(long pageId, long revisionId, Integer expectedCurrentVersion) {
-        operator(); positive(pageId); positive(revisionId);
+        operator("ai:wiki:publish"); positive(pageId); positive(revisionId);
         return point(revisionId, pageId, expectedCurrentVersion, true);
     }
 
     private Revision point(long id, Long expectedPageId, Integer expectedVersion, boolean restore) {
-        int actor = operator();
+        int actor = operator("ai:wiki:publish");
         Row initial = row(id, false);
         return foundation.withValidDraft(initial.view().requestId(), (draft, sources) -> {
             Row current = row(id, true); verify(current, true);
@@ -127,7 +127,7 @@ public final class WikiPublicationService {
     }
 
     public void withdraw(long pageId, Integer expectedCurrentVersion) {
-        int actor = operator(); positive(pageId);
+        int actor = operator("ai:wiki:publish"); positive(pageId);
         transaction.executeWithoutResult(status -> {
             Pointer pointer = pointer(pageId);
             if (!Objects.equals(pointer.version(), expectedCurrentVersion)) throw conflict();
@@ -137,20 +137,126 @@ public final class WikiPublicationService {
         });
     }
 
-    public List<ManagedPage> managedPages() {
+    /** 管理员人工编写：仍使用已授权来源快照，不调用模型；随后进入同一审核发布链。 */
+    public Revision createManual(String requestId, List<Long> snapshotIds, String title, String summary, String markdown) {
+        operator("ai:wiki:edit");
+        foundation.createManualDraft(requestId, snapshotIds, title, summary, markdown);
+        return create(requestId, null, title, summary, markdown);
+    }
+
+    /** 基于当前页面已有来源起草新版本；不改变已发布正文，审核发布后才切换。 */
+    public Revision editPage(long pageId, String title, String summary, String markdown) {
+        operator("ai:wiki:edit");
+        positive(pageId);
+        List<String> requests = jdbc.queryForList(
+                "SELECT request_id FROM wiki_revision WHERE page_id=? ORDER BY version DESC LIMIT 1", String.class, pageId);
+        if (requests.isEmpty()) throw missing();
+        try {
+            return create(requests.getFirst(), pageId, title, summary, markdown);
+        } catch (SecurityException invalidated) {
+            throw new WikiProductException(409, "页面来源已变化，请先重新核对来源并整理，再更新正文");
+        } catch (IllegalStateException stale) {
+            throw new WikiProductException(409, "页面草稿状态已变化，请刷新后重试");
+        }
+    }
+
+    public List<ManagedPage> managedPages() { return managedPages(""); }
+
+    public List<ManagedPage> managedPages(String query) {
         operator();
+        String q = query == null ? "" : query.strip();
+        if (q.length() > 80) throw bad();
         List<ManagedPage> pages = jdbc.query("""
-                SELECT p.id,COALESCE(r.title,(SELECT x.title FROM wiki_revision x WHERE x.page_id=p.id ORDER BY x.version DESC LIMIT 1)),
-                r.version,p.withdrawn FROM wiki_page p LEFT JOIN wiki_revision r ON r.id=p.current_revision_id ORDER BY p.id DESC LIMIT 200
-                """, (rs, n) -> new ManagedPage(rs.getLong(1), rs.getString(2), rs.getObject(3, Integer.class), rs.getBoolean(4), false));
+                SELECT p.id,
+                       COALESCE(r.title,(SELECT x.title FROM wiki_revision x WHERE x.page_id=p.id ORDER BY x.version DESC LIMIT 1)),
+                        r.version,p.withdrawn,DATE_FORMAT(p.published_at,'%Y-%m-%d %H:%i:%s'),
+                       COALESCE(r.summary,(SELECT x.summary FROM wiki_revision x WHERE x.page_id=p.id ORDER BY x.version DESC LIMIT 1)),
+                       DATE_FORMAT((SELECT MAX(x.created_at) FROM wiki_revision x WHERE x.page_id=p.id),'%Y-%m-%d %H:%i:%s')
+                FROM wiki_page p LEFT JOIN wiki_revision r ON r.id=p.current_revision_id
+                WHERE (?='' OR LOCATE(?,COALESCE(r.title,(SELECT x.title FROM wiki_revision x WHERE x.page_id=p.id ORDER BY x.version DESC LIMIT 1)))>0
+                       OR LOCATE(?,COALESCE(r.summary,(SELECT x.summary FROM wiki_revision x WHERE x.page_id=p.id ORDER BY x.version DESC LIMIT 1)))>0
+                       OR EXISTS (SELECT 1 FROM wiki_revision x WHERE x.page_id=p.id AND LOCATE(?,x.markdown)>0))
+                ORDER BY (SELECT MAX(x.created_at) FROM wiki_revision x WHERE x.page_id=p.id) DESC,p.id DESC LIMIT 200
+                """, (rs, n) -> new ManagedPage(rs.getLong(1), rs.getString(2), rs.getObject(3, Integer.class),
+                rs.getBoolean(4), false, rs.getString(6), rs.getString(7), rs.getString(5), "UNAVAILABLE"),
+                q, q, q, q);
         return pages.stream().map(page -> {
-            boolean eligible = false;
-            if (!page.withdrawn() && page.currentVersion() != null) {
-                try { validPage(page.id()); eligible = true; }
-                catch (WikiProductException unavailable) { if (unavailable.status() != 404) throw unavailable; }
-            }
-            return new ManagedPage(page.id(), page.title(), page.currentVersion(), page.withdrawn(), eligible);
+            String reason = statusReason(page.id(), page.withdrawn(), page.currentVersion());
+            return new ManagedPage(page.id(), page.title(), page.currentVersion(), page.withdrawn(),
+                    "PUBLISHED".equals(reason), page.summary(), page.updatedAt(), page.publishedAt(), reason);
         }).toList();
+    }
+
+    /** 管理端完整正文阅读；即使页面当前不可公开也返回已入库正文和真实原因。 */
+    public ManagedPageDetail pageDetail(long pageId) {
+        operator();
+        positive(pageId);
+        List<PageRow> rows = jdbc.query("""
+                SELECT p.withdrawn,DATE_FORMAT(p.published_at,'%Y-%m-%d %H:%i:%s'),p.current_revision_id FROM wiki_page p WHERE p.id=?
+                """, (rs, n) -> new PageRow(rs.getBoolean(1), rs.getString(2), rs.getObject(3, Long.class)), pageId);
+        if (rows.size() != 1) throw missing();
+        PageRow page = rows.getFirst();
+        List<Revision> history = versions(pageId);
+        if (history.isEmpty()) throw missing();
+        Revision visible = history.stream().filter(revision -> Objects.equals(revision.id(), page.currentRevisionId()))
+                .findFirst().orElse(history.getFirst());
+        String reason = statusReason(pageId, page.withdrawn(), page.currentRevisionId() == null ? null : visible.version());
+        return new ManagedPageDetail(pageId, visible.title(), visible.version(), visible.summary(), visible.markdown(),
+                page.publishedAt(), topics(visible.requestId()), citationsFor(visible.requestId()),
+                "PUBLISHED".equals(reason), reason, reasonDetail(reason), history);
+    }
+
+    private record PageRow(boolean withdrawn, String publishedAt, Long currentRevisionId) { }
+
+    private String statusReason(long pageId, boolean withdrawn, Integer currentVersion) {
+        if (withdrawn) return "WITHDRAWN";
+        if (currentVersion == null) return "UNPUBLISHED";
+        List<Long> ids = jdbc.queryForList("""
+                SELECT current_revision_id FROM wiki_page WHERE id=? AND withdrawn=FALSE AND current_revision_id IS NOT NULL
+                """, Long.class, pageId);
+        if (ids.size() != 1) return "UNAVAILABLE";
+        try {
+            Row initial = row(ids.getFirst(), false);
+            foundation.withValidDraft(initial.view().requestId(), (draft, sources) -> {
+                Row current = row(initial.view().id(), true);
+                verify(current, true);
+                Pointer pointer = pointer(pageId);
+                if (pointer.withdrawn() || !Objects.equals(pointer.revisionId(), current.view().id())
+                        || !"PUBLISHED".equals(current.view().state())) throw missing();
+                return null;
+            });
+            return "PUBLISHED";
+        } catch (SecurityException invalidated) {
+            return "SOURCE_CHANGED";
+        } catch (IllegalStateException stale) {
+            return "DRAFT_INVALID";
+        } catch (WikiProductException unavailable) {
+            return "UNAVAILABLE";
+        }
+    }
+
+    private static String reasonDetail(String reason) {
+        return switch (reason) {
+            case "PUBLISHED" -> "当前版本已发布，小辰可以使用。";
+            case "WITHDRAWN" -> "页面已撤回，读者和小辰都不会使用。";
+            case "UNPUBLISHED" -> "还没有已发布的版本；审核并发布后才会对外可用。";
+            case "SOURCE_CHANGED" -> "引用的来源已更新或被撤销，需要重新核对来源并生成新版本。";
+            case "DRAFT_INVALID" -> "生成此页面的草稿或来源状态已变化，需要重新整理；已发布正文仍在目录中。";
+            default -> "页面当前不可用，请查看版本历史。";
+        };
+    }
+
+    private List<Citation> citationsFor(String requestId) {
+        return jdbc.query("""
+                SELECT s.title,s.origin_version,
+                       CASE WHEN o.source_type='ARTICLE' THEN
+                           (SELECT CONCAT('/user/',a.user_id,'/article/',a.id) FROM article a WHERE a.id=o.source_key)
+                           ELSE NULL END
+                FROM wiki_job_source js
+                JOIN wiki_source_snapshot s ON s.id=js.snapshot_id
+                JOIN wiki_source o ON o.id=s.source_id
+                WHERE js.request_id=? ORDER BY js.snapshot_id LIMIT 32
+                """, (rs, n) -> new Citation(rs.getString(1), rs.getString(3), rs.getString(2)), requestId);
     }
 
     public List<Revision> versions(long pageId) {
@@ -269,10 +375,12 @@ public final class WikiPublicationService {
                 revision.pageId(), revision.id(), action, actor, revision.bodyHash());
     }
 
-    int operator() {
+    int operator() { return operator("ai:wiki:read"); }
+
+    int operator(String permission) {
         var authentication = org.springframework.security.core.context.SecurityContextHolder.getContext().getAuthentication();
         Integer actor = SecurityUtils.getUserId();
-        if (authentication == null || !authentication.isAuthenticated() || actor == null || actor <= 0 || !security.isAdmin()) {
+        if (authentication == null || !authentication.isAuthenticated() || actor == null || actor <= 0 || !(security.isAdmin() || security.hasKnowledgePermission(permission))) {
             throw new WikiProductException(403, "需要管理员权限");
         }
         return actor;

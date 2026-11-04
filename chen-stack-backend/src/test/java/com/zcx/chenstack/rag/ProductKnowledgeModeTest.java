@@ -88,13 +88,94 @@ class ProductKnowledgeModeTest {
         verifyNoInteractions(fixture.articles);
     }
 
+    @Test void wikiKnowledgeRequiresACurrentToolAndIgnoredChoiceHasOnlyOneBoundedCorrection() {
+        mode("wiki");
+        fixture.scopeRespond = prompt -> Flux.just(fixture.text("PLATFORM_KNOWLEDGE", "stop"));
+        fixture.respond = prompt -> Flux.just(fixture.text("UNSUPPORTED_WIKI_CANARY", "stop"));
+        assertTrue(fixture.run("当前技术概念是什么", "wiki-required").contains("没有查到"));
+        assertEquals(2, fixture.prompts.size());
+        assertTrue(fixture.prompts.stream().allMatch(prompt -> "required".equals(
+                ((org.springframework.ai.openai.OpenAiChatOptions) prompt.getOptions()).getToolChoice())));
+        assertFalse(fixture.memory.get("wiki:7:wiki-required").toString().contains("UNSUPPORTED_WIKI_CANARY"));
+        verify(fixture.knowledge, never()).retrieve(anyString());
+        verify(wiki, never()).read(anyLong());
+    }
+
+    @Test void chatPlatformQuestionDoesNotRequireUnavailableKnowledgeTools() {
+        mode("chat");
+        fixture.scopeRespond = prompt -> Flux.just(fixture.text("PLATFORM_KNOWLEDGE", "stop"));
+        fixture.respond = prompt -> Flux.just(fixture.text("当前通道无法确认平台规则。", "stop"));
+        assertEquals("当前通道无法确认平台规则。", fixture.run("当前平台规则是什么", "chat-platform"));
+        assertEquals(1, fixture.prompts.size());
+        assertEquals("auto", ((org.springframework.ai.openai.OpenAiChatOptions) fixture.prompts.getFirst().getOptions()).getToolChoice());
+        verify(fixture.knowledge, never()).reviewedCatalog();
+        verifyNoInteractions(wiki);
+    }
+
+    @Test void wikiHistoryMarksCompletedTurnsWithoutRetainingOldAnswerFacts() {
+        mode("wiki");
+        fixture.respond = prompt -> {
+            int call = fixture.prompts.size();
+            if (call == 1 || call == 3) return Flux.just(fixture.tools(
+                    fixture.call("readPublishedWiki", "{\"title\":\"事务知识\"}")));
+            return Flux.just(fixture.text(call == 2 ? "OLD_WIKI_ANSWER_SENTINEL" : "只回答当前新问题", "stop"));
+        };
+        assertEquals("OLD_WIKI_ANSWER_SENTINEL", fixture.run("第一个问题", "wiki-followup"));
+        assertEquals("只回答当前新问题", fixture.run("当前新问题", "wiki-followup"));
+        var followup = fixture.prompts.get(2).getInstructions();
+        var turns = followup.stream().filter(message -> message instanceof org.springframework.ai.chat.messages.UserMessage
+                || message instanceof org.springframework.ai.chat.messages.AssistantMessage).toList();
+        assertEquals(3, turns.size());
+        assertEquals("第一个问题", turns.getFirst().getText());
+        assertInstanceOf(org.springframework.ai.chat.messages.AssistantMessage.class, turns.get(1));
+        assertEquals("当前新问题", turns.getLast().getText());
+        assertFalse(followup.toString().contains("OLD_WIKI_ANSWER_SENTINEL"));
+        assertFalse(followup.toString().contains("PUBLISHED_WIKI_SENTINEL"));
+        assertTrue(fixture.memory.get("wiki:7:wiki-followup").toString().contains("OLD_WIKI_ANSWER_SENTINEL"));
+        verify(fixture.knowledge, never()).retrieve(anyString());
+    }
+
+    @Test void completedWikiHistoryCannotAnswerAfterPublishedKnowledgeDisappears() {
+        mode("wiki");
+        fixture.respond = prompt -> Flux.just(fixture.prompts.size() == 1
+                ? fixture.tools(fixture.call("readPublishedWiki", "{\"title\":\"事务知识\"}"))
+                : fixture.text("OLD_FACT_MUST_NOT_RETURN", "stop"));
+        fixture.run("第一个问题", "wiki-withdrawn-followup");
+        fixture.events.clear();
+        when(wiki.list(anyString(), isNull(), eq(1), anyInt()))
+                .thenReturn(new Page<>(List.of(), 0, 1, 50, List.of()));
+        fixture.respond = prompt -> Flux.just(fixture.text("OLD_FACT_MUST_NOT_RETURN", "stop"));
+        String answer = fixture.run("再说一次", "wiki-withdrawn-followup");
+        assertTrue(answer.contains("没有查到"));
+        assertFalse(answer.contains("OLD_FACT_MUST_NOT_RETURN"));
+        assertFalse(fixture.prompts.getLast().getInstructions().toString().contains("OLD_FACT_MUST_NOT_RETURN"));
+        assertTrue(fixture.events.stream().noneMatch(event -> "KNOWLEDGE_SOURCES".equals(event.type())));
+        verify(fixture.knowledge, never()).retrieve(anyString());
+    }
+
+    @Test void actualWikiUseIsPersistedForAdministratorsWithoutQuestionOrAnswer(@org.junit.jupiter.api.io.TempDir java.nio.file.Path directory) throws Exception {
+        var usage = new NormalAiUsage(true, directory.resolve("usage.jsonl").toString());
+        fixture.service = new ProductRagAnswerService(fixture.knowledge, ChatClient.create(fixture.model), fixture.memory,
+                null, new AiKnowledgeProperties("wiki"), wiki, 6, usage);
+        fixture.respond = prompt -> Flux.just(fixture.prompts.size() == 1
+                ? fixture.tools(fixture.call("readPublishedWiki", "{\"title\":\"事务知识\"}")) : fixture.text("事务保证原子性。", "stop"));
+        assertEquals("事务保证原子性。", fixture.run("private-question", "audited"));
+        var audit = usage.recentKnowledgeUses(20);
+        assertEquals(1, audit.size());
+        assertEquals("wiki", audit.getFirst().get("knowledgeMode"));
+        assertTrue(audit.getFirst().get("sources").toString().contains("wiki-page:10"));
+        String persisted = java.nio.file.Files.readString(directory.resolve("usage.jsonl"));
+        assertFalse(persisted.contains("private-question"));
+        assertFalse(persisted.contains("事务保证原子性。"));
+    }
+
     @Test void wikiSearchUsesOnlyPublishedAuthorityAndNoHitCannotReleaseAnInventedAnswer() {
         mode("wiki");
         when(wiki.list(eq("无匹配"), isNull(), eq(1), anyInt())).thenReturn(new Page<>(List.of(), 0, 1, 6, List.of()));
         fixture.respond = prompt -> Flux.just(fixture.prompts.size() == 1
                 ? fixture.tools(fixture.call("searchPublishedWiki", "{\"query\":\"无匹配\"}")) : fixture.text("INVENTED_ANSWER", "stop"));
         String answer = fixture.run("未知资料", "wiki-empty");
-        assertTrue(answer.contains("未取得有效"));
+        assertTrue(answer.contains("没有查到"));
         assertFalse(answer.contains("INVENTED"));
         verify(wiki, never()).read(anyLong());
         verify(fixture.knowledge, never()).retrieve(anyString());
@@ -194,6 +275,44 @@ class ProductKnowledgeModeTest {
         verify(fixture.model, times(4)).stream(any(Prompt.class));
         assertTrue(fixture.memory.get("wiki:7:bounded-wiki").isEmpty());
         verifyNoInteractions(fixture.articles);
+    }
+
+    @Test void runtimeModeSwitchChangesRegisteredToolsBetweenAnswersWithoutRestart() {
+        var selected = new java.util.concurrent.atomic.AtomicReference<>("chat");
+        fixture.service = new ProductRagAnswerService(fixture.knowledge, ChatClient.create(fixture.model), fixture.memory,
+                null, selected::get, wiki, 6, null);
+
+        assertEquals("自然回答", fixture.run("你好", "runtime-switch-chat"));
+        var chatTools = ((org.springframework.ai.openai.OpenAiChatOptions) fixture.prompts.getFirst().getOptions())
+                .getToolCallbacks().stream().map(callback -> callback.getToolDefinition().name()).toList();
+        assertTrue(chatTools.contains("showNavigation"));
+        assertFalse(chatTools.contains("readPublishedWiki"));
+        assertFalse(chatTools.contains("readPlatformHelp"));
+
+        selected.set("wiki");
+        fixture.prompts.clear();
+        fixture.respond = prompt -> Flux.just(fixture.prompts.size() == 1
+                ? fixture.tools(fixture.call("readPublishedWiki", "{\"title\":\"事务知识\"}"))
+                : fixture.text("事务保证原子性。", "stop"));
+        assertEquals("事务保证原子性。", fixture.run("事务是什么", "runtime-switch-wiki"));
+        var wikiTools = ((org.springframework.ai.openai.OpenAiChatOptions) fixture.prompts.getFirst().getOptions())
+                .getToolCallbacks().stream().map(callback -> callback.getToolDefinition().name()).toList();
+        assertTrue(wikiTools.contains("readPublishedWiki"));
+        assertTrue(wikiTools.contains("showNavigation"));
+        assertFalse(wikiTools.contains("readPlatformHelp"));
+        verify(fixture.knowledge, never()).retrieve(anyString());
+        assertFalse(fixture.memory.get("wiki:7:runtime-switch-wiki").isEmpty());
+    }
+
+    @Test void unavailableWikiModeFailsClosedInsteadOfFallingBackToRag() {
+        var selected = new java.util.concurrent.atomic.AtomicReference<>("chat");
+        fixture.service = new ProductRagAnswerService(fixture.knowledge, ChatClient.create(fixture.model), fixture.memory,
+                null, selected::get, null, 6, null);
+        selected.set("wiki");
+        RuntimeException failure = assertThrows(RuntimeException.class, () -> fixture.run("事务是什么", "wiki-unavailable"));
+        assertEquals("Wiki 知识模式暂不可用", failure.getMessage());
+        verify(fixture.knowledge, never()).retrieve(anyString());
+        verify(fixture.knowledge, never()).reviewedCatalog();
     }
 
     @Test void modelRoundLimitRejectsValuesOutsideOneToSixBeforeSending() {

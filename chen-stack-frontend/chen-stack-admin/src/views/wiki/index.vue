@@ -1,134 +1,209 @@
 <template>
-  <section class="wiki-management">
-    <PageHeader title="Wiki 知识管理" description="检查并授权来源，编译草稿，审核后发布给小辰使用。引用有效不代表生成结论已完成核查。">
-      <template #actions><el-button :loading="busy" @click="refresh">刷新</el-button></template>
-    </PageHeader>
-    <el-alert v-if="error" :title="friendlyError" type="error" show-icon :closable="false" class="notice" role="alert"><details><summary>技术详情</summary>{{ error }}</details></el-alert>
-    <p class="hint">操作顺序：检查并授权来源 → 编译草稿 → 检查事实与引用 → 提交审核 → 审核并发布。需要停止使用时可撤回页面或撤销来源授权。</p>
-    <el-tabs v-model="tab" class="wiki-tabs">
-      <el-tab-pane label="知识来源" name="sources">
-        <div class="toolbar">
-          <el-input v-model="sourceQuery" placeholder="搜索合法来源标题" clearable @keyup.enter="searchSources" />
-          <el-button :disabled="busy" @click="searchSources">搜索来源</el-button>
-        </div>
+  <ManagementCard class="ai-management" :title="sectionInfo.title" v-model:model-current-page="listPageNumber" :model-page-size="12" :total="listTotal" :show-pagination="!error || listTotal > 0" pagination-layout="total, prev, pager, next, jumper" @search="changeListPage">
+    <template #filters>
+      <template v-if="section === 'sources' || section === 'jobs'">
+        <KeywordSearch v-model="sourceQuery" :label="section === 'jobs' ? '整理材料' : '来源标题'" :placeholder="section === 'jobs' ? '搜索已授权材料' : '搜索来源标题'" width="260px" @search="searchSources" />
+        <SearchButtons @search="searchSources" @reset="resetSources" />
+      </template>
+      <template v-if="section === 'sources'">
+        <el-button v-if="capabilities.wikiCompile" type="primary" plain :disabled="!selectedSources.length || busy" @click="goToTasks">AI整理选中知识</el-button>
+      </template>
+      <template v-if="section === 'pages'">
+        <KeywordSearch v-model="pageQuery" label="知识名称" placeholder="搜索知识名称或正文" width="260px" @search="searchPages" />
+        <SearchButtons @search="searchPages" @reset="resetPages" />
+        <el-button v-if="capabilities.wikiEdit" type="primary" plain @click="openCreatePage">新增知识</el-button>
+      </template>
+      <el-button :icon="Refresh" :loading="busy" @click="refresh">刷新</el-button>
+    </template>
+    <template #table-view>
+    <el-alert v-if="error" :title="friendlyError" type="warning" show-icon :closable="false" class="notice" role="alert" />
+    <div class="knowledge-content">
+      <section v-if="section === 'sources'">
         <p class="hint">只列出当前满足公开、已发布、已审核条件的材料。选中材料不会自动授权。</p>
-        <el-table v-loading="sourcesLoading" :data="sourcePage.items" empty-text="暂无合法来源">
-          <el-table-column prop="title" label="来源标题" min-width="200" />
-          <el-table-column prop="type" label="类型" width="150" />
-          <el-table-column label="编译授权" width="130"><template #default="{ row }"><el-tag :type="row.active ? 'success' : 'info'">{{ row.active ? '已授权' : '未授权' }}</el-tag></template></el-table-column>
-          <el-table-column label="操作" min-width="300"><template #default="{ row }">
-            <el-button link type="primary" :disabled="busy" @click="inspect(row)">检查并授权</el-button>
-            <el-button link type="primary" :disabled="busy || !row.active || !row.snapshotId" @click="selectSource(row)">{{ selectedSources.some((item) => item.snapshotId === row.snapshotId) ? '移出编译' : '加入编译' }}</el-button>
-            <el-button link type="danger" :disabled="!row.active || busy" @click="revoke(row)">撤销授权</el-button>
-            <el-button link :disabled="busy" @click="findAffected(row)">受影响主题</el-button>
+        <DataTable :loading="sourcesLoading" :data="sourcePage.items" :show-id="false" :show-create-time="false" :show-actions="false" :empty-text="error ? '来源列表暂未加载，请刷新重试' : '暂无合法来源'">
+          <el-table-column prop="title" label="来源标题" min-width="240" show-overflow-tooltip />
+          <el-table-column label="类型" width="120"><template #default="{ row }">{{ sourceType(row.type) }}</template></el-table-column>
+          <el-table-column label="使用授权" width="130"><template #default="{ row }"><StatusBadge :text="row.active ? '已授权' : '未授权'" :custom-class="row.active ? 'status-audited' : 'status-default'" /></template></el-table-column>
+          <el-table-column label="操作" width="430" header-align="center"><template #default="{ row }">
+            <TableActions show-audit audit-text="检查并授权" show-edit :edit-text="selectedSources.some((item) => item.snapshotId === row.snapshotId) ? '取消选择' : '选择整理'" show-delete delete-text="撤销授权" show-detail detail-text="受影响主题" :disabled="busy" :disabled-actions="[!capabilities.wikiSourceManage && 'audit', (!capabilities.wikiCompile || !row.active || !row.snapshotId) && 'edit', (!row.active || !capabilities.wikiSourceManage) && 'delete'].filter(Boolean)" @audit="inspect(row)" @edit="selectSource(row)" @delete="revoke(row)" @detail="findAffected(row)" />
           </template></el-table-column>
-        </el-table>
-        <el-pagination v-model:current-page="sourcePageNumber" :total="sourcePage.total" :page-size="12" layout="prev, pager, next" @current-change="perform(loadSources)" />
+        </DataTable>
         <div v-if="affected.length" class="affected">
-          <h3>需要检查与重编译的主题</h3>
-          <p class="hint">重新检查并授权当前来源后，用新任务编号发起重编译。</p>
-          <el-table :data="affected"><el-table-column prop="topic" label="主题" /><el-table-column label="技术详情"><template #default="{ row }"><details><summary>查看原任务</summary>{{ row.previousRequestId }}</details></template></el-table-column><el-table-column label="操作"><template #default="{ row }"><el-button link @click="useAffected(row)">填入重编译主题</el-button></template></el-table-column></el-table>
+          <h3>待更新主题</h3>
+          <p class="hint">重新检查并授权当前来源后，可到AI整理页重新生成知识。</p>
+          <DataTable :data="affected" :show-id="false" :show-create-time="false" :show-actions="false"><el-table-column prop="topic" label="主题" show-overflow-tooltip /><el-table-column label="操作" width="160" header-align="center"><template #default="{ row }"><TableActions show-edit edit-text="重新整理" :disabled="busy || !capabilities.wikiCompile" @edit="useAffected(row)" /></template></el-table-column></DataTable>
         </div>
-      </el-tab-pane>
-      <el-tab-pane label="编译任务与草稿" name="jobs">
+      </section>
+      <section v-if="section === 'jobs'">
         <el-card shadow="never" class="compile-card">
-          <template #header>创建编译任务</template>
-          <p class="hint">请选择已授权来源，可按主题整理知识。服务端未启用编译器时会明确提示。</p>
-          <div class="selected-sources"><el-tag v-for="source in selectedSources" :key="source.snapshotId" closable @close="selectSource(source)">{{ source.title }}</el-tag><span v-if="!selectedSources.length" class="hint">先到“知识来源”检查、授权并加入材料</span></div>
+          <template #header>选择知识并交给AI整理</template>
+          <p class="hint">选择已核验授权的材料，AI将生成草稿。草稿经人工审核发布后，才能供小辰使用。</p>
+          <div class="toolbar"><el-button @click="router.push('/ai/sources')">管理来源</el-button></div>
+          <el-select v-model="selectedSnapshotIds" multiple placeholder="选择已授权的知识材料（最多16份）" class="source-picker"><el-option v-for="source in authorizedSources" :key="source.snapshotId" :label="source.title" :value="source.snapshotId" /></el-select>
+          <Pagination v-model:current-page="sourcePageNumber" :total="sourcePage.total" :page-size="12" layout="total, prev, pager, next, jumper" aria-label="来源材料分页" @current-change="perform(loadSources)" />
+          <div class="selected-sources"><el-tag v-for="source in selectedSources" :key="source.snapshotId" size="small" closable @close="selectSource(source)">{{ source.title }}</el-tag><span v-if="!selectedSources.length" class="hint">先选择已授权材料；没有合适材料时到“知识来源”检查并授权</span></div>
           <el-form label-position="top" @submit.prevent="compile">
             <div class="form-grid">
-              <el-form-item label="限定主题（可选，一行一个，最多 16 个）"><el-input v-model="topicInput" type="textarea" :rows="2" placeholder="留空编译所有主题" /></el-form-item>
+              <el-form-item label="限定主题（可选，一行一个，最多 16 个）"><el-input v-model="topicInput" type="textarea" :rows="2" placeholder="留空整理全部主题" /></el-form-item>
             </div>
-            <details><summary>技术详情：任务编号</summary><el-form-item label="任务编号"><el-input v-model="requestId" maxlength="80" placeholder="唯一任务编号" /><el-button link @click="newRequestId">生成新编号</el-button></el-form-item></details>
-            <el-button type="primary" native-type="submit" :loading="busy" :disabled="!selectedSources.length || !requestId">发起编译</el-button>
+
+            <el-button type="primary" native-type="submit" :loading="busy" :disabled="!capabilities.wikiCompile || !selectedSources.length || !requestId">开始AI整理</el-button>
           </el-form>
         </el-card>
-        <el-table v-loading="jobsLoading" :data="jobPage.items" empty-text="暂无编译任务">
-          <el-table-column label="知识主题" min-width="180"><template #default="{ row }">{{ row.topics?.join('、') || '全部主题' }}<details><summary>技术详情</summary><div>任务编号：{{ row.requestId }}</div><div>原始状态：{{ row.state }}</div><div>调用 {{ row.usedCalls ?? 0 }} / {{ row.maxCalls ?? '—' }}</div><div>预算单位 {{ row.usedUnits ?? 0 }} / {{ row.maxUnits ?? '—' }}</div><div v-if="row.firstStop">停止原因：{{ row.firstStop }}</div></details></template></el-table-column>
-          <el-table-column label="编译状态" min-width="110"><template #default="{ row }">{{ jobStatus(row.state) }}<p v-if="row.firstStop" class="hint">{{ stopReason(row.firstStop) }}</p></template></el-table-column>
-          <el-table-column label="调用次数" min-width="110"><template #default="{ row }">{{ row.usedCalls ?? 0 }} / {{ row.maxCalls ?? '—' }}</template></el-table-column>
-          <el-table-column prop="createdAt" label="创建时间" min-width="180" />
-          <el-table-column label="操作" min-width="230"><template #default="{ row }"><el-button link type="primary" :disabled="busy || row.state !== 'DRAFT_READY'" @click="previewDraft(row.requestId)">预览草稿</el-button><el-button link type="danger" :disabled="busy || !['QUEUED', 'RUNNING'].includes(row.state)" @click="cancel(row)">取消</el-button><p class="hint">{{ jobHint(row.state) }}</p></template></el-table-column>
-        </el-table>
-        <el-pagination v-model:current-page="jobPageNumber" :total="jobPage.total" :page-size="12" layout="prev, pager, next" @current-change="perform(loadJobs)" />
-      </el-tab-pane>
-      <el-tab-pane label="审核、发布与版本" name="pages">
-        <el-alert title="正文改动须创建新版本并重新审核；发布和历史恢复都会重验当前来源。" type="info" :closable="false" show-icon class="notice" />
-        <el-table v-loading="pagesLoading" :data="pages" empty-text="暂无 Wiki 页面，请先从编译草稿创建待审版本">
-          <el-table-column prop="title" label="Wiki 页面" min-width="240" />
-          <el-table-column label="当前发布版本" min-width="150"><template #default="{ row }">{{ row.currentVersion ?? '未发布' }}</template></el-table-column>
-          <el-table-column label="状态" width="160"><template #default="{ row }"><el-tag :type="row.currentVersion == null ? 'info' : row.withdrawn || !row.publicEligible ? 'warning' : 'success'">{{ row.currentVersion == null ? '草稿' : row.withdrawn ? '已撤回' : row.publicEligible ? '已发布' : '来源或版本失效，需重编译核查' }}</el-tag></template></el-table-column>
-          <el-table-column label="操作" min-width="220"><template #default="{ row }"><el-button link type="primary" :disabled="busy" @click="openVersions(row)">审核与历史版本</el-button><el-button link type="danger" :disabled="row.withdrawn || row.currentVersion == null || busy" @click="withdraw(row)">撤回公开页面</el-button></template></el-table-column>
-        </el-table>
-      </el-tab-pane>
-    </el-tabs>
+        <DataTable :loading="jobsLoading" :data="jobPage.items" :show-id="false" :show-create-time="false" :show-actions="false" :empty-text="error ? '整理记录暂未加载，请刷新重试' : '暂无整理记录'">
+          <el-table-column label="知识主题" min-width="180"><template #default="{ row }">{{ row.topics?.join('、') || '全部主题' }}</template></el-table-column>
+          <el-table-column label="整理状态" min-width="160"><template #default="{ row }"><div><StatusBadge :text="jobStatus(row.state)" :custom-class="jobBadgeClass(row.state)" /><p v-if="row.firstStop" class="hint">{{ stopReason(row.firstStop) }}</p></div></template></el-table-column>
+          <el-table-column label="创建时间" min-width="180"><template #default="{ row }">{{ formatKnowledgeTime(row.createdAt) }}</template></el-table-column>
+          <el-table-column label="操作" width="230" header-align="center"><template #default="{ row }"><TableActions show-view view-text="预览草稿" show-delete delete-text="取消" :disabled="busy" :disabled-actions="[row.state !== 'DRAFT_READY' && 'view', (!capabilities.wikiCompile || !['QUEUED', 'RUNNING'].includes(row.state)) && 'delete'].filter(Boolean)" @view="previewDraft(row.requestId)" @delete="cancel(row)" /></template></el-table-column>
+        </DataTable>
+      </section>
+      <section v-if="section === 'pages'">
+        <p class="hint">可以阅读每篇知识的完整正文；人工编写或更新仍需选择已授权来源，并在审核通过后发布。</p>
+        <DataTable :loading="pagesLoading" :data="visiblePages" :show-id="false" :show-create-time="false" :show-actions="false" :empty-text="error ? '知识页面暂未加载，请刷新重试' : '暂无 Wiki 页面，请先整理来源并创建待审版本'">
+          <el-table-column prop="title" label="知识名称" min-width="240" show-overflow-tooltip />
+          <el-table-column label="更新时间" min-width="180"><template #default="{ row }">{{ formatKnowledgeTime(row.updatedAt) }}</template></el-table-column>
+          <el-table-column label="状态" width="180"><template #default="{ row }"><div><StatusBadge :text="row.currentVersion == null ? '草稿' : row.withdrawn ? '已撤回' : row.publicEligible ? '已发布' : '待更新'" :custom-class="row.currentVersion == null ? 'status-default' : row.withdrawn || !row.publicEligible ? 'status-rejected' : 'status-audited'" /><p v-if="row.statusReason && row.statusReason !== 'PUBLISHED'" class="hint">{{ reasonText(row.statusReason) }}</p></div></template></el-table-column>
+          <el-table-column label="操作" width="420" header-align="center"><template #default="{ row }"><TableActions show-view view-text="阅读正文" show-audit audit-text="审核与历史版本" show-delete delete-text="停止使用知识" :disabled="busy" :disabled-actions="row.withdrawn || row.currentVersion == null || !capabilities.wikiPublish ? ['delete'] : []" @view="openPageDetail(row)" @audit="openVersions(row)" @delete="withdraw(row)" /></template></el-table-column>
+        </DataTable>
+      </section>
+    </div>
+    </template>
 
-    <el-dialog v-model="sourceVisible" title="检查来源并显式授权" width="min(900px, 95vw)">
+    <el-dialog v-model="sourceVisible" class="ai-management-dialog" title="核查并授权来源" width="min(900px, 95vw)">
       <template v-if="candidate">
         <h3>{{ candidate.title }}</h3><pre class="source-text">{{ candidate.text }}</pre>
-        <details><summary>技术详情</summary><p>{{ candidate.type }} / {{ candidate.id }} · {{ candidate.originVersion }} · {{ candidate.parserVersion }}</p><p class="hash">Fingerprint：{{ candidate.fingerprint }}</p></details>
+
         <el-checkbox v-model="sourceConsent">我已检查当前材料，明确同意将此版本作为公开 Wiki 编译来源</el-checkbox>
       </template>
-      <template #footer><el-button @click="sourceVisible = false">关闭</el-button><el-button type="primary" :disabled="!sourceConsent" :loading="busy" @click="authorize">授权此精确版本</el-button></template>
+      <template #footer><el-button @click="sourceVisible = false">关闭</el-button><el-button type="primary" :disabled="!sourceConsent || !capabilities.wikiSourceManage" :loading="busy" @click="authorize">确认授权</el-button></template>
     </el-dialog>
 
-    <el-dialog v-model="draftVisible" title="草稿预览与人工核查" width="min(1100px, 96vw)">
+    <el-dialog v-model="draftVisible" class="ai-management-dialog" title="草稿预览与人工核查" width="min(1100px, 96vw)">
       <template v-if="draft">
         <el-alert title="草稿需人工核查：引用仅证明来源位置，生成结论、冲突和欠证仍须人工检查。" type="warning" :closable="false" show-icon />
-        <p>主题：{{ draft.topics?.join('、') || '全部主题' }} · 引用 {{ citationCount(draft.markdown) }} 处 · {{ draft.createdAt }}</p>
-        <details><summary>技术详情</summary><p>状态：DRAFT · SEMANTIC_NOT_VERIFIED</p><p>{{ draft.compilerVersion }} · 任务：{{ draft.requestId }}</p><p class="hash">Body：{{ draft.bodyHash }}<br />Manifest：{{ draft.manifestHash }}</p><pre class="source-text">{{ draft.markdown }}</pre></details>
-        <div v-if="draft.conflicts?.length" class="notice"><h3>检测到的冲突与核查标记</h3><p v-for="(conflict, index) in draft.conflicts" :key="index">{{ readableConflict(conflict) }}</p></div>
-        <h3>当前来源</h3><el-table :data="draft.sources"><el-table-column prop="title" label="来源" /></el-table>
-        <details><summary>来源技术详情</summary><el-table :data="draft.sources"><el-table-column prop="title" label="来源" /><el-table-column prop="originVersion" label="来源版本" show-overflow-tooltip /><el-table-column prop="parserVersion" label="解析版本" /><el-table-column prop="snapshotId" label="快照" /><el-table-column prop="generation" label="授权代次" /><el-table-column prop="fingerprint" label="Fingerprint" show-overflow-tooltip /></el-table></details>
+        <p>主题：{{ draft.topics?.join('、') || '全部主题' }} · 引用 {{ citationCount(draft.markdown) }} 处 · {{ formatKnowledgeTime(draft.createdAt) }}</p>
+
+        <div v-if="draft.conflicts?.length" class="notice"><h3>待核查内容</h3><p v-for="(conflict, index) in draft.conflicts" :key="index">{{ readableConflict(conflict) }}</p></div>
+        <h3>当前来源</h3><DataTable :data="draft.sources" :show-id="false" :show-create-time="false" :show-actions="false"><el-table-column prop="title" label="来源" show-overflow-tooltip /></DataTable>
+
         <WikiMarkdown :markdown="readableMarkdown(draft.markdown, draft.sources)" class="draft-preview" />
         <el-divider />
         <el-form label-position="top" @submit.prevent="createRevision">
-          <div class="form-grid"><el-form-item label="Wiki 标题（必填）"><el-input v-model="edit.title" maxlength="160" /></el-form-item><el-form-item label="更新已有页面（留空新建）"><el-select v-model="edit.pageId" clearable placeholder="创建新页面"><el-option v-for="page in pages" :key="page.id" :label="`${page.title} (#${page.id})`" :value="page.id" /></el-select></el-form-item></div>
+          <div class="form-grid"><el-form-item label="Wiki 标题（必填）"><el-input v-model="edit.title" maxlength="160" /></el-form-item><el-form-item label="更新已有页面（留空新建）"><el-select v-model="edit.pageId" clearable placeholder="创建新页面"><el-option v-for="page in pages" :key="page.id" :label="page.title" :value="page.id" /></el-select></el-form-item></div>
           <el-form-item label="页面摘要（必填）"><el-input v-model="edit.summary" type="textarea" maxlength="500" :rows="2" /></el-form-item>
           <el-checkbox v-model="edit.changeMarkdown">人工修改正文（修改后创建全新版本，必须重新审核）</el-checkbox>
           <el-form-item v-if="edit.changeMarkdown" label="Markdown 正文"><el-input v-model="edit.markdown" type="textarea" :rows="14" /></el-form-item>
-          <el-button native-type="submit" type="primary" :loading="busy" :disabled="!edit.title.trim() || !edit.summary.trim()">创建待审版本</el-button>
+          <el-button native-type="submit" type="primary" :loading="busy" :disabled="!capabilities.wikiEdit || !edit.title.trim() || !edit.summary.trim()">创建待审版本</el-button>
         </el-form>
       </template>
     </el-dialog>
 
-    <el-dialog v-model="versionsVisible" title="人工审核与版本历史" width="min(1100px, 96vw)">
+    <el-dialog v-model="versionsVisible" class="ai-management-dialog" title="人工审核与版本历史" width="min(1100px, 96vw)">
       <template v-if="selectedPage">
         <h3>{{ selectedPage.title }} · 当前发布版本 {{ selectedPage.currentVersion ?? '无' }}</h3>
-        <el-table :data="versions" empty-text="暂无历史版本" highlight-current-row @row-click="selectRevision">
-          <el-table-column prop="version" label="版本" width="80" /><el-table-column label="审核状态" width="160"><template #default="{ row }">{{ revisionStatus(row.state) }}<details><summary>技术详情</summary>{{ row.state }}</details></template></el-table-column><el-table-column prop="title" label="标题" /><el-table-column prop="createdAt" label="创建时间" min-width="180" /><el-table-column label="当前指针" width="100"><template #default="{ row }">{{ row.current ? '当前发布' : '—' }}</template></el-table-column>
-        </el-table>
+        <DataTable :data="visibleVersions" :show-id="false" :show-create-time="false" :show-actions="false" empty-text="暂无历史版本" highlight-current-row @row-click="selectRevision">
+          <el-table-column prop="version" label="版本" width="80" /><el-table-column label="审核状态" width="130"><template #default="{ row }"><StatusBadge :text="revisionStatus(row.state)" :custom-class="row.state === 'PUBLISHED' || row.state === 'APPROVED' ? 'status-audited' : row.state === 'IN_REVIEW' ? 'status-unaudited' : 'status-default'" /></template></el-table-column><el-table-column prop="title" label="标题" min-width="180" show-overflow-tooltip /><el-table-column label="创建时间" min-width="180"><template #default="{ row }">{{ formatKnowledgeTime(row.createdAt) }}</template></el-table-column><el-table-column label="发布状态" width="100"><template #default="{ row }">{{ row.current ? '当前发布' : '—' }}</template></el-table-column>
+        </DataTable>
+        <Pagination v-if="versions.length > 12" v-model:current-page="versionPageNumber" :total="versions.length" :page-size="12" layout="total, prev, pager, next, jumper" />
         <template v-if="revision">
-          <p>当前选择：版本 {{ revision.version }} · {{ revisionStatus(revision.state) }}</p><details><summary>技术详情</summary><p class="hash">Body：{{ revision.bodyHash }}<br />来源清单：{{ revision.manifestHash }}</p><pre class="source-text">{{ revision.markdown }}</pre></details>
-          <el-button :disabled="busy" @click="previewEvidence">重新检查此版本的来源与编译冲突</el-button>
+          <p>当前选择：版本 {{ revision.version }} · {{ revisionStatus(revision.state) }}</p>
+          <el-button :disabled="busy" @click="previewEvidence">核查来源与内容</el-button>
           <WikiMarkdown :markdown="readableMarkdown(revision.markdown, draft?.requestId === revision.requestId ? draft.sources : [])" class="draft-preview" />
           <el-checkbox v-model="evidenceConsent">已检查当前来源、引用证据及生成结论</el-checkbox><br />
           <el-checkbox v-model="conflictConsent">已检查并处理冲突、欠证和待人工核查内容</el-checkbox>
           <div class="revision-actions">
-            <el-button :loading="busy" :disabled="revision.state !== 'DRAFT'" @click="revisionAction('submit')">提交审核</el-button>
-            <el-button type="success" :loading="busy" :disabled="revision.state !== 'IN_REVIEW' || !evidenceConsent || !conflictConsent || !evidenceSeen" @click="revisionAction('approve')">审核通过</el-button>
-            <el-button type="primary" :loading="busy" :disabled="revision.state !== 'APPROVED'" @click="revisionAction('publish')">正式发布</el-button>
-            <el-button :loading="busy" :disabled="revision.state !== 'PUBLISHED' || (revision.current && !selectedPage.withdrawn)" @click="restore">恢复此历史版本</el-button>
+            <el-button :loading="busy" :disabled="!capabilities.wikiEdit || revision.state !== 'DRAFT'" @click="revisionAction('submit')">提交审核</el-button>
+            <el-button type="success" :loading="busy" :disabled="!capabilities.wikiReview || revision.state !== 'IN_REVIEW' || !evidenceConsent || !conflictConsent || !evidenceSeen" @click="revisionAction('approve')">审核通过</el-button>
+            <el-button type="primary" :loading="busy" :disabled="!capabilities.wikiPublish || revision.state !== 'APPROVED'" @click="revisionAction('publish')">正式发布</el-button>
+            <el-button :loading="busy" :disabled="!capabilities.wikiPublish || revision.state !== 'PUBLISHED' || (revision.current && !selectedPage.withdrawn)" @click="restore">恢复此历史版本</el-button>
           </div>
         </template>
       </template>
     </el-dialog>
-  </section>
+
+    <el-dialog v-model="detailVisible" class="ai-management-dialog" title="知识正文" width="min(1100px, 96vw)">
+      <template v-if="detail">
+        <div class="mode-summary">
+          <StatusBadge :text="detailStatusText" :custom-class="detail.publicEligible ? 'status-audited' : 'status-rejected'" />
+          <span class="hint">{{ detail.statusDetail }}</span>
+        </div>
+        <h3>{{ detail.title }}</h3>
+        <p>版本 {{ detail.version }} · 发布时间 {{ formatKnowledgeTime(detail.publishedAt) }}</p>
+        <p>摘要：{{ detail.summary }}</p>
+        <p v-if="detail.topics?.length">主题：{{ detail.topics.join('、') }}</p>
+        <h3>引用来源</h3>
+        <ul v-if="detail.citations?.length" class="sources">
+          <li v-for="(citation, index) in detail.citations" :key="index">{{ citation.title }}（{{ citation.version }}）<a v-if="citation.url" :href="citation.url" target="_blank" rel="noreferrer">查看来源</a></li>
+        </ul>
+        <p v-else class="hint">当前版本没有附加引用来源；如为人工编写，请核对正文与真实业务一致。</p>
+        <WikiMarkdown :markdown="detail.markdown" class="draft-preview" />
+        <div class="revision-actions">
+          <el-button v-if="capabilities.wikiEdit" type="primary" :disabled="busy" @click="editFromDetail">编辑正文并新建版本</el-button>
+          <el-button :disabled="busy" @click="openVersionsFromDetail">审核与历史版本</el-button>
+          <el-button v-if="capabilities.wikiPublish && detail.publicEligible" type="danger" plain :disabled="busy" @click="withdrawFromDetail">停止使用知识</el-button>
+        </div>
+      </template>
+      <template #footer><el-button @click="detailVisible = false">关闭</el-button></template>
+    </el-dialog>
+
+    <el-dialog v-model="editorVisible" class="ai-management-dialog" :title="editor.pageId ? '编辑正文并新建版本' : '新增知识'" width="min(1100px, 96vw)" :close-on-click-modal="!busy">
+      <el-alert v-if="editor.pageId" title="保存后创建待审版本，不会立即替换已发布正文；审核通过并发布后才生效。" type="info" :closable="false" show-icon />
+      <el-alert v-else title="请选择已核验并授权的来源，再人工编写正文；创建后进入待审版本，不会立即公开。" type="info" :closable="false" show-icon />
+      <el-form label-position="top">
+        <el-form-item v-if="!editor.pageId" label="引用来源（至少一份已授权来源）">
+          <el-select v-model="editor.snapshotIds" multiple placeholder="选择已授权来源" class="source-picker">
+            <el-option v-for="source in manualSources" :key="source.snapshotId" :label="source.title" :value="source.snapshotId" />
+          </el-select>
+          <p v-if="manualSourcesLoading" class="hint">正在读取已授权来源…</p>
+          <p v-else-if="!manualSources.length" class="hint">暂无已授权来源，请先到“知识来源”检查并授权。</p>
+        </el-form-item>
+        <div class="form-grid">
+          <el-form-item label="知识标题"><el-input v-model="editor.title" maxlength="160" show-word-limit /></el-form-item>
+          <el-form-item label="摘要"><el-input v-model="editor.summary" maxlength="500" show-word-limit /></el-form-item>
+        </div>
+        <el-form-item label="正文（Markdown）"><el-input v-model="editor.markdown" type="textarea" :rows="14" placeholder="写清真实入口、步骤、必要条件和当前限制" /></el-form-item>
+        <el-checkbox v-model="editor.preview">预览正文</el-checkbox>
+        <WikiMarkdown v-if="editor.preview" :markdown="editor.markdown" class="draft-preview" />
+      </el-form>
+      <template #footer>
+        <el-button :disabled="busy" @click="editorVisible = false">关闭</el-button>
+        <el-button type="primary" :loading="busy" :disabled="!validEditor || busy" @click="savePage">创建待审版本</el-button>
+      </template>
+    </el-dialog>
+  </ManagementCard>
 </template>
 
 <script setup>
 import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { Refresh } from '@element-plus/icons-vue'
 import 'element-plus/es/components/message/style/css'
 import 'element-plus/es/components/message-box/style/css'
-import PageHeader from '@/components/management/PageHeader.vue'
+import ManagementCard from '@/components/management/ManagementCard.vue'
+import DataTable from '@/components/data/DataTable.vue'
+import TableActions from '@/components/data/TableActions.vue'
+import StatusBadge from '@/components/common/StatusBadge.vue'
+import Pagination from '@/components/data/Pagination.vue'
+import KeywordSearch from '@/components/search/KeywordSearch.vue'
+import SearchButtons from '@/components/search/SearchButtons.vue'
 import WikiMarkdown from '@/components/wiki/WikiMarkdown.vue'
+import { readableWikiMarkdown as readableMarkdown } from '@/utils/wikiPresentation'
 import { wikiApi } from '@/api/wiki'
+import { knowledgeApi } from '@/api/knowledge'
+import { formatKnowledgeTime } from '@/utils/aiPresentation'
+import { useRouter, useRoute } from 'vue-router'
 
-const tab = ref('sources')
+const props = defineProps({ section: { type: String, default: 'sources' } })
+const router = useRouter()
+const route = useRoute()
+const sectionInfo = computed(() => ({ sources: { title: '知识来源' }, jobs: { title: '智能整理' }, pages: { title: '整理知识' } }[props.section]))
+const capabilities = ref({})
+const pageQuery = ref('')
+const pageNumber = ref(1)
+const visiblePages = computed(() => pages.value.slice((pageNumber.value - 1) * 12, pageNumber.value * 12))
 const busy = ref(false)
 const error = ref('')
-const friendlyError = computed(() => /^[A-Z0-9_.:-]+$/.test(error.value) ? '操作未完成，请查看技术详情或重试。' : error.value)
+const friendlyError = computed(() => !/[\u3400-\u9fff]/.test(error.value) ? '操作未完成，请稍后重试。' : error.value)
 const sourcesLoading = ref(false)
 const jobsLoading = ref(false)
 const pagesLoading = ref(false)
@@ -138,7 +213,11 @@ const jobPageNumber = ref(1)
 const sourcePage = ref({ items: [], total: 0 })
 const jobPage = ref({ items: [], total: 0 })
 const pages = ref([])
+const listPageNumber = computed({ get: () => props.section === 'sources' ? sourcePageNumber.value : props.section === 'jobs' ? jobPageNumber.value : pageNumber.value, set: (value) => { if (props.section === 'sources') sourcePageNumber.value = value; else if (props.section === 'jobs') jobPageNumber.value = value; else pageNumber.value = value } })
+const listTotal = computed(() => props.section === 'sources' ? sourcePage.value.total : props.section === 'jobs' ? jobPage.value.total : pages.value.length)
 const selectedSources = ref([])
+const authorizedSources = computed(() => [...new Map([...selectedSources.value, ...sourcePage.value.items.filter((source) => source.active && source.snapshotId)].map((source) => [source.snapshotId, source])).values()])
+const selectedSnapshotIds = computed({ get: () => selectedSources.value.map((source) => source.snapshotId), set: (ids) => { if (ids.length <= 16) selectedSources.value = authorizedSources.value.filter((source) => ids.includes(source.snapshotId)); else ElMessage.warning('每次最多选择16份材料') } })
 const requestId = ref('')
 const topicInput = ref('')
 const affected = ref([])
@@ -151,24 +230,31 @@ const edit = reactive({ title: '', summary: '', pageId: undefined, markdown: '',
 const selectedPage = ref(null)
 const versionsVisible = ref(false)
 const versions = ref([])
+const versionPageNumber = ref(1)
+const visibleVersions = computed(() => versions.value.slice((versionPageNumber.value - 1) * 12, versionPageNumber.value * 12))
 const revision = ref(null)
 const evidenceSeen = ref(false)
 const evidenceConsent = ref(false)
 const conflictConsent = ref(false)
+const detail = ref(null)
+const detailVisible = ref(false)
+const detailStatusText = computed(() => ({ PUBLISHED: '已发布', WITHDRAWN: '已撤回', UNPUBLISHED: '未发布', SOURCE_CHANGED: '待更新', DRAFT_INVALID: '待更新' }[detail.value?.statusReason] || '待更新'))
+const manualSources = ref([])
+const manualSourcesLoading = ref(false)
+const editorVisible = ref(false)
+const editor = reactive({ pageId: null, title: '', summary: '', markdown: '', snapshotIds: [], preview: false, requestId: '' })
+const validEditor = computed(() => Boolean(editor.title.trim() && editor.summary.trim() && editor.markdown.trim() && (editor.pageId || editor.snapshotIds.length)))
 let poll
 let disposed = false
 
+function sourceType(type) { return { ARTICLE: '文章', PLATFORM_HELP: '平台帮助', PRODUCT_CAPABILITY: '产品说明', KNOWLEDGE: '知识文档' }[type] || '知识材料' }
+function goToTasks() { return router.push({ path: '/ai/tasks', query: { sources: selectedSources.value.map((source) => source.snapshotId).join(','), ...(topicInput.value ? { topic: topicInput.value } : {}) }, state: { knowledgeSources: selectedSources.value.map(({ snapshotId, title, active }) => ({ snapshotId, title, active })) } }) }
 function jobStatus(state) {
-  return { QUEUED: '等待编译', RUNNING: '编译中', DRAFT_READY: '草稿已生成', FAILED: '编译失败', CANCELLED: '已取消', INVALIDATED: '来源已失效' }[state] || '状态未知'
+  return { QUEUED: '等待整理', RUNNING: '整理中', DRAFT_READY: '草稿已生成', FAILED: '整理未完成', CANCELLED: '已取消', INVALIDATED: '来源已失效' }[state] || '状态未知'
 }
-function jobHint(state) {
-  if (state === 'QUEUED' || state === 'RUNNING') return '草稿尚未生成，暂不能预览；可取消任务。'
-  if (state === 'DRAFT_READY') return '可预览草稿；任务已结束，不能取消。'
-  if (state === 'FAILED' || state === 'CANCELLED' || state === 'INVALIDATED') return '任务已结束，没有可预览的有效草稿，不能取消。'
-  return '当前状态不支持预览或取消。'
-}
+function jobBadgeClass(state) { return { QUEUED: 'status-unaudited', RUNNING: 'status-unaudited', DRAFT_READY: 'status-audited', FAILED: 'status-rejected', INVALIDATED: 'status-rejected' }[state] || 'status-default' }
 function stopReason(reason) {
-  return { CANCELLED: '任务已取消。', WIKI_COMPILE_TIMEOUT: '编译超时。', WIKI_COMPILE_INTERRUPTED: '编译被中断。', WIKI_TOPIC_SET_INVALID: '所选来源未生成指定主题，请调整主题或重新选择来源。', RECOVERED_UNKNOWN: '任务恢复时无法确认此前调用结果。' }[reason] || '任务未完成，可在技术详情中查看停止原因。'
+  return { CANCELLED: '任务已取消。', WIKI_COMPILE_TIMEOUT: '整理用时较长，请稍后重新发起。', WIKI_COMPILE_INTERRUPTED: '整理已中断，可重新发起。', WIKI_TOPIC_SET_INVALID: '所选来源未生成指定主题，请调整主题或重新选择来源。', RECOVERED_UNKNOWN: '任务恢复时无法确认此前调用结果。' }[reason] || '整理未完成，请检查材料后重新发起。'
 }
 function revisionStatus(state) {
   return { DRAFT: '待提交审核', IN_REVIEW: '审核中', APPROVED: '审核通过', PUBLISHED: '已发布' }[state] || '状态未知'
@@ -179,25 +265,6 @@ function readableConflict(value) {
 function citationCount(markdown) {
   return (typeof markdown === 'string' ? markdown.match(/^\s*- snapshot=.*? quote=“/gm) : null)?.length || 0
 }
-function readableMarkdown(markdown, sources = []) {
-  if (typeof markdown !== 'string' || !markdown.startsWith('# Wiki 编译草稿\n')) return markdown || ''
-  let inBody = false
-  return markdown.split('\n').filter((line) => {
-    if (line.startsWith('## ')) inBody = true
-    return inBody || !['# Wiki 编译草稿', '状态：DRAFT', '编译版本：', '任务：', '来源清单版本：'].some((prefix) => line.startsWith(prefix))
-  })
-    .map((line) => {
-      const match = line.match(/^(\s*)- snapshot=(\d+) .*? quote=“(.*)”$/)
-      if (match) {
-        const source = sources?.find((item) => String(item.snapshotId) === match[2])
-        const title = source?.title ? `（${source.title.replace(/[\\`*_{}\[\]()#+.!>|-]/g, '\\$&')}）` : ''
-        return `${match[1]}- 引用${title}：“${match[3]}”`
-      }
-      return line.replaceAll('[SEMANTIC_NOT_VERIFIED]', '[待人工核查]')
-    })
-    .join('\n')
-}
-
 async function perform(action, message) {
   if (busy.value) return
   busy.value = true
@@ -222,11 +289,76 @@ async function loadJobs() {
 }
 async function loadPages() {
   pagesLoading.value = true
-  try { pages.value = (await wikiApi.pages()).data }
+  try { pages.value = (await wikiApi.pages({ q: pageQuery.value.trim() })).data }
   finally { pagesLoading.value = false }
 }
-function refresh() { return perform(() => Promise.all([loadSources(), loadJobs(), loadPages()])) }
+function refresh() { return perform(async () => { capabilities.value = (await knowledgeApi.status()).data.capabilities; if (props.section === 'sources') await loadSources(); else if (props.section === 'jobs') await Promise.all([loadSources(), loadJobs(), loadPages()]); else await loadPages() }) }
 function searchSources() { sourcePageNumber.value = 1; return perform(loadSources) }
+function resetSources() { sourceQuery.value = ''; return searchSources() }
+function searchPages() { pageNumber.value = 1; return perform(loadPages) }
+function resetPages() { pageQuery.value = ''; return searchPages() }
+function reasonText(code) {
+  return {
+    SOURCE_CHANGED: '引用来源已变化，需要重新核对来源后更新',
+    DRAFT_INVALID: '草稿状态已变化，需要重新整理',
+    WITHDRAWN: '已撤回，公开和小辰都不会使用',
+    UNPUBLISHED: '尚未发布',
+  }[code] || ''
+}
+async function openPageDetail(page) {
+  return perform(async () => {
+    detail.value = null
+    detail.value = (await wikiApi.pageDetail(page.id)).data
+    detailVisible.value = true
+  })
+}
+function openVersionsFromDetail() {
+  const target = { id: detail.value.id }
+  detailVisible.value = false
+  return openVersions(target)
+}
+function editFromDetail() {
+  Object.assign(editor, {
+    pageId: detail.value.id, title: detail.value.title, summary: detail.value.summary,
+    markdown: detail.value.markdown, snapshotIds: [], preview: false, requestId: '',
+  })
+  detailVisible.value = false
+  editorVisible.value = true
+}
+async function loadManualSources() {
+  if (manualSources.value.length || manualSourcesLoading.value) return
+  manualSourcesLoading.value = true
+  try {
+    const page = (await wikiApi.sources({ q: '', page: 1, size: 50 })).data
+    manualSources.value = (page.items || []).filter((source) => source.active && source.snapshotId)
+  } catch (failure) {
+    manualSources.value = []
+  } finally { manualSourcesLoading.value = false }
+}
+function openCreatePage() {
+  Object.assign(editor, { pageId: null, title: '', summary: '', markdown: '', snapshotIds: [], preview: false, requestId: `manual-${crypto.randomUUID()}` })
+  editorVisible.value = true
+  return loadManualSources()
+}
+async function savePage() {
+  if (busy.value || !validEditor.value) return
+  busy.value = true
+  error.value = ''
+  try {
+    const body = { title: editor.title.trim(), summary: editor.summary.trim(), markdown: editor.markdown }
+    let result
+    if (editor.pageId) result = (await wikiApi.editPage(editor.pageId, body)).data
+    else result = (await wikiApi.createManualPage({ requestId: editor.requestId, ...body, snapshotIds: editor.snapshotIds })).data
+    editorVisible.value = false
+    ElMessage.success('已创建待审版本，请检查并提交审核')
+    await loadPages()
+    if (result?.pageId) await loadVersions({ id: result.pageId })
+  } catch (failure) {
+    error.value = failure?.response?.data?.msg || failure?.msg || failure?.message || '操作失败，请刷新后重试'
+    ElMessage.error(friendlyError.value)
+  } finally { busy.value = false }
+}
+function changeListPage() { if (props.section === 'sources') return perform(loadSources); if (props.section === 'jobs') return perform(loadJobs) }
 function newRequestId() { requestId.value = `wiki-${crypto.randomUUID()}` }
 function selectSource(source) {
   const found = selectedSources.value.findIndex((item) => item.snapshotId === source.snapshotId)
@@ -244,7 +376,7 @@ function authorize() {
     else ElMessage.warning('授权已生效；当前任务已选满 16 份材料，请先移出一份再加入')
     sourceVisible.value = false
     await loadSources()
-  }, '已授权此精确版本')
+  }, '已确认授权')
 }
 async function confirm(message) { try { await ElMessageBox.confirm(message, '确认操作', { type: 'warning', confirmButtonText: '确认', cancelButtonText: '取消' }); return true } catch { return false } }
 async function revoke(source) {
@@ -252,7 +384,7 @@ async function revoke(source) {
   return perform(async () => { await wikiApi.revoke({ type: source.type, id: source.id }); selectedSources.value = selectedSources.value.filter((item) => item.type !== source.type || item.id !== source.id); await loadSources() }, '来源授权已撤销')
 }
 function findAffected(source) { return perform(async () => { affected.value = (await wikiApi.affected({ type: source.type, id: source.id })).data; if (!affected.value.length) ElMessage.info('此来源暂无受影响主题') }) }
-function useAffected(target) { topicInput.value = target.topic; newRequestId(); tab.value = 'jobs' }
+function useAffected(target) { topicInput.value = target.topic; return goToTasks() }
 function compile() {
   return perform(async () => {
     const topics = topicInput.value.split('\n').map((value) => value.trim()).filter(Boolean)
@@ -278,7 +410,6 @@ function createRevision() {
     const result = (await wikiApi.revision({ requestId: draft.value.requestId, title: edit.title.trim(), summary: edit.summary, pageId: edit.pageId || undefined, markdown: edit.changeMarkdown ? edit.markdown : undefined })).data
     draftVisible.value = false
     await loadPages()
-    tab.value = 'pages'
     const page = pages.value.find((item) => item.id === result.pageId)
     if (page) await loadVersions(page)
   }, '已创建新版本，请检查并提交审核')
@@ -286,6 +417,7 @@ function createRevision() {
 async function loadVersions(page) {
   selectedPage.value = pages.value.find((item) => item.id === page.id) || page
   versions.value = (await wikiApi.versions(page.id)).data
+  versionPageNumber.value = 1
   selectRevision(versions.value[0] || null)
   versionsVisible.value = true
 }
@@ -315,7 +447,14 @@ function revisionAction(action) {
 }
 async function withdraw(page) {
   if (!await confirm('撤回后，此 Wiki 页面将立即停止公开。继续撤回？')) return
-  return perform(async () => { await wikiApi.withdraw(page.id, { expectedCurrentVersion: page.currentVersion }); await loadPages() }, '页面已撤回')
+  return perform(async () => {
+    await wikiApi.withdraw(page.id, { expectedCurrentVersion: page.currentVersion })
+    detailVisible.value = false
+    await loadPages()
+  }, '页面已撤回')
+}
+function withdrawFromDetail() {
+  return withdraw({ id: detail.value.id, currentVersion: detail.value.version })
 }
 async function restore() {
   if (!await confirm('恢复将重验当前来源，并将此已审核历史版本设为当前发布版本。继续恢复？')) return
@@ -328,23 +467,17 @@ async function pollJobs() {
   }
   if (!disposed) poll = setTimeout(pollJobs, 2000)
 }
-onMounted(async () => { newRequestId(); await refresh(); if (!disposed) poll = setTimeout(pollJobs, 2000) })
+onMounted(async () => {
+  newRequestId()
+  await refresh()
+  if (props.section === 'jobs') {
+    const ids = String(route?.query?.sources || '').split(',')
+    selectedSources.value = [...new Map([...(history.state?.knowledgeSources || []), ...sourcePage.value.items].filter((source) => source.active && ids.includes(String(source.snapshotId))).map((source) => [source.snapshotId, source])).values()].slice(0, 16)
+    topicInput.value = String(route?.query?.topic || '')
+    if (!disposed) poll = setTimeout(pollJobs, 2000)
+  }
+})
 onUnmounted(() => { disposed = true; clearTimeout(poll) })
 </script>
 
-<style scoped>
-.wiki-management { padding: 12px; color: var(--el-text-color-primary); }
-.wiki-tabs { padding: 18px; border: 1px solid var(--el-border-color-light); border-radius: 12px; background: var(--el-bg-color); }
-.notice, .compile-card { margin-bottom: 18px; }
-.toolbar, .selected-sources, .revision-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 12px 0; }
-.toolbar .el-input { max-width: 350px; }
-.hint { color: var(--el-text-color-secondary); font-size: 13px; line-height: 1.7; }
-.el-pagination { margin: 16px 0; }
-.form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
-.form-grid .el-select { width: 100%; }
-.hash { font: 12px/1.8 monospace; overflow-wrap: anywhere; color: var(--el-text-color-secondary); }
-.source-text { max-height: 42vh; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; background: var(--el-fill-color-light); padding: 18px; border-radius: 8px; }
-.draft-preview { margin: 20px 0; padding: 18px; border: 1px solid var(--el-border-color); border-radius: 8px; max-height: 55vh; overflow: auto; }
-.affected { margin-top: 24px; }
-@media (max-width: 700px) { .wiki-management { padding: 0; } .wiki-tabs { padding: 10px; } .form-grid { grid-template-columns: 1fr; gap: 0; } }
-</style>
+<style lang="scss" src="@/assets/scss/ai-management.scss"></style>

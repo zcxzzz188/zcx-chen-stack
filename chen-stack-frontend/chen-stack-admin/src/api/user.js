@@ -108,3 +108,12 @@ export function getUserTotalCount() {
     method: 'get',
   })
 }
+
+// 修改当前登录账号本人的密码（只校验当前密码，不接收目标用户）
+export function changePassword(data) {
+  return request({
+    url: '/user/password',
+    method: 'put',
+    data,
+  })
+}

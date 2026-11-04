@@ -161,6 +161,9 @@ public class AiServiceImpl implements AiService {
             throw new BlogException(BlogConstants.LoginRequired);
         }
         return productRagAnswerService.answer(message, chatId, userId, () -> aiUsageService.tryReserveUsage(userId))
+                .onErrorResume(error -> com.zcx.chenstack.service.CustomerServiceError.classify(error)
+                                == com.zcx.chenstack.service.CustomerServiceError.DAILY_LIMIT_REACHED,
+                        error -> Flux.just(BlogConstants.AiDailyLimitExceeded))
                 .onErrorMap(error -> new BlogException("回答未完成，请稍后重试。"));
     }
 

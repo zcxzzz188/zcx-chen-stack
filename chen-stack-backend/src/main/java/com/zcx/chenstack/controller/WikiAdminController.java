@@ -16,7 +16,7 @@ import static com.zcx.chenstack.wiki.WikiViews.*;
 
 @RestController
 @RequestMapping("/admin/wiki")
-@PreAuthorize("@adminSecurity.isAdmin()")
+@PreAuthorize("@adminSecurity.hasKnowledgePermission('ai:wiki:read')")
 @ConditionalOnProperty(prefix = "chen.wiki", name = {"enabled", "product.enabled"}, havingValue = "true")
 public class WikiAdminController {
     public record SourceRequest(@NotNull WikiFoundation.SourceType type, @NotBlank @Size(max=80) String id) {
@@ -32,6 +32,12 @@ public class WikiAdminController {
     public record CreateRevision(@NotBlank @Size(max=80) String requestId, @Positive Long pageId,
                                  @NotBlank @Size(max=160) String title, @NotBlank @Size(max=500) String summary,
                                  @Size(max=900000) String markdown) {}
+    public record ManualPage(@NotBlank @Pattern(regexp="[A-Za-z0-9_.:-]{1,80}") String requestId,
+                             @NotEmpty @Size(max=16) List<@NotNull @Positive Long> snapshotIds,
+                             @NotBlank @Size(max=160) String title, @NotBlank @Size(max=500) String summary,
+                             @NotBlank @Size(max=900000) String markdown) {}
+    public record PageEdit(@NotBlank @Size(max=160) String title, @NotBlank @Size(max=500) String summary,
+                           @NotBlank @Size(max=900000) String markdown) {}
     public record Hash(@NotNull @Pattern(regexp="[a-f0-9]{64}") String bodyHash) {}
     public record Approval(@NotNull @Pattern(regexp="[a-f0-9]{64}") String bodyHash, boolean confirmEvidence, boolean confirmConflicts) {}
     public record Publish(@NotNull @Pattern(regexp="[a-f0-9]{64}") String bodyHash, @Positive Integer expectedCurrentVersion) {}
@@ -49,30 +55,54 @@ public class WikiAdminController {
         return Result.success(management.sources(q, page, size));
     }
     @PostMapping("/sources/inspect") public Result<Source> inspect(@Valid @RequestBody SourceRequest request) { return Result.success(management.inspect(request.key())); }
+    @PreAuthorize("@adminSecurity.hasKnowledgePermission('ai:source:manage')")
     @PostMapping("/sources/authorize") public Result<Source> authorize(@Valid @RequestBody Authorization request) { return Result.success(management.authorize(request.key(), request.fingerprint())); }
+    @PreAuthorize("@adminSecurity.hasKnowledgePermission('ai:source:manage')")
     @PostMapping("/sources/revoke") public Result<Void> revoke(@Valid @RequestBody SourceRequest request) { management.revoke(request.key()); return Result.success(); }
     @GetMapping("/jobs") public Result<Page<Job>> jobs(@RequestParam(defaultValue="1") int page, @RequestParam(defaultValue="12") int size) { return Result.success(management.jobs(page, size)); }
+    @PreAuthorize("@adminSecurity.hasKnowledgePermission('ai:wiki:compile')")
     @PostMapping("/jobs") public Result<Job> compile(@Valid @RequestBody Compile request) { return Result.success(management.createJob(request.requestId(), request.snapshotIds(), request.topics())); }
+    @PreAuthorize("@adminSecurity.hasKnowledgePermission('ai:wiki:compile')")
     @PostMapping("/jobs/{id}/cancel") public Result<Void> cancel(@PathVariable String id) { management.cancel(id); return Result.success(); }
     @GetMapping("/jobs/{id}/draft") public Result<Draft> draft(@PathVariable String id) { return Result.success(management.draft(id)); }
     @GetMapping("/affected") public Result<List<WikiCompilationService.RecompileTarget>> affected(@RequestParam WikiFoundation.SourceType type, @RequestParam String id) {
         return Result.success(management.affected(new WikiFoundation.SourceKey(type, id)));
     }
-    @GetMapping("/pages") public Result<List<ManagedPage>> pages() { return Result.success(publication.managedPages()); }
+    @GetMapping("/pages") public Result<List<ManagedPage>> pages(@RequestParam(defaultValue="") String q) {
+        return Result.success(publication.managedPages(q));
+    }
+    @GetMapping("/pages/{id}") public Result<ManagedPageDetail> page(@PathVariable long id) {
+        return Result.success(publication.pageDetail(id));
+    }
+    @PreAuthorize("@adminSecurity.hasKnowledgePermission('ai:wiki:edit')")
+    @PostMapping("/pages") public Result<Revision> createManual(@Valid @RequestBody ManualPage request) {
+        return Result.success(publication.createManual(request.requestId(), request.snapshotIds(), request.title(),
+                request.summary(), request.markdown()));
+    }
+    @PreAuthorize("@adminSecurity.hasKnowledgePermission('ai:wiki:edit')")
+    @PostMapping("/pages/{id}/revisions") public Result<Revision> editPage(@PathVariable long id, @Valid @RequestBody PageEdit request) {
+        return Result.success(publication.editPage(id, request.title(), request.summary(), request.markdown()));
+    }
     @GetMapping("/pages/{id}/versions") public Result<List<Revision>> versions(@PathVariable long id) { return Result.success(publication.versions(id)); }
+    @PreAuthorize("@adminSecurity.hasKnowledgePermission('ai:wiki:edit')")
     @PostMapping("/revisions") public Result<Revision> create(@Valid @RequestBody CreateRevision request) {
         return Result.success(publication.create(request.requestId(), request.pageId(), request.title(), request.summary(), request.markdown()));
     }
+    @PreAuthorize("@adminSecurity.hasKnowledgePermission('ai:wiki:edit')")
     @PostMapping("/revisions/{id}/submit") public Result<Revision> submit(@PathVariable long id, @Valid @RequestBody Hash request) { return Result.success(publication.submit(id, request.bodyHash())); }
+    @PreAuthorize("@adminSecurity.hasKnowledgePermission('ai:wiki:review')")
     @PostMapping("/revisions/{id}/approve") public Result<Revision> approve(@PathVariable long id, @Valid @RequestBody Approval request) {
         return Result.success(publication.approve(id, request.bodyHash(), request.confirmEvidence(), request.confirmConflicts()));
     }
+    @PreAuthorize("@adminSecurity.hasKnowledgePermission('ai:wiki:publish')")
     @PostMapping("/revisions/{id}/publish") public Result<Revision> publish(@PathVariable long id, @Valid @RequestBody Publish request) {
         return Result.success(publication.publish(id, request.bodyHash(), request.expectedCurrentVersion()));
     }
+    @PreAuthorize("@adminSecurity.hasKnowledgePermission('ai:wiki:publish')")
     @PostMapping("/pages/{id}/withdraw") public Result<Void> withdraw(@PathVariable long id, @Valid @RequestBody Current request) {
         publication.withdraw(id, request.expectedCurrentVersion()); return Result.success();
     }
+    @PreAuthorize("@adminSecurity.hasKnowledgePermission('ai:wiki:publish')")
     @PostMapping("/pages/{id}/restore") public Result<Revision> restore(@PathVariable long id, @Valid @RequestBody Restore request) {
         return Result.success(publication.restore(id, request.revisionId(), request.expectedCurrentVersion()));
     }

@@ -110,6 +110,15 @@ public class SysUserController {
     }
 
     /**
+     * 已登录用户修改本人密码；只校验当前密码，不接受目标用户 ID。
+     */
+    @PutMapping("/password")
+    public Result changePassword(@RequestBody @Valid ChangePasswordDto changePasswordDto) {
+        sysUserService.changePassword(changePasswordDto);
+        return Result.success();
+    }
+
+    /**
      * 修改邮箱时校验邮箱验证码
      */
     @PostMapping("/verifyResetEmail")

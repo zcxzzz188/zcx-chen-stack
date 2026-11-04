@@ -20,11 +20,13 @@ public class RagConfig {
     @Bean
     public ProductRagAnswerService productRagAnswerService(RagKnowledgeService knowledge,
             org.springframework.ai.openai.OpenAiChatModel model, org.springframework.ai.chat.memory.ChatMemory memory,
-            ReleaseProviderBudget budget, AiKnowledgeProperties properties,
+            ReleaseProviderBudget budget, AiKnowledgeProperties properties, NormalAiUsage usage,
+            com.zcx.chenstack.service.AiRuntimeConfigurationService runtime,
             org.springframework.beans.factory.ObjectProvider<com.zcx.chenstack.wiki.WikiPublicationService> wiki,
             @Value("${chen.rag.max-model-rounds:6}") int maxModelRounds) {
+        // 模式由管理员运行配置按每轮读取；Wiki服务只要可用就注入，切换时无需重启。
         return new ProductRagAnswerService(knowledge, org.springframework.ai.chat.client.ChatClient.create(model), memory,
-                budget, properties, "wiki".equals(properties.knowledgeMode()) ? wiki.getIfAvailable() : null, maxModelRounds);
+                budget, runtime, wiki.getIfAvailable(), maxModelRounds, usage);
     }
 
     @Bean

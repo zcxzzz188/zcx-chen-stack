@@ -40,7 +40,10 @@ public final class WikiSourceReader {
     /** 与 G2 保持 Lifecycle→DB 锁顺序；帮助来源的当前权威覆盖整个短事务。 */
     <T> T withAuthority(Collection<SourceKey> keys, Supplier<T> action) {
         if (keys.stream().noneMatch(key -> key.type() == SourceType.PLATFORM_HELP)) return action.get();
-        synchronized (catalog) { return action.get(); }
+        synchronized (catalog) {
+            catalog.refreshReadOnlySnapshot(jdbc.getDataSource());
+            return action.get();
+        }
     }
 
     private Candidate article(SourceKey key) {

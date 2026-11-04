@@ -59,6 +59,13 @@ public interface SysUserService extends IService<SysUser> {
     void resetPassword(ResetPasswordDto resetPasswordDto);
 
     /**
+     * 已登录用户修改本人密码；校验当前密码，不接收目标用户 ID。
+     *
+     * @param changePasswordDto 当前密码与新密码
+     */
+    void changePassword(ChangePasswordDto changePasswordDto);
+
+    /**
      * 修改邮箱时校验邮箱验证码
      *
      * @param verifyEmailDto 邮箱校验信息

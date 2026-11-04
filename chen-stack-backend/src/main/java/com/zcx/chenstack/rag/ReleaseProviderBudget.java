@@ -19,11 +19,13 @@ import java.time.format.DateTimeParseException;
 import java.util.HexFormat;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /** 本轮运维费用账本；发送前落盘，失败或UNKNOWN不退款，目录ACL由可信运维账户维护。 */
 @lombok.extern.slf4j.Slf4j
 public final class ReleaseProviderBudget {
+    private static final ConcurrentHashMap<Path, Object> MONITORS = new ConcurrentHashMap<>();
     public enum Kind { EMBEDDING, CHAT }
     private record HttpSend(AtomicBoolean dispatched, String usageId) { }
     private final Path path;
@@ -48,7 +50,7 @@ public final class ReleaseProviderBudget {
         if (ledgerPath == null || !Path.of(ledgerPath).isAbsolute() || budgetId == null
                 || !budgetId.matches("[A-Za-z0-9._-]{1,80}") || embeddingLimit < 0 || embeddingLimit > 64
                 || chatLimit < 0 || chatLimit > 100) throw new SecurityException("RELEASE_BUDGET_CONFIGURATION_INVALID");
-        path = Path.of(ledgerPath);
+        path = Path.of(ledgerPath).normalize();
         this.embeddingLimit = embeddingLimit; this.chatLimit = chatLimit;
         header = "CHEN_RELEASE_HTTP_BUDGET_V1|" + budgetId + "|" + embeddingLimit + "|";
         if (checkLedger) snapshot(); // 不自动创建缺失账本，避免重启/路径拼错重置费用。
@@ -242,10 +244,18 @@ public final class ReleaseProviderBudget {
 
     private Map<String, Long> access(Kind kind, int minimumChatAttempts, String operator, String expectedLedgerSha256) {
         if (path == null) return Map.of("embedding", 0L, "chat", 0L);
+        // JVM 内覆盖 open 到 close；避免其他实例关闭 channel 影响 Windows 上尚在使用的文件锁。
+        synchronized (MONITORS.computeIfAbsent(path, ignored -> new Object())) {
+            return accessLocked(kind, minimumChatAttempts, operator, expectedLedgerSha256);
+        }
+    }
+
+    private Map<String, Long> accessLocked(Kind kind, int minimumChatAttempts, String operator, String expectedLedgerSha256) {
         if (!Files.isRegularFile(path)) throw new SecurityException("RELEASE_BUDGET_LEDGER_REQUIRED");
         try (FileChannel channel = FileChannel.open(path, StandardOpenOption.READ, StandardOpenOption.WRITE);
              var lock = channel.tryLock()) {
-            if (lock == null || channel.size() < 1 || channel.size() > 65_536) throw new SecurityException("RELEASE_BUDGET_LEDGER_INVALID");
+            if (lock == null) throw new SecurityException("RELEASE_BUDGET_PERSISTENCE_FAILED_CLOSED");
+            if (channel.size() < 1 || channel.size() > 65_536) throw new SecurityException("RELEASE_BUDGET_LEDGER_INVALID");
             ByteBuffer bytes = ByteBuffer.allocate(Math.toIntExact(channel.size()));
             while (bytes.hasRemaining()) if (channel.read(bytes) < 0) throw new SecurityException("RELEASE_BUDGET_LEDGER_INVALID");
             String text = new String(bytes.array(), StandardCharsets.US_ASCII);

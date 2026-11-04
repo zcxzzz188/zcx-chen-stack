@@ -32,6 +32,20 @@ class CustomerServiceScopeTest {
         return fixture;
     }
 
+    @Test void theExistingSingleClassificationRequestSeparatesKnowledgeFromBusinessAndRefusal() {
+        for (var decision : CustomerServiceScope.Decision.values()) {
+            var f = fixture();
+            f.scopeRespond = prompt -> {
+                assertTrue(prompt.getSystemMessage().getText().contains("PLATFORM_KNOWLEDGE"));
+                return Flux.just(f.text(decision.name(), "stop"));
+            };
+            assertEquals(decision, new CustomerServiceScope(org.springframework.ai.chat.client.ChatClient.create(f.model))
+                    .classify("当前目标", List.of(new UserMessage("之前的请求"))).block());
+            verify(f.model, times(1)).stream(any(Prompt.class));
+            assertTrue(f.prompts.isEmpty());
+        }
+    }
+
     @Test void classificationRequestsUsageAndAuditsOnlyNumericFields() {
         var f = fixture();
         f.scopeRespond = prompt -> Flux.just(new org.springframework.ai.chat.model.ChatResponse(

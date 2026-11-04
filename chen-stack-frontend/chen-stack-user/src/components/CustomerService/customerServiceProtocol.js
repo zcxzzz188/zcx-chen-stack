@@ -6,6 +6,7 @@ const pagePaths = new Map([
 ])
 const actions = new Set([...pagePaths.keys(), 'OPEN_MY_PROFILE'])
 const errorMessages = Object.freeze({
+  DAILY_LIMIT_REACHED: '今日可用次数已用完，请明天再来。',
   LOCAL_BUDGET_EXHAUSTED: '智能客服当前模型调用额度已用尽，请联系管理员增加额度后再试。',
   MODEL_RATE_LIMITED: '模型服务请求受到限流，暂时不可用，请稍后重试。',
   MODEL_BALANCE_INSUFFICIENT: '模型服务商余额不足，暂时不可用，请联系管理员处理。',
@@ -36,7 +37,7 @@ export function navigationTarget(action, authorizedArticle, currentUserId) {
 
 export function validateCustomerServiceEvent(event) {
   if (!event || typeof event !== 'object') throw new Error('客服事件无效')
-  if (!['TEXT', 'DONE', 'NAVIGATION_ACTION', 'ARTICLE_SELECTION', 'EMPTY_RESULT', 'ERROR_STATE', 'KNOWLEDGE_STATUS', 'KNOWLEDGE_SOURCES'].includes(event.type)) {
+  if (!['TEXT', 'DONE', 'USAGE_LIMIT', 'NAVIGATION_ACTION', 'ARTICLE_SELECTION', 'EMPTY_RESULT', 'ERROR_STATE', 'KNOWLEDGE_STATUS', 'KNOWLEDGE_SOURCES'].includes(event.type)) {
     throw new Error('未知客服事件')
   }
   if (event.text != null && typeof event.text !== 'string') throw new Error('客服文本无效')

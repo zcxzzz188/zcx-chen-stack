@@ -8,6 +8,7 @@ import java.util.*;
 import java.util.concurrent.TimeUnit;
 
 /** 单实例权威拥有者。可信宿主显式提交事件；不监听文件，也不以索引删除代替撤权。 */
+@lombok.extern.slf4j.Slf4j
 public final class CatalogLifecycle implements AutoCloseable {
     private final String authorityId = UUID.randomUUID().toString();
     private KnowledgeCatalog current;
@@ -16,6 +17,9 @@ public final class CatalogLifecycle implements AutoCloseable {
     private final boolean readOnly;
     private final Map<KnowledgeCatalog, Map<Thread, Integer>> releasing = new IdentityHashMap<>();
     private final java.util.concurrent.atomic.AtomicBoolean publicationRunning = new java.util.concurrent.atomic.AtomicBoolean();
+    private Runnable ownerRecovery;
+    private boolean recoveringOwner;
+    private long retryOwnerAfter;
 
     CatalogLifecycle() { this(null, false); }
 
@@ -34,8 +38,12 @@ public final class CatalogLifecycle implements AutoCloseable {
     }
 
     public String authorityId() { return authorityId; }
+    public synchronized void recoverOwnerWith(Runnable recovery) {
+        if (store == null || readOnly) throw new IllegalStateException("CATALOG_RECOVERY_REQUIRES_DURABLE_OWNER");
+        ownerRecovery = Objects.requireNonNull(recovery);
+    }
     boolean durable() { return store != null; }
-    boolean beginPublication() { requireMutable(); return publicationRunning.compareAndSet(false, true); }
+    synchronized boolean beginPublication() { requireMutable(); return publicationRunning.compareAndSet(false, true); }
     void endPublication() { publicationRunning.set(false); }
     JdbcCatalogStore store() {
         if (store == null) throw new IllegalStateException("RELEASE_REQUIRES_DURABLE_CATALOG");
@@ -44,13 +52,58 @@ public final class CatalogLifecycle implements AutoCloseable {
 
     public synchronized KnowledgeCatalog snapshot() {
         if (!available || current == null) throw new Invalidated();
-        if (store != null) store.requireOwner();
+        if (store != null) {
+            try { store.requireOwner(); }
+            catch (JdbcCatalogStore.OwnerLost lost) {
+                if (ownerRecovery == null || recoveringOwner || publicationRunning.get()
+                        || retryOwnerAfter != 0 && System.nanoTime() - retryOwnerAfter < 0) throw lost;
+                recoveringOwner = true;
+                retryOwnerAfter = System.nanoTime() + TimeUnit.SECONDS.toNanos(1);
+                try {
+                    store.reconnectUnchanged();
+                    ownerRecovery.run();
+                    retryOwnerAfter = 0;
+                    log.info("RAG目录只读会话恢复完成，状态=CATALOG_OWNER_RECOVERED，代次={}", current.epoch());
+                } catch (RuntimeException rejected) {
+                    store.disconnectOwner();
+                    retryOwnerAfter = System.nanoTime() + TimeUnit.SECONDS.toNanos(1);
+                    log.warn("RAG目录只读会话恢复失败，状态=CATALOG_OWNER_RECOVERY_REJECTED，原因类型={}", rejected.getClass().getSimpleName());
+                    throw new IllegalStateException("CATALOG_OWNER_RECOVERY_REJECTED", rejected);
+                } finally { recoveringOwner = false; }
+            }
+        }
         return current;
     }
 
     public synchronized void requireCurrent(KnowledgeCatalog snapshot) {
         if (!available || snapshot == null || snapshot != current) throw new Invalidated();
         if (store != null) store.requireOwner();
+    }
+
+    /** 只读 Wiki 副本按代次刷新；仍完整验证持久快照，不接受单行内容代替权威。 */
+    public void refreshReadOnlySnapshot(javax.sql.DataSource dataSource) {
+        KnowledgeCatalog previous;
+        synchronized (this) {
+            if (!readOnly) return;
+            snapshot();
+            long generation;
+            try (var connection = dataSource.getConnection(); var query = connection.createStatement()) {
+                query.setQueryTimeout(3);
+                try (var rows = query.executeQuery("SELECT generation FROM rag_catalog_state")) {
+                    if (!rows.next()) throw new Invalidated();
+                    generation = rows.getLong(1);
+                    if (rows.next() || generation < current.epoch()) throw new Invalidated();
+                }
+            } catch (java.sql.SQLException error) { throw new IllegalStateException("CATALOG_READ_ONLY_REFRESH_FAILED", error); }
+            if (generation == current.epoch()) return;
+            JdbcCatalogStore.State recovered = JdbcCatalogStore.readOnlySnapshot(dataSource);
+            if (recovered.generation() < generation) throw new Invalidated();
+            KnowledgeCatalog next = new KnowledgeCatalog(recovered.documents(), this, recovered.generation());
+            previous = current;
+            current = next;
+        }
+        try { awaitReleased(previous.epoch()); }
+        finally { previous.invalidated.tryEmitEmpty(); }
     }
 
     public long add(KnowledgeDocument source, long expectedEpoch) { return change(source.sourceId(), source, "ADD", expectedEpoch); }

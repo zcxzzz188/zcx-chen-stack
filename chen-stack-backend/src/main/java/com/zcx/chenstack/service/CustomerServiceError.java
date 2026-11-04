@@ -18,6 +18,7 @@ import java.util.concurrent.TimeoutException;
 
 /** 仅依据异常类型和 Provider HTTP 状态分类，对外不传播原始响应或异常消息。 */
 public enum CustomerServiceError {
+    DAILY_LIMIT_REACHED(com.zcx.chenstack.domain.constants.BlogConstants.AiDailyLimitExceeded),
     LOCAL_BUDGET_EXHAUSTED("智能客服当前模型调用额度已用尽，请联系管理员增加额度后再试。"),
     MODEL_RATE_LIMITED("模型服务请求受到限流，暂时不可用，请稍后重试。"),
     MODEL_BALANCE_INSUFFICIENT("模型服务商余额不足，暂时不可用，请联系管理员处理。"),

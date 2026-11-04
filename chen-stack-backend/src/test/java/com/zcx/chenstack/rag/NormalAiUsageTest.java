@@ -22,6 +22,21 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.junit.jupiter.api.Assertions.*;
 
 class NormalAiUsageTest {
+    @Test void knowledgeAuditPersistsAcrossRestartAndDoesNotAffectProviderCounts() throws Exception {
+        var usage = usage();
+        var reference = new NormalAiUsage.KnowledgeReference("help-password-reset", "忘记密码与邮箱验证", "v3");
+        usage.knowledgeUsed("rag", List.of(reference));
+        usage.knowledgeUsed("wiki", List.of(new NormalAiUsage.KnowledgeReference("wiki-page:1", "账号登录指南", "2")));
+        var recent = usage().recentKnowledgeUses(1);
+        assertEquals(1, recent.size());
+        assertEquals("wiki", recent.getFirst().get("knowledgeMode"));
+        assertEquals(2, usage.recentKnowledgeUses(20).size());
+        assertTrue(events().stream().noneMatch(row -> "HTTP_SENT".equals(row.path("event").asText())));
+        assertThrows(IllegalArgumentException.class, () -> usage.recentKnowledgeUses(51));
+        assertThrows(IllegalArgumentException.class, () -> usage.knowledgeUsed("auto", List.of(reference)));
+        Files.writeString(directory.resolve("normal.jsonl"), "partial", java.nio.file.StandardOpenOption.APPEND);
+        assertThrows(SecurityException.class, () -> usage.recentKnowledgeUses(20));
+    }
     @TempDir Path directory;
     private static final ObjectMapper JSON = new ObjectMapper();
     private NormalAiUsage usage() { return new NormalAiUsage(true, directory.resolve("normal.jsonl").toString()); }

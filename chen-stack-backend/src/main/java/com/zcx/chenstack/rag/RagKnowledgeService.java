@@ -121,6 +121,20 @@ public class RagKnowledgeService implements AutoCloseable {
         catalog.requireCurrent();
     }
 
+    synchronized void syncManagedSource(String sourceId, boolean revoked) {
+        requireReady();
+        KnowledgeCatalog catalog = lifecycle.snapshot();
+        List<Document> current = catalog.chunks();
+        List<Document> changed = current.stream().filter(d -> sourceId.equals(d.getMetadata().get("source_id"))).toList();
+        List<Document> retained = current.stream().filter(d -> !sourceId.equals(d.getMetadata().get("source_id"))).toList();
+        if (revoked) index.deleteSource(sourceId);
+        else { index.upsert(changed); index.deleteObsoleteChunks(changed); }
+        index.rebindCatalog(retained);
+        catalog.requireCurrent();
+    }
+
+    String managementCollection() { return properties.getCollection(); }
+
     /** 仅清理已在权威生命周期撤销的索引副本；删除失败不恢复来源授权。 */
     public synchronized void deleteSource(String sourceId) {
         requireReady();
@@ -333,7 +347,7 @@ public class RagKnowledgeService implements AutoCloseable {
 
     /** 状态不触发联网探测或计费；NOT_CHECKED不伪装为健康。 */
     public Map<String, Object> diagnostics() {
-        return Map.of("enabled", properties.isEnabled(), "defaultMode", "auto", "supportedModes", List.of("chat", "rag"),
+        return Map.of("enabled", properties.isEnabled(),
                 "ragAvailability", !properties.isEnabled() ? "DISABLED" : index == null ? "MISSING_KEY" : !publicationReady() ? "RECOVERY_REQUIRED" : "CONFIGURED",
                 "lastOperation", lastOperation, "lastSync", lastSync, "lastSyncAt", lastSyncAt, "reviewedChunks", lifecycle.snapshot().chunks().size(),
                 "embedding", embedding == null ? Map.of("requests", 0L, "inputChars", 0L, "failures", 0L, "reportedTokens", 0L) : embedding.counters());

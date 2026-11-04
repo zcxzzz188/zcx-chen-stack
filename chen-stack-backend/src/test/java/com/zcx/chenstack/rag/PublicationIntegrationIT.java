@@ -9,6 +9,10 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.zcx.chenstack.config.RagProperties;
 import com.zcx.chenstack.config.RagPublicationConfiguration;
 import com.zcx.chenstack.config.RagPublicationProperties;
+import com.zcx.chenstack.domain.entity.LoginUser;
+import com.zcx.chenstack.domain.entity.SysRole;
+import com.zcx.chenstack.domain.entity.SysUser;
+import com.zcx.chenstack.security.AdminSecurity;
 import org.junit.jupiter.api.*;
 import org.junit.jupiter.api.io.TempDir;
 import org.apache.ibatis.builder.xml.XMLMapperBuilder;
@@ -33,6 +37,10 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.datasource.AbstractDataSource;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -58,6 +66,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Supplier;
 import java.util.stream.IntStream;
 import java.util.jar.JarEntry;
 import java.util.jar.JarOutputStream;
@@ -823,6 +832,340 @@ class PublicationIntegrationIT {
         }
     }
 
+    @Test void catalogOwnerReadRecoversAfterKilledSession() throws Exception {
+        try (Fixture f = fixture()) {
+            OperationInput published = input(f, PublicationManifest.Operation.PUBLISH, 20, null);
+            execute(f, published);
+            KnowledgeCatalog original = f.catalog();
+            List<JsonNode> originalPoints = points(f);
+            int calls = f.model.calls.get();
+            long events = scalar(f.source, "SELECT COUNT(*) FROM rag_release_event");
+            AtomicInteger recoveries = new AtomicInteger();
+            f.lifecycle.recoverOwnerWith(() -> { recoveries.incrementAndGet(); restore(f, published); });
+            long owner = catalogOwnerSession(f);
+            sql(f.source, "KILL CONNECTION " + owner);
+
+            assertSame(original, f.catalog());
+            assertTrue(f.knowledge.publicationReady());
+            assertNotEquals(owner, catalogOwnerSession(f));
+            assertEquals(1, recoveries.get());
+            assertEquals(calls, f.model.calls.get());
+            assertEquals(events, scalar(f.source, "SELECT COUNT(*) FROM rag_release_event"));
+            assertEquals(originalPoints, points(f));
+        }
+    }
+
+    private long catalogOwnerSession(Fixture f) throws Exception {
+        return scalar(f.source, "SELECT IS_USED_LOCK('chen-rag-" + KnowledgeCatalog.hash(f.schema).substring(0, 40) + "')");
+    }
+
+    @Test void catalogOwnerReadRecoversAfterIdleTimeout() throws Exception {
+        try (Fixture f = fixture()) {
+            OperationInput published = input(f, PublicationManifest.Operation.PUBLISH, 20, null);
+            execute(f, published);
+            KnowledgeCatalog original = f.catalog();
+            int calls = f.model.calls.get();
+            f.lifecycle.recoverOwnerWith(() -> restore(f, published));
+            Connection owner = (Connection) ReflectionTestUtils.getField(f.store, "connection");
+            try (var statement = owner.createStatement()) { statement.execute("SET SESSION wait_timeout=1"); }
+            Thread.sleep(2100);
+            assertEquals(0, catalogOwnerSession(f));
+
+            assertSame(original, f.catalog());
+            assertTrue(f.knowledge.publicationReady());
+            assertEquals(calls, f.model.calls.get());
+        }
+    }
+
+    @Test void catalogOwnerRecoveryReturnsDeadHikariLeaseBeforeBorrowingFromSingleConnectionPool() throws Exception {
+        EmptyTarget target = emptyTarget();
+        JdbcCatalogStore.initialize(target.source, drafts);
+        com.zaxxer.hikari.HikariConfig configuration = new com.zaxxer.hikari.HikariConfig();
+        configuration.setDataSource(target.source);
+        configuration.setMaximumPoolSize(1); configuration.setMinimumIdle(0); configuration.setConnectionTimeout(5000);
+        try (var pool = new com.zaxxer.hikari.HikariDataSource(configuration);
+                Fixture f = new Fixture(pool, target.schema, target.collection)) {
+            OperationInput published = input(f, PublicationManifest.Operation.PUBLISH, 20, null);
+            execute(f, published);
+            KnowledgeCatalog original = f.catalog();
+            int calls = f.model.calls.get();
+            f.lifecycle.recoverOwnerWith(() -> restore(f, published));
+            long owner = scalar(target.source, "SELECT IS_USED_LOCK('chen-rag-" + KnowledgeCatalog.hash(target.schema).substring(0, 40) + "')");
+            sql(target.source, "KILL CONNECTION " + owner);
+
+            assertSame(original, f.catalog());
+            assertTrue(f.knowledge.publicationReady());
+            assertEquals(calls, f.model.calls.get());
+        }
+    }
+
+    @Test void catalogOwnerDoesNotIncrementExistingPooledSessionLockAndReleasesItOnClose() throws Exception {
+        EmptyTarget target = emptyTarget();
+        JdbcCatalogStore.initialize(target.source, drafts);
+        String lock = "chen-rag-" + KnowledgeCatalog.hash(target.schema).substring(0, 40);
+        com.zaxxer.hikari.HikariConfig configuration = new com.zaxxer.hikari.HikariConfig();
+        configuration.setDataSource(target.source);
+        configuration.setMaximumPoolSize(1); configuration.setMinimumIdle(1); configuration.setConnectionTimeout(5000);
+        try (var pool = new com.zaxxer.hikari.HikariDataSource(configuration)) {
+            try (var connection = pool.getConnection(); var statement = connection.createStatement();
+                    var acquired = statement.executeQuery("SELECT GET_LOCK('" + lock + "',0)")) {
+                assertTrue(acquired.next()); assertEquals(1, acquired.getInt(1));
+            }
+            try (Fixture f = new Fixture(pool, target.schema, target.collection)) {
+                assertEquals(0, f.catalog().epoch());
+            }
+            assertEquals(0, scalar(target.source, "SELECT IS_USED_LOCK('" + lock + "')"));
+        }
+    }
+
+    @Test void catalogOwnerRecoveryDoesNotStealLiveCompetingOwner() throws Exception {
+        try (Fixture f = fixture()) {
+            OperationInput published = input(f, PublicationManifest.Operation.PUBLISH, 20, null);
+            execute(f, published);
+            int calls = f.model.calls.get();
+            AtomicInteger recoveries = new AtomicInteger();
+            f.lifecycle.recoverOwnerWith(() -> { recoveries.incrementAndGet(); restore(f, published); });
+            sql(f.source, "KILL CONNECTION " + catalogOwnerSession(f));
+            try (JdbcCatalogStore competitor = JdbcCatalogStore.open(f.source)) {
+                long competingSession = catalogOwnerSession(f);
+                assertThrows(IllegalStateException.class, f::catalog);
+                assertThrows(IllegalStateException.class, f::catalog);
+                assertEquals(competingSession, catalogOwnerSession(f));
+                assertEquals(0, recoveries.get());
+                assertEquals(calls, f.model.calls.get());
+            }
+            Thread.sleep(1100);
+            assertEquals(1, f.catalog().epoch());
+            assertTrue(f.knowledge.publicationReady());
+            assertEquals(1, recoveries.get());
+        }
+    }
+
+    @Test void catalogOwnerRecoveryAbortsItsLiveHikariSessionWhenLockReleaseTimesOut() throws Exception {
+        EmptyTarget target = emptyTarget();
+        JdbcCatalogStore.initialize(target.source, drafts);
+        String ownerQuery = "SELECT IS_USED_LOCK('chen-rag-" + KnowledgeCatalog.hash(target.schema).substring(0, 40) + "')";
+        com.zaxxer.hikari.HikariConfig configuration = new com.zaxxer.hikari.HikariConfig();
+        configuration.setDataSource(target.source);
+        configuration.setMaximumPoolSize(1); configuration.setMinimumIdle(0); configuration.setConnectionTimeout(5000);
+        try (var pool = new com.zaxxer.hikari.HikariDataSource(configuration)) {
+            ReleaseFault fault = new ReleaseFault(pool);
+            try (Fixture f = new Fixture(fault, target.schema, target.collection)) {
+                OperationInput published = input(f, PublicationManifest.Operation.PUBLISH, 20, null);
+                execute(f, published);
+                KnowledgeCatalog original = f.catalog();
+                int calls = f.model.calls.get();
+                AtomicInteger recoveries = new AtomicInteger();
+                f.lifecycle.recoverOwnerWith(() -> { recoveries.incrementAndGet(); restore(f, published); });
+                long owner = scalar(target.source, ownerQuery);
+                fault.failProbe = true; fault.failRelease = true;
+
+                assertSame(original, f.catalog());
+                assertTrue(f.knowledge.publicationReady());
+                assertEquals(1, fault.aborts.get());
+                assertNotEquals(owner, scalar(target.source, ownerQuery));
+                assertEquals(0, scalar(target.source, "SELECT COUNT(*) FROM information_schema.processlist WHERE ID=" + owner));
+                assertEquals(1, recoveries.get());
+                assertEquals(calls, f.model.calls.get());
+            }
+            assertEquals(0, scalar(target.source, ownerQuery));
+        }
+    }
+
+    @Test void catalogOwnerDiscardsOnlyItsPooledSessionWhenReleaseLeavesAReentrantLock() throws Exception {
+        EmptyTarget target = emptyTarget();
+        JdbcCatalogStore.initialize(target.source, drafts);
+        String lock = "chen-rag-" + KnowledgeCatalog.hash(target.schema).substring(0, 40);
+        com.zaxxer.hikari.HikariConfig configuration = new com.zaxxer.hikari.HikariConfig();
+        configuration.setDataSource(target.source);
+        configuration.setMaximumPoolSize(1); configuration.setMinimumIdle(0); configuration.setConnectionTimeout(5000);
+        try (var pool = new com.zaxxer.hikari.HikariDataSource(configuration)) {
+            ReleaseFault fault = new ReleaseFault(pool);
+            long owner;
+            try (var connection = pool.getConnection(); var statement = connection.createStatement()) {
+                try (var first = statement.executeQuery("SELECT GET_LOCK('" + lock + "',0)")) { assertTrue(first.next()); assertEquals(1, first.getInt(1)); }
+                try (var second = statement.executeQuery("SELECT GET_LOCK('" + lock + "',0)")) { assertTrue(second.next()); assertEquals(1, second.getInt(1)); }
+                try (var id = statement.executeQuery("SELECT CONNECTION_ID()")) { assertTrue(id.next()); owner = id.getLong(1); }
+            }
+            try (Fixture f = new Fixture(fault, target.schema, target.collection)) { assertEquals(0, f.catalog().epoch()); }
+
+            assertEquals(1, fault.aborts.get());
+            assertEquals(0, scalar(target.source, "SELECT IS_USED_LOCK('" + lock + "')"));
+            assertEquals(0, scalar(target.source, "SELECT COUNT(*) FROM information_schema.processlist WHERE ID=" + owner));
+            assertEquals(0, pool.getHikariPoolMXBean().getActiveConnections());
+            try (var replacement = pool.getConnection()) { assertTrue(replacement.isValid(1)); }
+        }
+    }
+
+    @Test void catalogOwnerRecoveryRejectsChangedCanonicalGeneration() throws Exception {
+        try (Fixture f = fixture()) {
+            OperationInput published = input(f, PublicationManifest.Operation.PUBLISH, 20, null);
+            execute(f, published);
+            KnowledgeDocument login = f.catalog().source("help-login");
+            int calls = f.model.calls.get();
+            AtomicInteger recoveries = new AtomicInteger();
+            f.lifecycle.recoverOwnerWith(() -> { recoveries.incrementAndGet(); restore(f, published); });
+            sql(f.source, "KILL CONNECTION " + catalogOwnerSession(f));
+            try (CatalogLifecycle competitor = KnowledgeCatalog.restore(JdbcCatalogStore.open(f.source)).lifecycle()) {
+                competitor.update(managedReplacement(login, "other-owner-2", "Another owner changed these instructions."), 1);
+            }
+
+            assertThrows(IllegalStateException.class, f::catalog);
+            assertEquals(2, scalar(f.source, "SELECT generation FROM rag_catalog_state"));
+            assertEquals(0, recoveries.get());
+            assertEquals(calls, f.model.calls.get());
+            assertEquals(0, catalogOwnerSession(f));
+        }
+    }
+
+    @Test void catalogOwnerRecoveryRejectsCorruptUnchangedGeneration() throws Exception {
+        try (Fixture f = fixture()) {
+            OperationInput published = input(f, PublicationManifest.Operation.PUBLISH, 20, null);
+            execute(f, published);
+            AtomicInteger recoveries = new AtomicInteger();
+            f.lifecycle.recoverOwnerWith(() -> { recoveries.incrementAndGet(); restore(f, published); });
+            sql(f.source, "KILL CONNECTION " + catalogOwnerSession(f));
+            sql(f.source, "UPDATE rag_catalog_state SET snapshot_sha256=REPEAT('0',64)");
+
+            assertThrows(IllegalStateException.class, f::catalog);
+            assertEquals(1, scalar(f.source, "SELECT generation FROM rag_catalog_state"));
+            assertEquals(0, recoveries.get());
+            assertEquals(0, catalogOwnerSession(f));
+        }
+    }
+
+    @Test void catalogOwnerRecoveryRevalidatesIndexAndCanRetryAfterRepair() throws Exception {
+        try (Fixture f = fixture()) {
+            OperationInput published = input(f, PublicationManifest.Operation.PUBLISH, 20, null);
+            execute(f, published);
+            KnowledgeCatalog original = f.catalog();
+            int calls = f.model.calls.get();
+            AtomicInteger recoveries = new AtomicInteger();
+            f.lifecycle.recoverOwnerWith(() -> { recoveries.incrementAndGet(); restore(f, published); });
+            String marker = UUID.nameUUIDFromBytes("chen-rag-index-binding-v1".getBytes(StandardCharsets.UTF_8)).toString();
+            String releaseOwner = points(f).stream().filter(point -> point.path("id").asText().equals(marker))
+                    .findFirst().orElseThrow().path("payload").path("release_owner").asText();
+            sql(f.source, "KILL CONNECTION " + catalogOwnerSession(f));
+            qdrant("POST", "/collections/" + f.collection + "/points/payload?wait=true",
+                    Map.of("payload", Map.of("release_owner", "foreign-owner"), "points", List.of(marker)));
+
+            assertThrows(IllegalStateException.class, f::catalog);
+            assertThrows(IllegalStateException.class, f::catalog);
+            assertEquals(1, recoveries.get());
+            assertEquals(calls, f.model.calls.get());
+            assertEquals(0, catalogOwnerSession(f));
+            qdrant("POST", "/collections/" + f.collection + "/points/payload?wait=true",
+                    Map.of("payload", Map.of("release_owner", releaseOwner), "points", List.of(marker)));
+            Thread.sleep(1100);
+            assertSame(original, f.catalog());
+            assertTrue(f.knowledge.publicationReady());
+            assertEquals(2, recoveries.get());
+            assertEquals(calls, f.model.calls.get());
+        }
+    }
+
+    @Test void catalogOwnerRecoverySerializesReadersUntilIndexVerificationCompletes() throws Exception {
+        try (Fixture f = fixture(); var readers = Executors.newFixedThreadPool(4)) {
+            OperationInput published = input(f, PublicationManifest.Operation.PUBLISH, 20, null);
+            execute(f, published);
+            KnowledgeCatalog original = f.catalog();
+            CountDownLatch entered = new CountDownLatch(1), proceed = new CountDownLatch(1);
+            AtomicInteger recoveries = new AtomicInteger();
+            f.lifecycle.recoverOwnerWith(() -> {
+                recoveries.incrementAndGet(); entered.countDown();
+                try { if (!proceed.await(10, TimeUnit.SECONDS)) throw new IllegalStateException("SYNTHETIC_RECOVERY_BARRIER_TIMEOUT"); }
+                catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); throw new IllegalStateException(interrupted); }
+                restore(f, published);
+            });
+            sql(f.source, "KILL CONNECTION " + catalogOwnerSession(f));
+            var first = readers.submit(f::catalog);
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+            var waiting = IntStream.range(0, 3).mapToObj(i -> readers.submit(f::catalog)).toList();
+            try { assertFalse(first.isDone()); assertTrue(waiting.stream().noneMatch(java.util.concurrent.Future::isDone)); }
+            finally { proceed.countDown(); }
+            assertSame(original, first.get(10, TimeUnit.SECONDS));
+            for (var reader : waiting) assertSame(original, reader.get(10, TimeUnit.SECONDS));
+            assertEquals(1, recoveries.get());
+        }
+    }
+
+    @Test void catalogOwnerRecoverySerializesPublicationUntilVerificationCompletes() throws Exception {
+        try (Fixture f = fixture(); var workers = Executors.newFixedThreadPool(2)) {
+            OperationInput published = input(f, PublicationManifest.Operation.PUBLISH, 20, null);
+            execute(f, published);
+            KnowledgeCatalog original = f.catalog();
+            CountDownLatch entered = new CountDownLatch(1), proceed = new CountDownLatch(1);
+            CountDownLatch publisherStarted = new CountDownLatch(1), publisherFinished = new CountDownLatch(1);
+            f.lifecycle.recoverOwnerWith(() -> {
+                entered.countDown();
+                try { if (!proceed.await(10, TimeUnit.SECONDS)) throw new IllegalStateException("SYNTHETIC_RECOVERY_BARRIER_TIMEOUT"); }
+                catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); throw new IllegalStateException(interrupted); }
+                restore(f, published);
+            });
+            sql(f.source, "KILL CONNECTION " + catalogOwnerSession(f));
+            var reader = workers.submit(f::catalog);
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+            var publisher = workers.submit(() -> {
+                publisherStarted.countDown();
+                boolean acquired = f.lifecycle.beginPublication();
+                if (acquired) f.lifecycle.endPublication();
+                publisherFinished.countDown();
+                return acquired;
+            });
+            assertTrue(publisherStarted.await(5, TimeUnit.SECONDS));
+            try { assertFalse(publisherFinished.await(250, TimeUnit.MILLISECONDS), "Publication must not acquire a provisional recovered session."); }
+            finally { proceed.countDown(); }
+            assertSame(original, reader.get(10, TimeUnit.SECONDS));
+            assertTrue(publisher.get(10, TimeUnit.SECONDS));
+            assertTrue(f.knowledge.publicationReady());
+        }
+    }
+
+    @Test void catalogOwnerRecoveryKeepsPendingManagementReadableButRetrievalBlocked() throws Exception {
+        try (Fixture f = fixture()) {
+            OperationInput published = input(f, PublicationManifest.Operation.PUBLISH, 20, null);
+            execute(f, published);
+            var administration = new RagKnowledgeAdministration(f.lifecycle, f.knowledge);
+            KnowledgeDocument login = f.catalog().source("help-login");
+            f.model.failAt = f.model.calls.get() + 1;
+            assertThrows(RuntimeException.class, () -> administration.update(
+                    managedReplacement(login, "owner-pending-2", "Pending owner recovery instructions."), 1,
+                    KnowledgeCatalog.hash(KnowledgeCatalog.normalize(login.text())), "owner-pending", 7));
+            int calls = f.model.calls.get();
+            f.lifecycle.recoverOwnerWith(() -> {
+                try { restore(f, published); }
+                catch (RagPublicationRecovery.PendingManagementRecovery pending) { /* Explicit resume still required. */ }
+            });
+            sql(f.source, "KILL CONNECTION " + catalogOwnerSession(f));
+
+            assertEquals(2, f.catalog().epoch());
+            assertEquals(1, administration.pendingOperations().size());
+            assertEquals(calls, f.model.calls.get());
+            assertRecoveryRequired(f);
+            assertEquals(2, administration.resume("manage-owner-pending", 8).generation());
+            assertTrue(f.knowledge.publicationReady());
+        }
+    }
+
+    @Test void catalogOwnerRecoveryDoesNotReplayUnknownCommitOrReopenInvalidatedLifecycle() throws Exception {
+        try (Fixture f = fixture()) {
+            OperationInput published = input(f, PublicationManifest.Operation.PUBLISH, 20, null);
+            execute(f, published);
+            KnowledgeDocument login = f.catalog().source("help-login");
+            AtomicInteger recoveries = new AtomicInteger();
+            f.lifecycle.recoverOwnerWith(() -> { recoveries.incrementAndGet(); restore(f, published); });
+            f.fault.arm(true);
+            assertThrows(IllegalStateException.class, () -> f.lifecycle.update(
+                    managedReplacement(login, "unknown-commit-2", "Uncertain committed instructions."), 1));
+            sql(f.source, "KILL CONNECTION " + catalogOwnerSession(f));
+
+            assertThrows(CatalogLifecycle.Invalidated.class, f::catalog);
+            assertThrows(CatalogLifecycle.Invalidated.class, f::catalog);
+            assertEquals(2, scalar(f.source, "SELECT generation FROM rag_catalog_state"));
+            assertEquals(0, recoveries.get());
+        }
+    }
+
     @Test void secondOwnerCannotReadOrPublishWhileFirstLives() throws Exception {
         try (Fixture f = fixture()) {
             assertThrows(IllegalStateException.class, () -> JdbcCatalogStore.open(f.source));
@@ -1124,6 +1467,315 @@ class PublicationIntegrationIT {
         } finally { drafts = originalDrafts; resources = originalResources; }
     }
 
+    @Test void adminKnowledgeUpdateIsIdempotentAndRestartsWithoutEmbedding() throws Exception {
+        Fixture first = fixture();
+        OperationInput published = input(first, PublicationManifest.Operation.PUBLISH, 20, null);
+        execute(first, published);
+        KnowledgeDocument old = first.catalog().source("help-login");
+        KnowledgeDocument replacement = managedReplacement(old, "managed-2", "Updated synthetic login instructions.");
+        String previousHash = KnowledgeCatalog.hash(KnowledgeCatalog.normalize(old.text()));
+        int requests = first.model.calls.get();
+        var admin = new RagKnowledgeAdministration(first.lifecycle, first.knowledge);
+        assertEquals(2, admin.update(replacement, 1, previousHash, "update-login", 7).generation());
+        assertEquals(requests + 1, first.model.calls.get());
+        assertEquals("COMPLETED", admin.update(replacement, 1, previousHash, "update-login", 7).status());
+        assertEquals(requests + 1, first.model.calls.get());
+        assertThrows(RuntimeException.class, () -> admin.update(
+                managedReplacement(old, "managed-3", "A different request."), 1, previousHash, "update-login", 7));
+        assertEquals("CONTROLLED_OPERATOR", first.store.completedReceipt(published.grant.manifestSha256()).operation().authorizationMode());
+        try (Fixture restarted = reopen(first)) {
+            restore(restarted, published);
+            assertReady(restarted);
+            assertEquals(0, restarted.model.calls.get());
+            assertEquals("managed-2", restarted.catalog().source("help-login").version());
+            assertTrue(restarted.knowledge.retrieveByTitle(old.title()).context().contains("Updated synthetic login"));
+        } finally { first.close(); }
+    }
+
+    @Test void aiKnowledgeRolePresetsRemainGatedByCurrentMenusAndRollbackGuards() throws Exception {
+        DataSource source = emptyTarget().source;
+        for (String statement : """
+                CREATE TABLE sys_role(id INT PRIMARY KEY,role VARCHAR(64),status INT,is_deleted INT);
+                CREATE TABLE sys_user(id INT PRIMARY KEY,status INT,is_deleted INT);
+                CREATE TABLE sys_user_role(id INT PRIMARY KEY,user_id INT,role_id INT);
+                CREATE TABLE sys_menu(id INT PRIMARY KEY,parent_id INT,name VARCHAR(100),sort INT,path VARCHAR(128),component VARCHAR(128),icon VARCHAR(64),status INT,create_time DATETIME,update_time DATETIME,is_deleted INT);
+                CREATE TABLE sys_permission(id INT PRIMARY KEY,description VARCHAR(128),permission VARCHAR(128),menu_id INT,create_time DATETIME,update_time DATETIME,is_deleted INT);
+                CREATE TABLE sys_role_menu(id INT AUTO_INCREMENT PRIMARY KEY,role_id INT,menu_id INT);
+                CREATE TABLE sys_role_permission(id INT AUTO_INCREMENT PRIMARY KEY,role_id INT,permission_id INT);
+                INSERT INTO sys_role VALUES(1,'admin',0,0),(2,'content_admin',0,0),(3,'user',0,0);
+                INSERT INTO sys_user VALUES(42,0,0),(43,0,0);
+                INSERT INTO sys_user_role VALUES(1,42,2),(2,43,3);
+                INSERT INTO sys_menu VALUES(10,0,'legacy',0,'/legacy','legacy','',0,NOW(),NOW(),0);
+                INSERT INTO sys_permission VALUES(10,'legacy','legacy:read',10,NOW(),NOW(),0);
+                INSERT INTO sys_role_menu(role_id,menu_id) VALUES(1,10),(2,10),(3,10);
+                INSERT INTO sys_role_permission(role_id,permission_id) VALUES(1,10),(2,10),(3,10);
+                """.split(";")) {
+            if (!statement.isBlank()) sql(source, statement);
+        }
+        JdbcTemplate jdbc = new JdbcTemplate(source);
+        List<String> tables = List.of("sys_menu", "sys_permission", "sys_role_menu", "sys_role_permission");
+        Supplier<List<List<Map<String, Object>>>> snapshot = () -> tables.stream()
+                .map(table -> jdbc.queryForList("SELECT * FROM " + table + " ORDER BY id")).toList();
+        var baseline = snapshot.get();
+        try {
+            applyAiMenuMigration(source, false);
+            List<String> legacyFilters = List.of("id<9300", "id<9300", "menu_id<9300", "permission_id<9300");
+            for (int i = 0; i < tables.size(); i++) {
+                assertEquals(baseline.get(i), jdbc.queryForList("SELECT * FROM " + tables.get(i)
+                        + " WHERE " + legacyFilters.get(i) + " ORDER BY id"));
+            }
+            assertEquals(12, scalar(source, "SELECT COUNT(*) FROM sys_role_permission WHERE role_id=1 AND permission_id>=9300"));
+            assertEquals(12, scalar(source, "SELECT COUNT(*) FROM sys_role_permission WHERE role_id=2 AND permission_id>=9300"));
+            assertEquals(0, scalar(source, "SELECT COUNT(*) FROM sys_role_permission WHERE role_id=3 AND permission_id>=9300"));
+            assertEquals(0, scalar(source, "SELECT COUNT(*) FROM sys_role_menu WHERE role_id=2 AND menu_id>=9300"));
+            var migrated = snapshot.get();
+            applyAiMenuMigration(source, false);
+            assertEquals(migrated, snapshot.get());
+            AdminSecurity security = new AdminSecurity();
+            ReflectionTestUtils.setField(security, "jdbc", jdbc);
+            loginAiMenuActor(42, "content_admin");
+            Map<Integer, Set<String>> actions = Map.of(
+                    9301, Set.of("ai:rag:read", "ai:rag:manage"),
+                    9302, Set.of("ai:wiki:read", "ai:wiki:edit", "ai:wiki:review", "ai:wiki:publish"),
+                    9303, Set.of("ai:wiki:read", "ai:source:manage"),
+                    9304, Set.of("ai:wiki:read", "ai:wiki:compile", "ai:wiki:edit"),
+                    9305, Set.of("ai:knowledge:test"));
+            Set<String> permissions = actions.values().stream().flatMap(Set::stream).collect(java.util.stream.Collectors.toSet());
+            permissions.forEach(permission -> assertFalse(security.hasKnowledgePermission(permission), permission));
+            sql(source, "INSERT INTO sys_role_menu(role_id,menu_id) VALUES(2,9300)");
+            permissions.forEach(permission -> assertFalse(security.hasKnowledgePermission(permission), permission));
+            sql(source, "DELETE FROM sys_role_menu WHERE role_id=2 AND menu_id=9300");
+            sql(source, "INSERT INTO sys_role_menu(role_id,menu_id) SELECT 2,id FROM sys_menu WHERE parent_id=9300");
+            permissions.forEach(permission -> assertFalse(security.hasKnowledgePermission(permission), permission));
+            sql(source, "DELETE FROM sys_role_menu WHERE role_id=2 AND menu_id>=9300");
+            for (var entry : actions.entrySet()) {
+                sql(source, "INSERT INTO sys_role_menu(role_id,menu_id) VALUES(2,9300),(2," + entry.getKey() + ")");
+                permissions.forEach(permission -> assertEquals(entry.getValue().contains(permission),
+                        security.hasKnowledgePermission(permission), entry.getKey() + ":" + permission));
+                sql(source, "DELETE FROM sys_role_menu WHERE role_id=2 AND menu_id=" + entry.getKey());
+                permissions.forEach(permission -> assertFalse(security.hasKnowledgePermission(permission), permission));
+                sql(source, "DELETE FROM sys_role_menu WHERE role_id=2 AND menu_id=9300");
+            }
+            sql(source, "INSERT INTO sys_role_menu(role_id,menu_id) VALUES(2,9300),(2,9302)");
+            var customized = snapshot.get();
+            SQLException menuGuard = assertThrows(SQLException.class, () -> applyAiMenuMigration(source, true));
+            assertTrue(menuGuard.getMessage().contains("AI_MANAGEMENT_NEW_ASSIGNMENTS_STOP"));
+            assertEquals(customized, snapshot.get());
+            sql(source, "DELETE FROM sys_role_menu WHERE role_id=2 AND menu_id>=9300");
+            loginAiMenuActor(43, "user");
+            sql(source, "INSERT INTO sys_role_menu(role_id,menu_id) SELECT 3,id FROM sys_menu WHERE id>=9300");
+            sql(source, "INSERT INTO sys_role_permission(role_id,permission_id) SELECT 3,id FROM sys_permission WHERE id>=9300");
+            permissions.forEach(permission -> assertFalse(security.hasKnowledgePermission(permission), permission));
+            sql(source, "DELETE FROM sys_role_menu WHERE role_id=3 AND menu_id>=9300");
+            customized = snapshot.get();
+            SQLException permissionGuard = assertThrows(SQLException.class, () -> applyAiMenuMigration(source, true));
+            assertTrue(permissionGuard.getMessage().contains("AI_MANAGEMENT_NEW_ASSIGNMENTS_STOP"));
+            assertEquals(customized, snapshot.get());
+            sql(source, "DELETE FROM sys_role_permission WHERE role_id=3 AND permission_id>=9300");
+            applyAiMenuMigration(source, true);
+            assertEquals(baseline, snapshot.get());
+        } finally { SecurityContextHolder.clearContext(); }
+    }
+
+    private static void applyAiMenuMigration(DataSource source, boolean rollback) throws Exception {
+        String text = Files.readString(Path.of("../sql/g3_ai_knowledge_management" + (rollback ? "_rollback" : "") + ".sql"));
+        int start = text.indexOf("CREATE PROCEDURE ");
+        int end = text.indexOf("END$$", start);
+        assertTrue(start >= 0 && end > start);
+        String procedure = "chen_g3_ai_management_" + (rollback ? "rollback" : "apply");
+        sql(source, text.substring(start, end + 3));
+        try { sql(source, "CALL " + procedure + "()"); }
+        finally { sql(source, "DROP PROCEDURE " + procedure); }
+    }
+
+    private static void loginAiMenuActor(int userId, String roleCode) {
+        SysRole role = new SysRole(); role.setRole(roleCode);
+        SysUser user = new SysUser(); user.setId(userId); user.setSysRoles(List.of(role));
+        SecurityContextHolder.getContext().setAuthentication(
+                new UsernamePasswordAuthenticationToken(new LoginUser(user), null, List.of()));
+    }
+
+    @Test void fullRecoveryRetainsManagedGenerationThreeAcrossRestartsAndFurtherUpdates() throws Exception {
+        Fixture first = fixture();
+        try {
+            OperationInput published = input(first, PublicationManifest.Operation.PUBLISH, 20, null);
+            execute(first, published);
+            var administration = new RagKnowledgeAdministration(first.lifecycle, first.knowledge);
+            KnowledgeDocument login = first.catalog().source("help-login");
+            KnowledgeDocument managedLogin = managedReplacement(login, "managed-login-2", "Managed login instructions.");
+            assertEquals(2, administration.update(managedLogin, 1,
+                    KnowledgeCatalog.hash(KnowledgeCatalog.normalize(login.text())), "full-recovery-login", 7).generation());
+            KnowledgeDocument register = first.catalog().source("help-register");
+            KnowledgeDocument managedRegister = managedReplacement(register, "managed-register-2", "Managed registration instructions.");
+            assertEquals(3, administration.update(managedRegister, 2,
+                    KnowledgeCatalog.hash(KnowledgeCatalog.normalize(register.text())), "full-recovery-register", 7).generation());
+            String snapshot = first.store.snapshotHash();
+            int calls = first.model.calls.get();
+            OperationInput recovered = input(first, PublicationManifest.Operation.RECOVER, 20, null);
+            assertEquals("COMPLETED", execute(first, recovered).get("status"));
+            assertEquals(3, first.catalog().epoch());
+            assertEquals(snapshot, first.store.snapshotHash());
+            assertTrue(first.model.calls.get() > calls);
+            try (Fixture restarted = reopen(first)) {
+                assertEquals("READ_ONLY_RECOVERED", restore(restarted, recovered).get("status"));
+                assertReady(restarted);
+                assertEquals(3, restarted.catalog().epoch());
+                assertEquals(managedLogin, restarted.catalog().source(login.sourceId()));
+                assertEquals(managedRegister, restarted.catalog().source(register.sourceId()));
+                assertEquals(0, restarted.model.calls.get());
+                var chain = restarted.store.managementChain(restarted.store.completedReceipt(recovered.grant.manifestSha256()));
+                assertTrue(chain.complete());
+                assertEquals(Set.of(login.sourceId(), register.sourceId()), chain.changedSources());
+                assertEquals(recovered.grant.operationId(), chain.effective().operation().id());
+                KnowledgeDocument nextLogin = managedReplacement(managedLogin, "managed-login-3", "Further managed login instructions.");
+                assertEquals(4, new RagKnowledgeAdministration(restarted.lifecycle, restarted.knowledge).update(nextLogin, 3,
+                        KnowledgeCatalog.hash(KnowledgeCatalog.normalize(managedLogin.text())), "after-full-recovery", 8).generation());
+                try (Fixture again = reopen(restarted)) {
+                    restore(again, recovered);
+                    assertReady(again);
+                    assertEquals(4, again.catalog().epoch());
+                    assertEquals(nextLogin, again.catalog().source(login.sourceId()));
+                    assertEquals(managedRegister, again.catalog().source(register.sourceId()));
+                    assertEquals(0, again.model.calls.get());
+                    sql(again.source, "UPDATE rag_release_event SET details_code='" + "0".repeat(64)
+                            + "' WHERE operation_id='manage-full-recovery-login' AND event_type='PREVIOUS_SNAPSHOT'");
+                    assertRestoreRejected(again, recovered);
+                }
+            }
+        } finally { first.close(); }
+    }
+
+    @Test void adminKnowledgeRevokePreservesTombstoneAndRestartsWithoutEmbedding() throws Exception {
+        Fixture first = fixture();
+        OperationInput published = input(first, PublicationManifest.Operation.PUBLISH, 20, null);
+        execute(first, published);
+        KnowledgeDocument old = first.catalog().source("help-login");
+        String hash = KnowledgeCatalog.hash(KnowledgeCatalog.normalize(old.text()));
+        int calls = first.model.calls.get();
+        var admin = new RagKnowledgeAdministration(first.lifecycle, first.knowledge);
+        assertEquals("COMPLETED", admin.revoke(old.sourceId(), 1, hash, "revoke-login", 7).status());
+        assertEquals(calls, first.model.calls.get());
+        assertEquals("REVOKED", first.catalog().source(old.sourceId()).reviewStatus());
+        assertTrue(first.knowledge.retrieveByTitle(old.title()).chunks().isEmpty());
+        assertThrows(RuntimeException.class, () -> admin.update(managedReplacement(old, "managed-2", "Cannot restore revoked material."),
+                2, hash, "restore-revoked", 7));
+        try (Fixture restarted = reopen(first)) {
+            restore(restarted, published);
+            assertReady(restarted);
+            assertEquals(0, restarted.model.calls.get());
+            assertEquals("REVOKED", restarted.catalog().source(old.sourceId()).reviewStatus());
+        } finally { first.close(); }
+    }
+
+    @Test void adminKnowledgeIndexFailureBootsBlockedAndExplicitSameRequestRecovers() throws Exception {
+        Fixture first = fixture();
+        OperationInput published = input(first, PublicationManifest.Operation.PUBLISH, 20, null);
+        execute(first, published);
+        KnowledgeDocument old = first.catalog().source("help-login");
+        KnowledgeDocument replacement = managedReplacement(old, "managed-recovery", "Recoverable synthetic knowledge.");
+        String hash = KnowledgeCatalog.hash(KnowledgeCatalog.normalize(old.text()));
+        first.model.failAt = first.model.calls.get() + 1;
+        assertThrows(RuntimeException.class, () -> new RagKnowledgeAdministration(first.lifecycle, first.knowledge)
+                .update(replacement, 1, hash, "failed-update", 7));
+        assertRecoveryRequired(first);
+        assertEquals("FAILED", first.store.operation("manage-failed-update").status());
+        Fixture restarted = reopen(first);
+        try {
+            assertThrows(RagPublicationRecovery.PendingManagementRecovery.class, () -> restore(restarted, published));
+            assertRecoveryRequired(restarted);
+            assertEquals(0, restarted.model.calls.get());
+            var administration = new RagKnowledgeAdministration(restarted.lifecycle, restarted.knowledge);
+            assertEquals("manage-failed-update", administration.pendingOperations().getFirst().operationId());
+            var recovered = administration.resume("manage-failed-update", 8);
+            assertEquals("COMPLETED", recovered.status()); assertEquals(2, recovered.generation());
+            assertTrue(administration.pendingOperations().isEmpty());
+            assertEquals(1, scalar(restarted.source, "SELECT COUNT(*) FROM rag_release_event WHERE operation_id='manage-failed-update'"
+                    + " AND event_type='RECOVERY_REQUESTED' AND details_code='user:8'"));
+            assertReady(restarted);
+            assertEquals(1, restarted.model.calls.get());
+            try (Fixture secondRestart = reopen(restarted)) {
+                restore(secondRestart, published);
+                assertReady(secondRestart); assertEquals(0, secondRestart.model.calls.get());
+            }
+        } finally { restarted.close(); first.close(); }
+    }
+
+    @Test void fullRecoveryRejectsPendingManagementBeforeEmbeddingAndExplicitResumePreservesTheChain() throws Exception {
+        Fixture first = fixture();
+        try {
+            OperationInput published = input(first, PublicationManifest.Operation.PUBLISH, 20, null);
+            execute(first, published);
+            var administration = new RagKnowledgeAdministration(first.lifecycle, first.knowledge);
+            KnowledgeDocument login = first.catalog().source("help-login");
+            KnowledgeDocument managedLogin = managedReplacement(login, "pending-login-2", "Pending managed login instructions.");
+            first.model.failAt = first.model.calls.get() + 1;
+            assertThrows(RuntimeException.class, () -> administration.update(managedLogin, 1,
+                    KnowledgeCatalog.hash(KnowledgeCatalog.normalize(login.text())), "pending-full-recovery", 7));
+            String managementId = "manage-pending-full-recovery";
+            var pending = first.store.operation(managementId);
+            assertEquals("FAILED", pending.status());
+            String snapshot = first.store.snapshotHash();
+            long events = scalar(first.source, "SELECT COUNT(*) FROM rag_release_event WHERE operation_id='" + managementId + "'");
+            int calls = first.model.calls.get();
+            OperationInput rejected = input(first, PublicationManifest.Operation.RECOVER, 20, null);
+            SecurityException failure = assertThrows(SecurityException.class, () -> execute(first, rejected));
+            assertEquals("RECOVERY_MANAGEMENT_INDEX_PENDING", failure.getMessage());
+            assertEquals(calls, first.model.calls.get());
+            assertEquals(pending, first.store.operation(managementId));
+            assertEquals(snapshot, first.store.snapshotHash());
+            assertEquals(events, scalar(first.source, "SELECT COUNT(*) FROM rag_release_event WHERE operation_id='" + managementId + "'"));
+            assertEquals(0, first.store.operation(rejected.grant.operationId()).embeddingRequests());
+            assertEquals("FAILED", first.store.operation(rejected.grant.operationId()).status());
+            assertRecoveryRequired(first);
+            assertEquals(2, administration.resume(managementId, 8).generation());
+            assertEquals("COMPLETED", first.store.operation(managementId).status());
+            assertTrue(administration.pendingOperations().isEmpty());
+            assertEquals(1, scalar(first.source, "SELECT COUNT(*) FROM rag_release_event WHERE operation_id='" + managementId + "' AND event_type='FAILED'"));
+            assertEquals(1, scalar(first.source, "SELECT COUNT(*) FROM rag_release_event WHERE operation_id='" + managementId + "' AND event_type='RECOVERY_REQUESTED' AND details_code='user:8'"));
+            KnowledgeDocument register = first.catalog().source("help-register");
+            KnowledgeDocument managedRegister = managedReplacement(register, "after-resume-2", "Registration instructions after explicit resume.");
+            assertEquals(3, administration.update(managedRegister, 2,
+                    KnowledgeCatalog.hash(KnowledgeCatalog.normalize(register.text())), "after-pending-resume", 8).generation());
+            try (Fixture restarted = reopen(first)) {
+                restore(restarted, published);
+                assertReady(restarted);
+                assertEquals(3, restarted.catalog().epoch());
+                assertEquals(managedLogin, restarted.catalog().source(login.sourceId()));
+                assertEquals(managedRegister, restarted.catalog().source(register.sourceId()));
+                assertEquals(0, restarted.model.calls.get());
+            }
+        } finally { first.close(); }
+    }
+
+    @Test void adminKnowledgeTamperedChainNeverBecomesRecoverableAndUpgradeRetainsOrigin() throws Exception {
+        try (Fixture f = fixture()) {
+            OperationInput published = input(f, PublicationManifest.Operation.PUBLISH, 20, null);
+            execute(f, published);
+            KnowledgeDocument old = f.catalog().source("help-login");
+            new RagKnowledgeAdministration(f.lifecycle, f.knowledge).update(
+                    managedReplacement(old, "managed-upgrade", "Managed knowledge survives an application upgrade."),
+                    1, KnowledgeCatalog.hash(KnowledgeCatalog.normalize(old.text())), "before-upgrade", 7);
+            int calls = f.model.calls.get();
+            OperationInput upgrade = zeroEmbeddingUpgrade(f);
+            assertEquals("COMPLETED", execute(f, upgrade).get("status"));
+            assertEquals(calls, f.model.calls.get());
+            assertEquals("READ_ONLY_RECOVERED", RagPublicationRecovery.restore(f.lifecycle, f.knowledge, upgrade.bytes,
+                    OPERATOR, ENVIRONMENT, upgradeIdentity(f, upgrade), resources).get("status"));
+            assertReady(f);
+            sql(f.source, "UPDATE rag_release_event SET details_code='" + "0".repeat(64)
+                    + "' WHERE operation_id='manage-before-upgrade' AND event_type='PREVIOUS_SNAPSHOT'");
+            RuntimeException rejected = assertThrows(RuntimeException.class, () -> RagPublicationRecovery.restore(
+                    f.lifecycle, f.knowledge, upgrade.bytes, OPERATOR, ENVIRONMENT, upgradeIdentity(f, upgrade), resources));
+            assertFalse(rejected instanceof RagPublicationRecovery.PendingManagementRecovery);
+            assertRecoveryRequired(f);
+        }
+    }
+
+    private static KnowledgeDocument managedReplacement(KnowledgeDocument old, String version, String text) {
+        return new KnowledgeDocument(old.sourceId(), old.title(), text, version, old.sourceType(), old.sourceUrl(),
+                "PUBLIC", "DOCUMENT_REVIEWED", Instant.now(), old.keywords());
+    }
+
     private void reviseArticleDraft(String version) throws Exception {
         drafts = drafts.stream().map(d -> "help-article-manage".equals(d.sourceId())
                 ? new KnowledgeDocument(d.sourceId(), d.title(), d.text() + " article review revision", version,
@@ -1173,6 +1825,69 @@ class PublicationIntegrationIT {
             if (closed) return;
             closed = true;
             try { knowledge.close(); } finally { lifecycle.close(); }
+        }
+    }
+
+    @Test void recoveryAcrossApplicationVersionsKeepsExactOperationIdentityAndRejectsAmbiguousManifestLookup() throws Exception {
+        try (Fixture f = fixture()) {
+            execute(f, input(f, PublicationManifest.Operation.PUBLISH, 20, null));
+            int calls = f.model.calls.get();
+            OperationInput original = input(f, PublicationManifest.Operation.RECOVER, 0, null);
+            execute(f, original);
+            OperationInput upgrade = zeroEmbeddingUpgrade(f);
+            execute(f, upgrade);
+            OperationInput rollback = input(f, PublicationManifest.Operation.RECOVER, 0, null);
+            assertArrayEquals(original.bytes, rollback.bytes);
+            execute(f, rollback);
+            assertEquals(rollback.grant.operationId(), f.store.latestCompletedReceipt(ENVIRONMENT, f.collection).operation().id());
+            assertEquals(rollback.grant.operationId(), f.store.latestControlledReceipt(f.collection).operation().id());
+            assertThrows(IllegalStateException.class, () -> f.store.completedReceipt(original.grant.manifestSha256()));
+            List<PublicationManifest.Topic> topics = new ArrayList<>(upgrade.manifest.topics());
+            java.util.Collections.reverse(topics);
+            PublicationManifest distinct = withTopics(upgrade.manifest, topics);
+            OperationInput signed = operationInput(distinct, 0);
+            OperationInput restored = new OperationInput(distinct, signed.bytes, signed.operationBytes, signed.grant,
+                    distinct.validate(upgradeIdentity(f, signed), resources));
+            execute(f, restored);
+            assertDoesNotThrow(() -> RagPublicationRecovery.restore(f.lifecycle, f.knowledge, restored.bytes, OPERATOR,
+                    ENVIRONMENT, upgradeIdentity(f, restored), resources));
+            assertReady(f);
+            assertEquals(calls, f.model.calls.get());
+        }
+    }
+
+    @Test void readOnlyWikiReplicaRefreshesVerifiedChangesAndRejectsCorruptSnapshots() throws Exception {
+        try (Fixture f = fixture()) {
+            execute(f, input(f, PublicationManifest.Operation.PUBLISH, 20, null));
+            KnowledgeCatalog original = KnowledgeCatalog.readOnlySnapshot(f.source);
+            CatalogLifecycle replica = original.lifecycle();
+            KnowledgeDocument old = f.catalog().source("help-login");
+            KnowledgeDocument replacement = new KnowledgeDocument(old.sourceId(), old.title(), old.text() + " 经过审校的新说明。",
+                    "replica-v2", old.sourceType(), old.sourceUrl(), old.visibility(), old.reviewStatus(), old.updatedAt().plusSeconds(1), old.keywords());
+            new RagKnowledgeAdministration(f.lifecycle, f.knowledge).update(replacement, f.catalog().epoch(),
+                    KnowledgeCatalog.hash(KnowledgeCatalog.normalize(old.text())), "replica-refresh", 7);
+            int calls = f.model.calls.get();
+            String snapshot = f.store.snapshotHash();
+            var reader = new com.zcx.chenstack.wiki.WikiSourceReader(new org.springframework.jdbc.core.JdbcTemplate(f.source), replica, JSON);
+            var key = new com.zcx.chenstack.wiki.WikiFoundation.SourceKey(com.zcx.chenstack.wiki.WikiFoundation.SourceType.PLATFORM_HELP, old.sourceId());
+            var transaction = new org.springframework.transaction.support.TransactionTemplate(new org.springframework.jdbc.datasource.DataSourceTransactionManager(f.source));
+            java.util.function.Supplier<Object> read = () -> transaction.execute(status ->
+                    org.springframework.test.util.ReflectionTestUtils.invokeMethod(reader, "read", key));
+            Object candidate = org.springframework.test.util.ReflectionTestUtils.invokeMethod(reader, "withAuthority", List.of(key), read);
+            assertNotNull(candidate);
+            assertTrue(candidate.toString().contains(replacement.text()));
+            assertEquals(f.catalog().epoch(), replica.snapshot().epoch());
+            assertEquals(replacement, replica.snapshot().source(old.sourceId()));
+            assertThrows(CatalogLifecycle.Invalidated.class, original::requireCurrent);
+            KnowledgeCatalog refreshed = replica.snapshot();
+            replica.refreshReadOnlySnapshot(f.source);
+            assertSame(refreshed, replica.snapshot());
+            assertEquals(snapshot, f.store.snapshotHash());
+            assertEquals(calls, f.model.calls.get());
+            sql(f.source, "UPDATE rag_catalog_state SET generation=generation+1");
+            assertThrows(IllegalStateException.class, () -> replica.refreshReadOnlySnapshot(f.source));
+            assertSame(refreshed, replica.snapshot());
+            assertEquals(calls, f.model.calls.get());
         }
     }
 
@@ -1384,6 +2099,31 @@ class PublicationIntegrationIT {
                 try { return method.invoke(connection, args); }
                 catch (InvocationTargetException exception) { throw exception.getCause(); }
                 finally { if (method.getName().equals("rollback")) catalogWritten[0] = false; }
+            });
+        }
+    }
+
+    /** Fault only this fixture's borrowed session while the real MySQL session still owns its lock. */
+    private static final class ReleaseFault extends AbstractDataSource {
+        final DataSource delegate;
+        final AtomicInteger aborts = new AtomicInteger();
+        volatile boolean failProbe, failRelease;
+        ReleaseFault(DataSource delegate) { this.delegate = delegate; }
+        @Override public Connection getConnection() throws SQLException { return wrap(delegate.getConnection()); }
+        @Override public Connection getConnection(String user, String password) throws SQLException { return wrap(delegate.getConnection(user, password)); }
+        private Connection wrap(Connection connection) {
+            return (Connection) Proxy.newProxyInstance(Connection.class.getClassLoader(), new Class[]{Connection.class}, (proxy, method, args) -> {
+                if (method.getName().equals("prepareStatement") && args[0] instanceof String sql) {
+                    if (failProbe && sql.startsWith("SELECT IS_USED_LOCK")) {
+                        failProbe = false; throw new java.sql.SQLTimeoutException("SYNTHETIC_OWNER_PROBE_TIMEOUT");
+                    }
+                    if (failRelease && sql.startsWith("SELECT RELEASE_LOCK")) {
+                        failRelease = false; throw new java.sql.SQLTimeoutException("SYNTHETIC_OWNER_RELEASE_TIMEOUT");
+                    }
+                }
+                if (method.getName().equals("abort")) aborts.incrementAndGet();
+                try { return method.invoke(connection, args); }
+                catch (InvocationTargetException exception) { throw exception.getCause(); }
             });
         }
     }

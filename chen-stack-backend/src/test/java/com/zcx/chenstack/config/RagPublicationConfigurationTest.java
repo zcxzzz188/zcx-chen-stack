@@ -194,7 +194,8 @@ class RagPublicationConfigurationTest {
         var fixture = fixture(); fixture.release().setEnabled(false); fixture.release().setRecoveryEnabled(true);
         Files.delete(Path.of(fixture.release().getOperationPath()));
         fixture.release().setOperationPath(directory.resolve("never-read-operation.json").toString());
-        var lifecycle = new KnowledgeCatalog(List.of()).lifecycle();
+        var lifecycle = spy(new KnowledgeCatalog(List.of()).lifecycle());
+        doNothing().when(lifecycle).recoverOwnerWith(any());
         RagKnowledgeService knowledge = mock(RagKnowledgeService.class);
         try (var build = mockStatic(PublicationBuildIdentity.class);
              var recovery = mockStatic(RagPublicationRecovery.class);
@@ -206,6 +207,13 @@ class RagPublicationConfigurationTest {
             recovery.verify(() -> RagPublicationRecovery.restore(eq(lifecycle), eq(knowledge),
                     eq(Files.readAllBytes(Path.of(fixture.release().getManifestPath()))), eq("executor-b"), eq("isolated"),
                     any(), eq(fixture.identity().resources())), times(1));
+            assertTrue(executors.constructed().isEmpty());
+            var callback = org.mockito.ArgumentCaptor.forClass(Runnable.class);
+            verify(lifecycle).recoverOwnerWith(callback.capture());
+            callback.getValue().run();
+            recovery.verify(() -> RagPublicationRecovery.restore(eq(lifecycle), eq(knowledge),
+                    eq(Files.readAllBytes(Path.of(fixture.release().getManifestPath()))), eq("executor-b"), eq("isolated"),
+                    any(), eq(fixture.identity().resources())), times(2));
             assertTrue(executors.constructed().isEmpty());
         } finally { lifecycle.close(); }
     }

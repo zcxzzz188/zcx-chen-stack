@@ -17,7 +17,10 @@ import java.util.regex.Pattern;
 public final class CustomerServiceTools {
     // shortcut: 识别明确的按钮承诺；出现新表达时补充模式与回归，页面动作始终限定在白名单内。
     private static final Pattern NAVIGATION_PROMISE = Pattern.compile(
-            "(?:下方|下边|下面|这里|这儿|为你|给你|已(?:准备|提供|展示|显示))[^。！？\\n]{0,40}按钮|按钮[^。！？\\n]{0,20}(?:打开|进入|前往|跳转)");
+            "(?:下方|下边|下面|本条回复|这条回复|本条回答|当前回复|当前回答|这里|这儿|为你|给你|已(?:准备|提供|展示|显示))[^。！？\\n]{0,40}?按钮");
+    private static final Pattern ABSENT_BUTTON = Pattern.compile(
+            "(?:没有|并无|暂无|未(?:提供|准备|展示|显示)|不(?:会|再)?(?:提供|展示|显示))[^，,；;。！？\\n]*按钮$");
+    private static final Pattern AFFIRMED_BUTTON = Pattern.compile("有|提供|准备|展示|显示");
     private final Integer userId;
     private final EditableArticleService articles;
     private final Consumer<CustomerServiceEvent> events;
@@ -86,22 +89,33 @@ public final class CustomerServiceTools {
                 null, null, null, null, "UNKNOWN", failure.name()));
     }
 
-    public static boolean promisesNavigation(String reply) { return NAVIGATION_PROMISE.matcher(reply).find(); }
+    public static boolean promisesNavigation(String reply) {
+        var claims = NAVIGATION_PROMISE.matcher(reply);
+        while (claims.find()) {
+            String claim = claims.group();
+            var absence = ABSENT_BUTTON.matcher(claim);
+            // 逐个按钮判断；否定页面能力不能掩盖同句另一处真实承诺或按钮自身的属性说明。
+            if (!absence.find() || AFFIRMED_BUTTON.matcher(claim.substring(0, absence.start())).find()) return true;
+        }
+        return false;
+    }
 
     /** 历史中的按钮不属于本条消息，释放承诺前必须重新准备真实白名单动作。 */
     public void ensureReplyActions(String reply) {
         if (!promisesNavigation(reply)) return;
+        var destinations = java.util.EnumSet.noneOf(Destination.class);
         for (String sentence : reply.split("[。！？\\n]")) {
             if (!promisesNavigation(sentence)) continue;
             boolean matched = false;
             for (Destination destination : Destination.values()) {
                 if (java.util.Arrays.stream(destination.pageNames).anyMatch(sentence::contains)) {
-                    showNavigation(destination);
+                    destinations.add(destination);
                     matched = true;
                 }
             }
             if (!matched) throw new IllegalStateException("客服导航入口未确认");
         }
+        destinations.forEach(this::showNavigation);
     }
 
     public void publishPending() {

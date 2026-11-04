@@ -24,6 +24,10 @@ class WebSocketSessionManagerTest {
         WebSocketSession session = mock(WebSocketSession.class);
         when(session.isOpen()).thenReturn(true);
         manager.registerSession(7, session);
+        PrivateMessageWebSocketHandler handler = new PrivateMessageWebSocketHandler();
+        // 先初始化真实序列化路径，使锁竞争断言只覆盖并发写入。
+        ReflectionTestUtils.invokeMethod(handler, "sendMessage", session,
+                com.zcx.chenstack.domain.dto.WebSocketMessage.heartbeat());
         CountDownLatch firstWrite = new CountDownLatch(1);
         CountDownLatch release = new CountDownLatch(1);
         AtomicInteger writes = new AtomicInteger();
@@ -40,7 +44,7 @@ class WebSocketSessionManagerTest {
             assertTrue(firstWrite.await(1, TimeUnit.SECONDS));
             Future<Boolean> queued = workers.submit(() -> manager.sendToWebSocketDirect(7, "test queued"));
             Future<?> reply = workers.submit(() -> ReflectionTestUtils.invokeMethod(
-                    new PrivateMessageWebSocketHandler(), "sendMessage", session,
+                    handler, "sendMessage", session,
                     com.zcx.chenstack.domain.dto.WebSocketMessage.heartbeat()));
             assertThrows(TimeoutException.class, () -> queued.get(100, TimeUnit.MILLISECONDS));
             assertThrows(TimeoutException.class, () -> reply.get(100, TimeUnit.MILLISECONDS));
