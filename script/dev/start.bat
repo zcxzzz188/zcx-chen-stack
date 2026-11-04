@@ -1,4 +1,10 @@
-﻿@echo off
+@echo off
+REM ==================================================================
+REM [DEPRECATED] This legacy launcher targets docker-compose v1 and does not
+REM initialise G3 migrations or the Redis ACL files. Use instead:
+REM   pwsh -File script/deploy/ChenStack.ps1 -Action init|up|upgrade|rollback
+REM See script/deploy/README.md.
+REM ==================================================================
 chcp 65001 >nul
 setlocal enabledelayedexpansion
 

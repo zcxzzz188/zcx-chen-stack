@@ -71,7 +71,11 @@ if ($LASTEXITCODE -ne 0) { throw '本地运维操作失败，停止；保留所�
 
 ## AI 知识模式手动切换
 
-实际 dev 部署由 `script/dev/.env` 经原 Compose 文件链向 backend 传入 `AI_KNOWLEDGE_MODE`，Spring 使用 `chen.ai.knowledge-mode` 绑定，默认 `rag`。固定模式为 `chat`（不检索 RAG/Wiki）、`rag`（既有 G2 问答检索）和 `wiki`（仅当前有效且正式发布的 Wiki）；`hybrid`、`auto` 尚未实现，启动拒绝，非法值也不回退。模式只改变知识依据，不扩大小辰业务工具权限。
+实际 dev 部署由 `script/dev/.env` 经原 Compose 文件链向 backend 传入 `AI_KNOWLEDGE_MODE`，Spring 使用 `chen.ai.knowledge-mode` 绑定，默认 `hybrid`。产品可选模式为三档：`rag`（已审校原始知识检索）、`wiki`（仅当前有效且正式发布的 Wiki）、`hybrid`（智能混合：按问题在两侧之间按需选择，简单交流不检索）。历史值 `chat`（纯对话）仍可被读取执行，但不再是可选模式，新的保存请求会被拒绝；非法值不回退到 `rag`。模式只改变知识依据，不扩大小辰业务工具权限。
+
+日常切换**不需要**改环境变量或重建容器：管理员在「AI知识管理 → AI配置」页面切换即可，
+配置持久化在 `ai_runtime_config` 表（跨实例 5 秒内收敛、重启后保持），并有修改审计。
+只有想改变**部署默认值**时才修改 `AI_KNOWLEDGE_MODE` 并重建 backend。
 
 `wiki` 还要求在已批准并完成 Wiki SQL/触发器部署的环境显式设置 `CHEN_WIKI_ENABLED=true`、`CHEN_WIKI_PRODUCT_ENABLED=true`；未就绪时拒绝启动或知识读取失败关闭，不使用旧索引或 RAG 兜底。它不需要启用编译器。`chen-stack-backend/.env.example` 是变量模板，普通 JVM 启动须显式导入环境变量。
 

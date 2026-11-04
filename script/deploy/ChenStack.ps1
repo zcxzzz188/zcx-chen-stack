@@ -1,0 +1,687 @@
+#requires -Version 7.0
+<#
+.SYNOPSIS
+    辰栈 (Chen Stack) 本地 Docker 一键部署与运维脚本。
+
+.DESCRIPTION
+    四种场景分开处理，互不混用：
+
+      init      首次全新部署：生成 .env 与 Redis ACL、构建产物与镜像、初始化数据库迁移、启动全部服务
+      up        日常启动（含电脑重启后）：只启动已存在的容器，不重建、不迁移
+      stop      停止容器（保留容器与数据卷）
+      restart   只重启应用容器（backend / admin / user）
+      upgrade   已有数据环境升级：备份镜像标签 → 重建产物与镜像 → 幂等迁移 → 重建应用容器
+      rollback  回滚到上一次 upgrade 之前的应用镜像
+      migrate   只执行增量 SQL 迁移（幂等）
+      status    查看实例容器、健康与版本
+
+    安全边界：
+      * 从不执行 docker compose down -v，不删除数据卷。
+      * upgrade 会检测“受控发布实例”（带 chen.release 标签、挂载 /release 或启用 RECOVERY），
+        这类实例由 script/release 的发布流程管理，脚本直接拒绝，避免运行制品与发布清单不一致。
+      * 支持 -Instance 创建隔离实例（不同项目名/容器名/卷名/端口），用于并行验证。
+
+.PARAMETER Action
+    init | up | stop | restart | upgrade | rollback | migrate | status
+
+.PARAMETER Instance
+    实例名，默认 chen-stack。非默认值会生成独立的 env/override 文件，并隔离容器名、卷名与网络名。
+
+.PARAMETER WithRag
+    同时启动 compose profile=rag 的本地 Qdrant，并写入 RAG 相关环境变量。
+    仍需独立 Embedding 凭据与一次受控知识发布，RAG 才会有可检索的知识。
+
+.PARAMETER SkipBuild
+    跳过宿主机产物构建与镜像重建（复用已有 target/*.jar 与 dist/）。
+
+.PARAMETER Force
+    允许 init 在实例容器已存在时继续（默认拒绝）。
+
+.EXAMPLE
+    pwsh -File script/deploy/ChenStack.ps1 -Action init
+
+.EXAMPLE
+    pwsh -File script/deploy/ChenStack.ps1 -Action up
+
+.EXAMPLE
+    pwsh -File script/deploy/ChenStack.ps1 -Action status
+#>
+[CmdletBinding()]
+param(
+    [ValidateSet('init', 'up', 'stop', 'restart', 'upgrade', 'rollback', 'migrate', 'status')]
+    [string]$Action = 'status',
+    [string]$Instance = 'dev',
+    [switch]$WithRag,
+    [switch]$SkipBuild,
+    [switch]$Force
+)
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+$OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+try { [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false) } catch { }
+
+$RepoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
+$ComposeDir = Join-Path $RepoRoot 'script/dev'
+$ComposeFile = Join-Path $ComposeDir 'docker-compose.yml'
+$DefaultInstance = 'dev'
+$InfraServices = @('mysql', 'redis', 'minio', 'rabbitmq')
+$AppServices = @('backend', 'frontend-admin', 'frontend-user')
+$ImageServices = @{
+    'backend'        = 'chen-stack-backend'
+    'frontend-admin' = 'chen-stack-admin'
+    'frontend-user'  = 'chen-stack-user'
+}
+$ServiceContainers = @{
+    'mysql'          = 'chen-stack-mysql'
+    'redis'          = 'chen-stack-redis'
+    'minio'          = 'chen-stack-minio'
+    'rabbitmq'       = 'chen-stack-rabbitmq'
+    'qdrant'         = 'chen-stack-qdrant'
+    'backend'        = 'chen-stack-backend'
+    'frontend-admin' = 'chen-stack-admin'
+    'frontend-user'  = 'chen-stack-user'
+}
+$Migrations = @(
+    @{ File = 'g2_rag_catalog.sql'; Kind = 'table'; Marker = 'rag_catalog_state' }
+    @{ File = 'g3_wiki_foundation.sql'; Kind = 'table'; Marker = 'wiki_source' }
+    @{ File = 'g3_wiki_compiler.sql'; Kind = 'table'; Marker = 'wiki_compile_budget' }
+    @{ File = 'g3_wiki_invalidation.sql'; Kind = 'trigger'; Marker = 'wiki_article_changed' }
+    @{ File = 'g3_wiki_product.sql'; Kind = 'table'; Marker = 'wiki_page' }
+    @{ File = 'g3_ai_knowledge_management.sql'; Kind = 'menu'; Marker = '9300' }
+    @{ File = 'g3_ai_knowledge_configuration.sql'; Kind = 'table'; Marker = 'ai_runtime_config' }
+)
+
+function Write-Title([string]$Text) {
+    Write-Host ''
+    Write-Host ('=' * 72) -ForegroundColor DarkCyan
+    Write-Host "  $Text" -ForegroundColor Cyan
+    Write-Host ('=' * 72) -ForegroundColor DarkCyan
+}
+function Write-Step([string]$Text) { Write-Host "  -> $Text" -ForegroundColor Gray }
+function Write-Ok([string]$Text) { Write-Host "  OK  $Text" -ForegroundColor Green }
+function Write-Warn2([string]$Text) { Write-Host "  !!  $Text" -ForegroundColor Yellow }
+function Write-Fail([string]$Text) { Write-Host "  XX  $Text" -ForegroundColor Red }
+
+function Assert-Command([string]$Name, [string]$Hint) {
+    if (-not (Get-Command $Name -ErrorAction SilentlyContinue)) {
+        throw "缺少命令 '$Name'。$Hint"
+    }
+}
+
+function Get-EnvPath {
+    if ($Instance -eq $DefaultInstance) { return (Join-Path $ComposeDir '.env') }
+    return (Join-Path $ComposeDir ".instances/$Instance/.env")
+}
+
+function Get-OverridePath {
+    if ($Instance -eq $DefaultInstance) { return $null }
+    return (Join-Path $ComposeDir ".instances/$Instance/override.yml")
+}
+
+function Get-ComposeArgs {
+    $composeArgs = @('compose', '-p', $Instance, '--project-directory', $ComposeDir, '--env-file', (Get-EnvPath), '-f', $ComposeFile)
+    $override = Get-OverridePath
+    if ($override -and (Test-Path -LiteralPath $override)) { $composeArgs += @('-f', $override) }
+    if ($WithRag) { $composeArgs += @('--profile', 'rag') }
+    return $composeArgs
+}
+
+function Invoke-Compose([string[]]$Arguments, [switch]$AllowFailure) {
+    $all = (Get-ComposeArgs) + $Arguments
+    Write-Verbose ('docker ' + ($all -join ' '))
+    $output = & docker @all 2>&1
+    $code = $LASTEXITCODE
+    if ($code -ne 0 -and -not $AllowFailure) {
+        Write-Host ($output | Out-String)
+        throw "docker compose $($Arguments -join ' ') 失败（exit=$code）"
+    }
+    return [pscustomobject]@{ ExitCode = $code; Output = ($output | Out-String) }
+}
+
+function Invoke-Docker([string[]]$Arguments, [switch]$AllowFailure) {
+    $output = & docker @Arguments 2>&1
+    $code = $LASTEXITCODE
+    if ($code -ne 0 -and -not $AllowFailure) {
+        Write-Host ($output | Out-String)
+        throw "docker $($Arguments -join ' ') 失败（exit=$code）"
+    }
+    return [pscustomobject]@{ ExitCode = $code; Output = ($output | Out-String).Trim() }
+}
+
+function New-Secret([int]$Bytes = 32) {
+    $buffer = [byte[]]::new($Bytes)
+    [System.Security.Cryptography.RandomNumberGenerator]::Fill($buffer)
+    return [Convert]::ToHexString($buffer).ToLowerInvariant()
+}
+
+function Read-DotEnv([string]$Path) {
+    $map = [ordered]@{}
+    if (-not (Test-Path -LiteralPath $Path)) { return $map }
+    foreach ($line in Get-Content -LiteralPath $Path -Encoding utf8) {
+        $trimmed = $line.Trim()
+        if ($trimmed -eq '' -or $trimmed.StartsWith('#')) { continue }
+        $index = $trimmed.IndexOf('=')
+        if ($index -lt 1) { continue }
+        $key = $trimmed.Substring(0, $index).Trim()
+        $value = $trimmed.Substring($index + 1).Trim()
+        $map[$key] = $value
+    }
+    return $map
+}
+
+function Write-DotEnv([string]$Path, $Map) {
+    $lines = foreach ($key in $Map.Keys) { "$key=$($Map[$key])" }
+    $directory = Split-Path -Parent $Path
+    if (-not (Test-Path -LiteralPath $directory)) { New-Item -ItemType Directory -Path $directory -Force | Out-Null }
+    [System.IO.File]::WriteAllText($Path, (($lines -join "`n") + "`n"), [System.Text.UTF8Encoding]::new($false))
+}
+
+function Get-ContainerName([string]$Service) {
+    $filter = @('ps', '-a', '--filter', "label=com.docker.compose.project=$Instance",
+        '--filter', "label=com.docker.compose.service=$Service", '--format', '{{.Names}}')
+    $result = Invoke-Docker $filter -AllowFailure
+    if ($result.ExitCode -ne 0) { return $null }
+    $name = ($result.Output -split "`n" | Where-Object { $_.Trim() -ne '' } | Select-Object -First 1)
+    if (-not $name) { return $null }
+    return $name.Trim()
+}
+
+function Test-ContainerRunning([string]$Name) {
+    $result = Invoke-Docker @('inspect', $Name, '--format', '{{.State.Running}}') -AllowFailure
+    return ($result.ExitCode -eq 0 -and $result.Output -eq 'true')
+}
+
+function Get-ContainerImageId([string]$Name) {
+    $result = Invoke-Docker @('inspect', $Name, '--format', '{{.Image}}') -AllowFailure
+    if ($result.ExitCode -ne 0) { return $null }
+    return $result.Output
+}
+
+function Get-BackendHealth([string]$Name) {
+    $result = Invoke-Docker @('exec', $Name, 'wget', '-q', '-O-', 'http://127.0.0.1:5000/actuator/health') -AllowFailure
+    if ($result.ExitCode -ne 0) { return $null }
+    if ($result.Output -match '"status"\s*:\s*"UP"') { return 'UP' }
+    return 'DOWN'
+}
+
+function Wait-Until([scriptblock]$Probe, [string]$Label, [int]$TimeoutSeconds = 240, [int]$IntervalSeconds = 5) {
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    while ((Get-Date) -lt $deadline) {
+        if (& $Probe) { Write-Ok $Label; return $true }
+        Start-Sleep -Seconds $IntervalSeconds
+    }
+    return $false
+}
+
+function Assert-NotReleaseManaged([string]$Container) {
+    if (-not $Container) { return }
+    $labels = (Invoke-Docker @('inspect', $Container, '--format', '{{json .Config.Labels}}') -AllowFailure).Output
+    $mounts = (Invoke-Docker @('inspect', $Container, '--format', '{{range .Mounts}}{{println .Destination}}{{end}}') -AllowFailure).Output
+    $env = (Invoke-Docker @('inspect', $Container, '--format', '{{range .Config.Env}}{{println .}}{{end}}') -AllowFailure).Output
+    $releaseMount = @($mounts -split "`n" | Where-Object { $_.Trim() -eq '/release' }).Count -gt 0
+    $releaseLabel = $labels -match 'chen\.release'
+    $releaseRecovery = $env -match 'CHEN_RAG_RELEASE_RECOVERY_ENABLED=true'
+    if ($releaseMount -or $releaseLabel -or $releaseRecovery) {
+        throw @"
+检测到该实例由受控发布流程管理（script/release），不能使用本脚本的 upgrade/rollback。
+
+原因：正式 RAG 读取权限由“发布清单 + 已完成回执”授予，清单绑定运行 JAR 的 SHA256；
+用普通 Compose 重建容器会让运行制品与发布清单不一致，后端会 fail-closed 拒绝启动。
+
+正确做法：按 script/release/README.md 的受控发布流程升级（重新生成 RECOVER 清单与操作记录后重建容器）。
+"@
+    }
+}
+
+# ---------------------------------------------------------------- 环境与凭据
+
+function Initialize-Environment {
+    $envPath = Get-EnvPath
+    $templatePath = Join-Path $ComposeDir '.env.example'
+    if (-not (Test-Path -LiteralPath $templatePath)) { throw "缺少模板 script/dev/.env.example" }
+
+    if (Test-Path -LiteralPath $envPath) {
+        Write-Warn2 "已存在 $(Split-Path -Leaf $envPath)，保留现有配置（不覆盖）"
+    } else {
+        Copy-Item -LiteralPath $templatePath -Destination $envPath
+        Write-Ok "已生成 $envPath"
+    }
+
+    $map = Read-DotEnv $envPath
+    $generated = @()
+    $secretKeys = @{
+        'MYSQL_ROOT_PASSWORD'      = 32
+        'MYSQL_PASSWORD'           = 32
+        'REDIS_PASSWORD'           = 32
+        'MINIO_SECRET_KEY'         = 32
+        'RABBITMQ_DEFAULT_PASS'    = 24
+        'CHEN_STACK_JWT_SECRET'    = 48
+        'CHEN_RAG_QDRANT_API_KEY'  = 24
+    }
+    foreach ($key in $secretKeys.Keys) {
+        $current = if ($map.Contains($key)) { [string]$map[$key] } else { '' }
+        if ([string]::IsNullOrWhiteSpace($current)) {
+            $map[$key] = New-Secret $secretKeys[$key]
+            $generated += $key
+        }
+    }
+    if ($WithRag) {
+        $map['SPRING_PROFILES_ACTIVE'] = 'dev,rag'
+        $map['CHEN_RAG_ENABLED'] = 'true'
+        $map['CHEN_RAG_QDRANT_HOST'] = 'qdrant'
+        $map['CHEN_RAG_QDRANT_TLS'] = 'false'
+        Write-Warn2 '已启用 RAG 环境变量；RAG 仍需要独立 Embedding 凭据与一次受控知识发布才会返回知识'
+    }
+    if ($map.Contains('SPRING_AI_OPENAI_API_KEY') -and [string]::IsNullOrWhiteSpace([string]$map['SPRING_AI_OPENAI_API_KEY'])) {
+        Write-Warn2 'SPRING_AI_OPENAI_API_KEY 为空：小辰会返回模型服务错误，请在 .env 中填入 DeepSeek Key'
+    }
+
+    # Redis 安全配置路径：隔离实例必须使用自己的目录，避免与默认实例共用 ACL。
+    if ($Instance -eq $DefaultInstance) {
+        $redisDir = Join-Path $ComposeDir 'redis-secure'
+    } else {
+        $redisDir = Join-Path $ComposeDir ".instances/$Instance/redis-secure"
+        $map['REDIS_SECURE_CONFIG_DIRECTORY'] = $redisDir
+        $map['REDIS_HEALTH_PASSWORD_FILE'] = (Join-Path $redisDir 'redis-app.secret')
+    }
+    Write-DotEnv $envPath $map
+    if ($generated.Count -gt 0) { Write-Ok ("已生成随机口令：" + ($generated -join ', ')) }
+
+    if (-not (Test-Path -LiteralPath $redisDir)) { New-Item -ItemType Directory -Path $redisDir -Force | Out-Null }
+    $redisUser = if ($map.Contains('REDIS_USERNAME') -and $map['REDIS_USERNAME']) { [string]$map['REDIS_USERNAME'] } else { 'chenstack' }
+    $redisPassword = [string]$map['REDIS_PASSWORD']
+    $confPath = Join-Path $redisDir 'redis.conf'
+    $aclPath = Join-Path $redisDir 'users.acl'
+    $secretPath = Join-Path $redisDir 'redis-app.secret'
+    $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+    if (-not (Test-Path -LiteralPath $confPath)) {
+        $conf = @(
+            'bind 0.0.0.0'
+            'protected-mode yes'
+            'port 6379'
+            'dir /data'
+            'appendonly yes'
+            'aclfile /secure/users.acl'
+        ) -join "`n"
+        [System.IO.File]::WriteAllText($confPath, $conf + "`n", $utf8NoBom)
+        Write-Ok "已生成 redis.conf（$redisDir）"
+    }
+    # ACL 文件必须是 LF 换行：Windows 的 CRLF 会让 Redis 把 \r 当成规则字符而拒绝整行。
+    # 同时校验口令与当前 .env 一致，避免沿用旧口令造成健康检查 AUTH 失败。
+    $expectedAclLine = "user $redisUser on >$redisPassword ~* &* +@all"
+    $aclContent = if (Test-Path -LiteralPath $aclPath) { [System.IO.File]::ReadAllText($aclPath) } else { '' }
+    if ($aclContent.IndexOf($expectedAclLine, [StringComparison]::Ordinal) -lt 0) {
+        $acl = @('user default off', $expectedAclLine) -join "`n"
+        [System.IO.File]::WriteAllText($aclPath, $acl + "`n", $utf8NoBom)
+        Write-Ok "已生成 users.acl（用户 $redisUser，LF 换行）"
+    }
+    $secretContent = if (Test-Path -LiteralPath $secretPath) { ([System.IO.File]::ReadAllText($secretPath)).TrimEnd("`r", "`n") } else { '' }
+    if ($secretContent -cne $redisPassword) {
+        [System.IO.File]::WriteAllText($secretPath, $redisPassword + "`n", $utf8NoBom)
+        Write-Ok '已生成 redis-app.secret'
+    }
+    return $map
+}
+
+function New-InstanceOverride {
+    $override = Get-OverridePath
+    if (-not $override) { return }
+    $directory = Split-Path -Parent $override
+    if (-not (Test-Path -LiteralPath $directory)) { New-Item -ItemType Directory -Path $directory -Force | Out-Null }
+    $lines = @('services:')
+    foreach ($service in $ServiceContainers.Keys) {
+        $lines += "  ${service}:"
+        $lines += "    container_name: $Instance-$service"
+        if ($ImageServices.ContainsKey($service)) {
+            $lines += "    image: $($ImageServices[$service])-$Instance`:$Instance"
+        }
+    }
+    $lines += 'volumes:'
+    foreach ($volume in @('mysql_data', 'redis_data', 'minio_data', 'rabbitmq_data', 'qdrant_data')) {
+        $lines += "  ${volume}:"
+        $lines += "    name: $Instance-$($volume -replace '_', '-')"
+    }
+    $lines += 'networks:'
+    $lines += '  chen-stack-network:'
+    $lines += "    name: $Instance-network"
+    Set-Content -LiteralPath $override -Value $lines -Encoding utf8NoBOM
+    Write-Ok "已生成隔离覆盖文件 $override"
+}
+
+# ---------------------------------------------------------------- 构建
+
+function Build-HostArtifacts {
+    if ($SkipBuild) { Write-Warn2 '已跳过宿主机产物构建（-SkipBuild）'; return }
+    $jar = Join-Path $RepoRoot 'chen-stack-backend/target/zcx-chen-stack-backend-1.0-SNAPSHOT.jar'
+    if (Test-Path -LiteralPath $jar) {
+        Write-Ok '后端 JAR 已存在，复用现有产物'
+    } else {
+        Assert-Command 'mvn' '构建后端需要 JDK 21 + Maven 3.9+，或先在本地执行 mvn package'
+        Write-Step '构建后端 JAR（跳过测试）'
+        Push-Location (Join-Path $RepoRoot 'chen-stack-backend')
+        try {
+            & mvn --batch-mode -DskipTests package
+            if ($LASTEXITCODE -ne 0) { throw '后端构建失败' }
+        } finally { Pop-Location }
+    }
+    foreach ($name in @('chen-stack-admin', 'chen-stack-user')) {
+        $dist = Join-Path $RepoRoot "chen-stack-frontend/$name/dist/index.html"
+        if (Test-Path -LiteralPath $dist) {
+            Write-Ok "$name dist 已存在，复用现有产物"
+            continue
+        }
+        Assert-Command 'npm' '构建前端需要 Node.js 20+ 与 npm，或先在各前端目录执行 npm run build'
+        Write-Step "构建 $name"
+        Push-Location (Join-Path $RepoRoot "chen-stack-frontend/$name")
+        try {
+            if (-not (Test-Path -LiteralPath 'node_modules')) { & npm ci --no-audit --no-fund }
+            & npm run build
+            if ($LASTEXITCODE -ne 0) { throw "$name 构建失败" }
+        } finally { Pop-Location }
+    }
+}
+
+function Build-Images {
+    if ($SkipBuild) { Write-Warn2 '已跳过镜像构建（-SkipBuild）'; return }
+    Write-Step '构建后端 / 管理端 / 用户端镜像'
+    $result = Invoke-Compose @('build', 'backend', 'frontend-admin', 'frontend-user')
+    Write-Verbose $result.Output
+    Write-Ok '镜像构建完成'
+}
+
+# ---------------------------------------------------------------- 服务与迁移
+
+function Start-Services([string[]]$Services) {
+    foreach ($service in $Services) {
+        $name = Get-ContainerName $service
+        if (-not $name) { throw "实例 $Instance 缺少容器 $service，请先执行 -Action init" }
+        if (-not (Test-ContainerRunning $name)) {
+            Invoke-Docker @('start', $name) | Out-Null
+            Write-Step "已启动 $name"
+        }
+    }
+}
+
+function Wait-Infrastructure {
+    $mysql = Get-ContainerName 'mysql'
+    if (-not $mysql) { throw '缺少 MySQL 容器' }
+    if (-not (Wait-Until -Label 'MySQL 就绪' -TimeoutSeconds 300 -Probe {
+                (Invoke-Docker @('exec', $mysql, 'sh', '-c', 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql -uroot -N -B -e "SELECT 1"') -AllowFailure).Output -eq '1'
+            })) { throw 'MySQL 未在超时时间内就绪' }
+
+    $redis = Get-ContainerName 'redis'
+    if ($redis) {
+        [void](Wait-Until -Label 'Redis 就绪' -TimeoutSeconds 120 -Probe {
+                (Invoke-Docker @('exec', $redis, 'sh', '-c', 'REDISCLI_AUTH="$(cat /run/secrets/redis-health-password)" redis-cli --no-auth-warning --user "$REDIS_USERNAME" ping') -AllowFailure).Output -match 'PONG'
+            })
+    }
+    $minio = Get-ContainerName 'minio'
+    if ($minio) {
+        [void](Wait-Until -Label 'MinIO 就绪' -TimeoutSeconds 120 -Probe {
+                (Invoke-Docker @('exec', $minio, 'curl', '-fsS', 'http://localhost:9000/minio/health/live') -AllowFailure).ExitCode -eq 0
+            })
+    }
+    $rabbit = Get-ContainerName 'rabbitmq'
+    if ($rabbit) {
+        [void](Wait-Until -Label 'RabbitMQ 就绪' -TimeoutSeconds 180 -Probe {
+                (Invoke-Docker @('exec', $rabbit, 'rabbitmq-diagnostics', '-q', 'ping') -AllowFailure).Output -match 'Ping succeeded'
+            })
+    }
+    if ($WithRag) {
+        $qdrant = Get-ContainerName 'qdrant'
+        if ($qdrant) {
+            [void](Wait-Until -Label 'Qdrant 就绪' -TimeoutSeconds 120 -Probe {
+                    (Invoke-Docker @('exec', $qdrant, 'bash', '-ec', 'exec 3<>/dev/tcp/127.0.0.1/6333; printf "GET /readyz HTTP/1.0\r\nHost: localhost\r\n\r\n" >&3; head -n 1 <&3 | grep -q 200') -AllowFailure).ExitCode -eq 0
+                })
+        }
+    }
+}
+
+function Invoke-Migrations {
+    $envMap = Read-DotEnv (Get-EnvPath)
+    $database = if ($envMap.Contains('MYSQL_DATABASE') -and $envMap['MYSQL_DATABASE']) { [string]$envMap['MYSQL_DATABASE'] } else { 'chen_stack' }
+    $mysql = Get-ContainerName 'mysql'
+    if (-not $mysql) { throw '缺少 MySQL 容器，无法执行迁移' }
+    foreach ($migration in $Migrations) {
+        $file = Join-Path $RepoRoot "sql/$($migration.File)"
+        if (-not (Test-Path -LiteralPath $file)) { throw "缺少迁移文件 sql/$($migration.File)" }
+        $query = switch ($migration.Kind) {
+            'table' { "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='$database' AND table_name='$($migration.Marker)'" }
+            'trigger' { "SELECT COUNT(*) FROM information_schema.triggers WHERE trigger_schema='$database' AND trigger_name='$($migration.Marker)'" }
+            'menu' { "SELECT COUNT(*) FROM $database.sys_menu WHERE id=$($migration.Marker)" }
+            default { throw "未知的迁移标记类型 $($migration.Kind)" }
+        }
+        $probe = Invoke-Docker @('exec', $mysql, 'sh', '-c', "MYSQL_PWD=`"`$MYSQL_ROOT_PASSWORD`" mysql -uroot -N -B -e `"$query`"") -AllowFailure
+        if ($probe.ExitCode -ne 0) { throw "检查迁移 $($migration.File) 状态失败：$($probe.Output)" }
+        if ($probe.Output.Trim() -ne '0') {
+            Write-Verbose "迁移 $($migration.File) 已应用"
+            continue
+        }
+        Write-Step "应用迁移 sql/$($migration.File)"
+        $sql = Get-Content -LiteralPath $file -Raw -Encoding utf8
+        $sql | & docker exec -i $mysql sh -c "MYSQL_PWD=`"`$MYSQL_ROOT_PASSWORD`" exec mysql -uroot --default-character-set=utf8mb4 $database"
+        if ($LASTEXITCODE -ne 0) { throw "迁移 sql/$($migration.File) 执行失败" }
+    }
+    Write-Ok '数据库迁移检查完成'
+}
+
+function Wait-Applications {
+    $backend = Get-ContainerName 'backend'
+    if (-not $backend) { throw '缺少 backend 容器' }
+    if (-not (Wait-Until -Label '后端健康检查通过' -TimeoutSeconds 300 -Probe {
+                (Get-BackendHealth $backend) -eq 'UP'
+            })) {
+        Write-Fail '后端未在超时时间内健康，最近日志：'
+        Write-Host (Invoke-Docker @('logs', '--tail', '60', $backend) -AllowFailure).Output
+        throw '后端启动失败'
+    }
+    foreach ($service in @('frontend-admin', 'frontend-user')) {
+        $name = Get-ContainerName $service
+        if (-not $name) { continue }
+        [void](Wait-Until -Label "$service 可访问" -TimeoutSeconds 120 -Probe {
+                (Invoke-Docker @('exec', $name, 'curl', '-fsS', '-o', '/dev/null', 'http://127.0.0.1/') -AllowFailure).ExitCode -eq 0
+            })
+    }
+}
+
+function Show-Access([string]$EnvPath) {
+    $map = Read-DotEnv $EnvPath
+    $backendPort = if ($map.Contains('BACKEND_PORT') -and $map['BACKEND_PORT']) { $map['BACKEND_PORT'] } else { '5000' }
+    $adminPort = if ($map.Contains('ADMIN_PORT') -and $map['ADMIN_PORT']) { $map['ADMIN_PORT'] } else { '8000' }
+    $userPort = if ($map.Contains('USER_PORT') -and $map['USER_PORT']) { $map['USER_PORT'] } else { '7000' }
+    $minioConsole = if ($map.Contains('MINIO_CONSOLE_PORT') -and $map['MINIO_CONSOLE_PORT']) { $map['MINIO_CONSOLE_PORT'] } else { '9001' }
+    $rabbitConsole = if ($map.Contains('RABBITMQ_MANAGEMENT_PORT') -and $map['RABBITMQ_MANAGEMENT_PORT']) { $map['RABBITMQ_MANAGEMENT_PORT'] } else { '15672' }
+    Write-Title '访问入口'
+    Write-Host "  管理端      http://127.0.0.1:$adminPort"
+    Write-Host "  用户端      http://127.0.0.1:$userPort"
+    Write-Host "  后端 API    http://127.0.0.1:$backendPort"
+    Write-Host "  MinIO 控制台 http://127.0.0.1:$minioConsole"
+    Write-Host "  RabbitMQ    http://127.0.0.1:$rabbitConsole"
+    Write-Host ''
+    Write-Host ('  实例名：' + $Instance) -ForegroundColor DarkGray
+}
+
+function Show-Status {
+    Write-Title "辰栈实例状态（$Instance）"
+    $rows = @()
+    foreach ($service in ($InfraServices + @('qdrant') + $AppServices)) {
+        $name = Get-ContainerName $service
+        if (-not $name) { $rows += [pscustomobject]@{ 服务 = $service; 容器 = '-'; 状态 = '未创建' }; continue }
+        $inspect = Invoke-Docker @('inspect', $name, '--format', '{{.State.Status}}|{{.State.StartedAt}}|{{.Image}}') -AllowFailure
+        $parts = $inspect.Output.Split('|')
+        $imageShort = ''
+        if ($inspect.Output -match 'sha256:([0-9a-f]{12})') { $imageShort = $Matches[1] }
+        $rows += [pscustomobject]@{ 服务 = $service; 容器 = $name; 状态 = $parts[0]; 镜像 = $imageShort }
+    }
+    $rows | Format-Table -AutoSize | Out-String | Write-Host
+    $backend = Get-ContainerName 'backend'
+    if ($backend -and (Test-ContainerRunning $backend)) {
+        Write-Host ('  后端健康：' + (Get-BackendHealth $backend))
+    }
+    $envPath = Get-EnvPath
+    if (Test-Path -LiteralPath $envPath) {
+        $map = Read-DotEnv $envPath
+        $mode = if ($map.Contains('AI_KNOWLEDGE_MODE')) { [string]$map['AI_KNOWLEDGE_MODE'] } else { '未设置' }
+        Write-Host ('  部署默认知识模式(AI_KNOWLEDGE_MODE)：' + $mode + '（实际生效以数据库配置为准）')
+    }
+}
+
+# ---------------------------------------------------------------- 动作
+
+function Invoke-Init {
+    Write-Title "首次全新部署（实例 $Instance）"
+    Assert-Command 'docker' '请先安装 Docker Desktop'
+    [void](Invoke-Docker @('version', '--format', '{{.Server.Version}}'))
+    if ($Instance -ne $DefaultInstance) {
+        New-InstanceOverride
+    }
+    $existing = @()
+    foreach ($service in ($ServiceContainers.Keys)) {
+        $name = Get-ContainerName $service
+        if ($name) { $existing += $name }
+    }
+    $backendContainer = Get-ContainerName 'backend'
+    if ($existing.Count -gt 0) {
+        if ($backendContainer -and (Test-ContainerRunning $backendContainer) -and -not $Force) {
+            throw "实例 $Instance 已在运行。日常启动请用 -Action up，升级请用 -Action upgrade；确认要重新初始化请加 -Force。"
+        }
+        Write-Warn2 "实例 $Instance 已有 $($existing.Count) 个容器，本次将按当前配置重建（数据卷保留）"
+    }
+    $envMap = Initialize-Environment
+    Build-HostArtifacts
+    Build-Images
+
+    Write-Step '启动基础服务'
+    [void](Invoke-Compose (@('up', '-d', '--no-build') + $InfraServices))
+    Wait-Infrastructure
+    Invoke-Migrations
+
+    Write-Step '启动应用服务'
+    [void](Invoke-Compose (@('up', '-d', '--no-build', '--pull', 'never') + $AppServices))
+    Wait-Applications
+    Show-Access (Get-EnvPath)
+    Write-Host ''
+    Write-Host '  首次登录提示：管理端账号来自 sql/chen_stack.sql 的初始数据，请在首次登录后立即修改演示密码。' -ForegroundColor Yellow
+    Write-Host '  小辰知识问答需要先准备知识：管理端「AI知识管理 → 整理知识」可手动新建并发布 Wiki 知识（无需 Embedding）。' -ForegroundColor Yellow
+}
+
+function Invoke-Up {
+    Write-Title "启动已有实例（$Instance）"
+    $missing = @()
+    $stopped = @()
+    foreach ($service in ($InfraServices + @('qdrant') + $AppServices)) {
+        $name = Get-ContainerName $service
+        if (-not $name) { continue }
+        if (-not (Test-ContainerRunning $name)) { $stopped += $name }
+    }
+    if ($stopped.Count -eq 0 -and -not (Get-ContainerName 'backend')) {
+        throw "实例 $Instance 尚未初始化，请先执行 -Action init"
+    }
+    if ($stopped.Count -eq 0) {
+        Write-Ok '全部容器已在运行'
+    } else {
+        foreach ($name in $stopped) {
+            Invoke-Docker @('start', $name) | Out-Null
+            Write-Step "已启动 $name"
+        }
+    }
+    Wait-Infrastructure
+    Wait-Applications
+    Show-Status
+}
+
+function Invoke-Stop {
+    Write-Title "停止实例容器（保留数据卷）"
+    $names = @()
+    foreach ($service in ($InfraServices + @('qdrant') + $AppServices)) {
+        $name = Get-ContainerName $service
+        if ($name -and (Test-ContainerRunning $name)) { $names += $name }
+    }
+    if ($names.Count -eq 0) { Write-Ok '没有运行中的容器'; return }
+    [void](Invoke-Docker (@('stop') + $names))
+    Write-Ok "已停止 $($names.Count) 个容器；数据卷保留，执行 -Action up 可恢复"
+}
+
+function Invoke-Restart {
+    Write-Title '重启应用容器'
+    foreach ($service in $AppServices) {
+        $name = Get-ContainerName $service
+        if (-not $name) { continue }
+        [void](Invoke-Docker @('restart', $name))
+        Write-Step "已重启 $name"
+    }
+    Wait-Applications
+    Show-Status
+}
+
+function Invoke-Upgrade {
+    Write-Title "升级已有实例（$Instance）"
+    $backend = Get-ContainerName 'backend'
+    if (-not $backend) { throw "实例 $Instance 尚未初始化，请先执行 -Action init" }
+    Assert-NotReleaseManaged $backend
+
+    Write-Step '记录当前应用镜像，供回滚使用'
+    foreach ($service in $ImageServices.Keys) {
+        $name = Get-ContainerName $service
+        if (-not $name) { continue }
+        $imageId = Get-ContainerImageId $name
+        $tag = "$($ImageServices[$service]):previous"
+        if ($Instance -ne $DefaultInstance) { $tag = "$($ImageServices[$service])-$Instance`:previous" }
+        [void](Invoke-Docker @('tag', $imageId, $tag))
+        Write-Step "已保存 $tag"
+    }
+
+    Build-HostArtifacts
+    Build-Images
+    Invoke-Migrations
+
+    Write-Step '重建应用容器（基础服务与数据卷不变）'
+    [void](Invoke-Compose (@('up', '-d', '--no-deps', '--no-build', '--pull', 'never') + $AppServices))
+    Wait-Applications
+    Write-Ok '升级完成；如需回滚执行 -Action rollback'
+}
+
+function Invoke-Rollback {
+    Write-Title "回滚应用镜像（$Instance）"
+    $backend = Get-ContainerName 'backend'
+    if (-not $backend) { throw "实例 $Instance 尚未初始化" }
+    Assert-NotReleaseManaged $backend
+    foreach ($service in $ImageServices.Keys) {
+        $tag = "$($ImageServices[$service]):previous"
+        if ($Instance -ne $DefaultInstance) { $tag = "$($ImageServices[$service])-$Instance`:previous" }
+        $probe = Invoke-Docker @('image', 'inspect', $tag, '--format', '{{.Id}}') -AllowFailure
+        if ($probe.ExitCode -ne 0) { throw "找不到回滚镜像 $tag，请先执行过 upgrade" }
+        $target = "$($ImageServices[$service]):latest"
+        if ($Instance -ne $DefaultInstance) { $target = "$($ImageServices[$service])-$Instance`:$Instance" }
+        [void](Invoke-Docker @('tag', $probe.Output, $target))
+        Write-Step "已把 $target 指回 $tag"
+    }
+    [void](Invoke-Compose (@('up', '-d', '--no-deps', '--no-build', '--pull', 'never') + $AppServices))
+    Wait-Applications
+    Write-Ok '回滚完成'
+}
+
+# ---------------------------------------------------------------- 入口
+
+try {
+    switch ($Action) {
+        'init' { Invoke-Init }
+        'up' { Invoke-Up }
+        'stop' { Invoke-Stop }
+        'restart' { Invoke-Restart }
+        'upgrade' { Invoke-Upgrade }
+        'rollback' { Invoke-Rollback }
+        'migrate' {
+            Write-Title '执行增量 SQL 迁移'
+            Invoke-Migrations
+        }
+        'status' { Show-Status }
+    }
+    Write-Host ''
+    Write-Ok "操作完成：$Action"
+} catch {
+    Write-Host ''
+    Write-Fail $_.Exception.Message
+    exit 1
+}

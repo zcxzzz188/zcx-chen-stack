@@ -1,4 +1,10 @@
-﻿#!/bin/bash
+#!/usr/bin/env bash
+# ==================================================================
+# [已弃用] 该脚本面向 docker-compose v1，且不会执行 G3 迁移或生成 Redis ACL 文件。
+# 请改用跨平台 PowerShell 7 脚本：
+#   pwsh -File script/deploy/ChenStack.ps1 -Action init|up|upgrade|rollback
+# 说明见 script/deploy/README.md。
+# ==================================================================
 
 # 辰栈 Docker 启动脚本
 

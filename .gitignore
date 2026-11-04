@@ -110,3 +110,9 @@ replay_pid*
 
 # 本地 RAG TLS 运行时材料（证书/信任库，禁止提交）
 /script/dev/rag-tls/
+
+# 一键部署脚本生成的隔离实例配置（含随机口令，禁止提交）
+/script/dev/.instances/
+/script/dev/redis-secure/redis.conf
+/script/dev/redis-secure/users.acl
+/script/dev/redis-secure/redis-app.secret
