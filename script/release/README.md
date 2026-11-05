@@ -7,7 +7,7 @@
 - 普通后端不提供发布HTTP路由或客服写工具；`CHEN_RAG_RELEASE_ENABLED`默认false。即使普通Main启动时误设true，没有专用命令的Invocation也会失败关闭。
 - 写PUBLISH/RECOVER/REVOKE只由 `com.zcx.chenstack.rag.RagPublicationCommand` 本地非Web进程执行。它只加载DataSource、Jackson及RAG组件，不加载业务调度器、控制器或聊天服务，完成后关闭上下文退出。
 - 独立入口要求显式写开关、匹配的运维身份/环境、confirmed=true的操作原件、实际JAR/资源/Manifest、持久预算及真实Catalog/集合前提。不是固定伪造签名，也不存在永真验签。
-- control目录仅放manifest.json和operation.json，宿主可信运维账户可写，容器只读。budget目录独立受保护、持久保存并以可写挂载供发送前记账，不放凭据；正式目录须在仓库外。部署前检查ACL，普通用户不得改写。TLS truststore仅用于Qdrant传输安全，与已取消的发布签名无关，继续沿用。
+- 控制目录存放 manifest 和本次写操作授权，容器只读。预算目录持久保存并以可写挂载供发送前记账。将两者放在实例的 .runtime 私有目录内，部署前核对宿主 ACL。TLS truststore 继续用于 Qdrant 传输验证。
 
 ## 构建与检查（PowerShell 7）
 
@@ -24,14 +24,15 @@ pwsh -NoProfile -File script/release/Test-ReleaseConfiguration.ps1 -SelfTest
 以下只准备操作记录，只有获准操作者显式-Confirm才创建，默认/ValidateOnly不写文件。替换所有占位值，输出不得存在。首次费用账本通过-InitializeBudget创建且禁止覆盖，已有账本的后续操作省略该开关，继续使用原账本和预算ID。
 
 ```powershell
+$rag = Join-Path (Get-Location) '.runtime/dev/rag'
 pwsh -NoProfile -File script/release/Prepare-ReleaseOperation.ps1 `
-  -ManifestPath 'D:\ChenStackRelease\control\manifest.json' `
-  -ArtifactPath 'D:\zcx-chen-stack\chen-stack-backend\target\zcx-chen-stack-backend-1.0-SNAPSHOT.jar' `
+  -ManifestPath (Join-Path $rag 'control/manifest.json') `
+  -ArtifactPath 'chen-stack-backend/target/zcx-chen-stack-backend-1.0-SNAPSHOT.jar' `
   -ExpectedManifestSha256 '<本次已核对的Manifest原始SHA256>' `
   -ExpectedArtifactSha256 '<本次已核对的JAR原始SHA256>' `
   -OperationId '<本次唯一操作ID>' -Operator 'codex-deployer' -Environment 'production' `
-  -MaxEmbeddingRequests 64 -OperationOutputPath 'D:\ChenStackRelease\control\operation.json' `
-  -InitializeBudget -BudgetLedgerPath 'D:\ChenStackRelease\budget\provider-attempts.ledger' `
+  -MaxEmbeddingRequests 64 -OperationOutputPath (Join-Path $rag 'control/operation.json') `
+  -InitializeBudget -BudgetLedgerPath (Join-Path $rag 'budget/provider-attempts.ledger') `
   -BudgetId '<本轮固定预算ID>' -Confirm
 ```
 
@@ -51,15 +52,18 @@ pwsh -NoProfile -File script/release/Prepare-ReleaseOperation.ps1 `
 
 正式切换前一次性授权必须绑定新Commit/JAR/Manifest、production/chen_stack/chen_platform_help_release_v1、39条范围、创建集合/Catalog写入、短时backend中断、回退及64/20付费上限。执行前核对最新29表备份及隔离恢复、实时Catalog/集合、TLS和独立Key（不打印值）、候选镜像JAR身份及旧后端回退。生成配置可使用 `config --quiet`，禁止打印含密钥的展开配置。
 
-下面只是获准后的命令形态，不是部署授权。先按原部署注入可信环境并在当前进程设控制路径、预算路径/ID和操作者。普通后端不得保留写开关；设置本地命令时使用一次性容器环境。若现有RAG后端持有Catalog owner锁，按批准计划只停止backend以交接，不停其他服务。
+获准执行写发布时，先按现行部署注入可信环境，设置控制路径、预算路径、预算 ID 和操作者。普通后端保持发布写开关关闭。若现有 RAG 后端持有 Catalog owner 锁，按批准计划只停止该后端完成交接。
+
+已有受控实例使用迁移后生成的 .runtime/dev/compose.json，保留实际运行镜像和绑定。
+新部署尚无受控 Compose 时，使用 script/dev/docker-compose.yml 并按本节为实际构建制品生成授权。
 
 ```powershell
 pwsh -NoProfile -File script/release/Test-ReleaseConfiguration.ps1 -ExistingDeployment
 if ($LASTEXITCODE -ne 0) { throw '发布配置预检失败。' }
-docker compose --project-name dev --project-directory 'D:\zcx-chen-stack\script\dev' `
-  --env-file 'D:\zcx-chen-stack\script\dev\.env' `
-  -f 'D:\zcx-chen-stack\script\dev\docker-compose.yml' `
-  -f 'D:\zcx-chen-stack\script\release\backend-rag.override.yml' `
+docker compose --project-name dev --project-directory script/dev `
+  --env-file .runtime/dev/.env `
+  -f .runtime/dev/compose.json `
+  -f script/release/backend-rag.override.yml `
   run --rm --no-deps -e CHEN_RAG_ENABLED=true -e CHEN_RAG_RELEASE_ENABLED=true `
   -e CHEN_RAG_RELEASE_RECOVERY_ENABLED=false --entrypoint java backend `
   -Dloader.main=com.zcx.chenstack.rag.RagPublicationCommand -cp /app/app.jar `

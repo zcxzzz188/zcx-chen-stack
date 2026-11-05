@@ -135,6 +135,12 @@ services:
     restart: unless-stopped
     ports:
       - "127.0.0.1:${BACKEND_PORT:-5000}:5000"
+    volumes:
+      - type: bind
+        source: ${AI_USAGE_DIRECTORY:-../../.runtime/dev/ai-usage}
+        target: /ai-usage
+        bind:
+          create_host_path: false
     environment:
       # 时区配置
       TZ: Asia/Shanghai
@@ -176,6 +182,8 @@ services:
       SPRING_AI_OPENAI_BASE_URL: ${SPRING_AI_OPENAI_BASE_URL:-https://api.deepseek.com}
       SPRING_AI_OPENAI_CHAT_OPTIONS_MODEL: ${SPRING_AI_OPENAI_CHAT_OPTIONS_MODEL:-deepseek-flash}
       AI_KNOWLEDGE_MODE: ${AI_KNOWLEDGE_MODE:-hybrid}
+      NORMAL_AI_USAGE: ${NORMAL_AI_USAGE:-true}
+      AI_USAGE_LEDGER_PATH: /ai-usage/events.jsonl
       CHEN_STACK_AI_DAILY_LIMIT: ${CHEN_STACK_AI_DAILY_LIMIT:-100}
       CHEN_WIKI_ENABLED: ${CHEN_WIKI_ENABLED:-true}
       CHEN_WIKI_PRODUCT_ENABLED: ${CHEN_WIKI_PRODUCT_ENABLED:-true}
@@ -214,10 +222,7 @@ services:
       CHEN_STACK_COLUMN_AUTO_AUDIT: ${CHEN_STACK_COLUMN_AUTO_AUDIT:-false}
       CHEN_STACK_COMMENT_AUTO_AUDIT: ${CHEN_STACK_COMMENT_AUTO_AUDIT:-false}
       CHEN_STACK_RATE_LIMIT_ENABLED: ${CHEN_STACK_RATE_LIMIT_ENABLED:-true}
-    # 说明：正式受控发布环境通过 script/release 的 per-release compose 单独挂载 Qdrant CA 信任库。
-    # 本地一键部署默认不启用 RAG（无 Embedding 凭据时知识库为空），因此这里不再无条件挂载
-    # rag-tls/qdrant-truststore.p12；需要本地 RAG + TLS 时用 script/deploy 的 -WithRag 参数，
-    # 它会追加 docker-compose.rag.yml 覆盖文件补回该挂载。
+    # 本地 Qdrant 只监听 loopback，正式受控发布继续使用独立的 TLS 配置。
     depends_on:
       mysql:
         condition: service_healthy
@@ -272,7 +277,7 @@ services:
       QDRANT__SERVICE__API_KEY: ${CHEN_RAG_QDRANT_API_KEY:-}
     ports:
       - "127.0.0.1:${CHEN_RAG_QDRANT_HTTP_PORT:-16333}:6333"
-      - "127.0.0.1:${CHEN_RAG_QDRANT_GRPC_PORT:-16334}:6334"
+      - "127.0.0.1:${CHEN_LOCAL_QDRANT_GRPC_PORT:-16334}:6334"
     volumes:
       - qdrant_data:/qdrant/storage
     networks:

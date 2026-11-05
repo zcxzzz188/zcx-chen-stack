@@ -25,7 +25,7 @@
     init | up | stop | restart | upgrade | rollback | migrate | status
 
 .PARAMETER Instance
-    实例名，默认 chen-stack。非默认值会生成独立的 env/override 文件，并隔离容器名、卷名与网络名。
+    实例名，默认 dev。非默认值会生成独立的 env/override 文件，并隔离容器、镜像、卷及网络。
 
 .PARAMETER WithRag
     同时启动 compose profile=rag 的本地 Qdrant，并写入 RAG 相关环境变量。
@@ -34,8 +34,8 @@
 .PARAMETER SkipBuild
     跳过宿主机产物构建与镜像重建（复用已有 target/*.jar 与 dist/）。
 
-.PARAMETER Force
-    允许 init 在实例容器已存在时继续（默认拒绝）。
+.PARAMETER PortBase
+    隔离实例首次初始化时使用的起始端口，预留连续 11 个 loopback 端口。
 
 .EXAMPLE
     pwsh -File script/deploy/ChenStack.ps1 -Action init
@@ -50,10 +50,12 @@
 param(
     [ValidateSet('init', 'up', 'stop', 'restart', 'upgrade', 'rollback', 'migrate', 'status')]
     [string]$Action = 'status',
+    [ValidatePattern('^[a-z][a-z0-9-]{0,47}$')]
     [string]$Instance = 'dev',
     [switch]$WithRag,
     [switch]$SkipBuild,
-    [switch]$Force
+    [ValidateRange(1024, 65525)]
+    [int]$PortBase
 )
 
 Set-StrictMode -Version Latest
@@ -65,6 +67,8 @@ $RepoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
 $ComposeDir = Join-Path $RepoRoot 'script/dev'
 $ComposeFile = Join-Path $ComposeDir 'docker-compose.yml'
 $DefaultInstance = 'dev'
+$RuntimeRoot = Join-Path $RepoRoot '.runtime'
+$RuntimeDir = Join-Path $RuntimeRoot $Instance
 $InfraServices = @('mysql', 'redis', 'minio', 'rabbitmq')
 $AppServices = @('backend', 'frontend-admin', 'frontend-user')
 $ImageServices = @{
@@ -110,13 +114,17 @@ function Assert-Command([string]$Name, [string]$Hint) {
 }
 
 function Get-EnvPath {
-    if ($Instance -eq $DefaultInstance) { return (Join-Path $ComposeDir '.env') }
-    return (Join-Path $ComposeDir ".instances/$Instance/.env")
+    $path = Join-Path $RuntimeDir '.env'
+    if (Test-Path -LiteralPath $path) { return $path }
+    $legacy = if ($Instance -eq $DefaultInstance) { Join-Path $ComposeDir '.env' }
+              else { Join-Path $ComposeDir ".instances/$Instance/.env" }
+    if (Test-Path -LiteralPath $legacy) { return $legacy }
+    return $path
 }
 
 function Get-OverridePath {
     if ($Instance -eq $DefaultInstance) { return $null }
-    return (Join-Path $ComposeDir ".instances/$Instance/override.yml")
+    return (Join-Path (Split-Path -Parent (Get-EnvPath)) 'override.yml')
 }
 
 function Get-ComposeArgs {
@@ -130,8 +138,15 @@ function Get-ComposeArgs {
 function Invoke-Compose([string[]]$Arguments, [switch]$AllowFailure) {
     $all = (Get-ComposeArgs) + $Arguments
     Write-Verbose ('docker ' + ($all -join ' '))
-    $output = & docker @all 2>&1
-    $code = $LASTEXITCODE
+    $useRuntimeDefault = $Action -in 'upgrade', 'rollback' -and -not $env:AI_USAGE_DIRECTORY -and
+        -not (Read-DotEnv (Get-EnvPath)).Contains('AI_USAGE_DIRECTORY')
+    if ($useRuntimeDefault) { $env:AI_USAGE_DIRECTORY = Join-Path $RuntimeDir 'ai-usage' }
+    try {
+        $output = & docker @all 2>&1
+        $code = $LASTEXITCODE
+    } finally {
+        if ($useRuntimeDefault) { $env:AI_USAGE_DIRECTORY = $null }
+    }
     if ($code -ne 0 -and -not $AllowFailure) {
         Write-Host ($output | Out-String)
         throw "docker compose $($Arguments -join ' ') 失败（exit=$code）"
@@ -153,6 +168,44 @@ function New-Secret([int]$Bytes = 32) {
     $buffer = [byte[]]::new($Bytes)
     [System.Security.Cryptography.RandomNumberGenerator]::Fill($buffer)
     return [Convert]::ToHexString($buffer).ToLowerInvariant()
+}
+
+function Initialize-PrivateRuntime {
+    if (Test-Path -LiteralPath $RuntimeRoot) {
+        $directory = Get-Item -LiteralPath $RuntimeRoot -Force
+        if (-not $directory.PSIsContainer -or $directory.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+            throw '.runtime 必须是当前仓库中的普通目录'
+        }
+    } else {
+        New-Item -ItemType Directory -Path $RuntimeRoot | Out-Null
+    }
+    if ($IsWindows) {
+        $owner = [Security.Principal.WindowsIdentity]::GetCurrent().User
+        $directory = [IO.DirectoryInfo]::new($RuntimeRoot)
+        $acl = [IO.FileSystemAclExtensions]::GetAccessControl($directory, [Security.AccessControl.AccessControlSections]::Access)
+        $acl.SetAccessRuleProtection($true, $false)
+        foreach ($rule in $acl.GetAccessRules($true, $false, [Security.Principal.SecurityIdentifier])) {
+            $acl.PurgeAccessRules($rule.IdentityReference)
+        }
+        foreach ($sid in @($owner, [Security.Principal.SecurityIdentifier]::new('S-1-5-18'), [Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'))) {
+            $rule = [Security.AccessControl.FileSystemAccessRule]::new(
+                $sid, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
+            $acl.AddAccessRule($rule)
+        }
+        [IO.FileSystemAclExtensions]::SetAccessControl($directory, $acl)
+    } else {
+        & chmod 700 -- $RuntimeRoot
+        if ($LASTEXITCODE -ne 0) { throw '无法限制 .runtime 的权限' }
+    }
+    foreach ($path in @($RuntimeDir, (Join-Path $RuntimeDir 'redis'), (Join-Path $RuntimeDir 'ai-usage'),
+            (Join-Path $RuntimeDir 'rag'), (Join-Path $RuntimeDir 'rag/control'),
+            (Join-Path $RuntimeDir 'rag/budget'), (Join-Path $RuntimeDir 'secrets'))) {
+        $existing = Get-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+        if ($existing -and (-not $existing.PSIsContainer -or $existing.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            throw "运行目录不符合要求：$path"
+        }
+        New-Item -ItemType Directory -Path $path -Force | Out-Null
+    }
 }
 
 function Read-DotEnv([string]$Path) {
@@ -266,25 +319,33 @@ function Initialize-Environment {
             $generated += $key
         }
     }
+    if ($Instance -ne $DefaultInstance -and $PortBase) {
+        $ports = @('MYSQL_PORT', 'REDIS_PORT', 'MINIO_API_PORT', 'MINIO_CONSOLE_PORT',
+            'RABBITMQ_PORT', 'RABBITMQ_MANAGEMENT_PORT', 'BACKEND_PORT', 'ADMIN_PORT', 'USER_PORT',
+            'CHEN_RAG_QDRANT_HTTP_PORT', 'CHEN_LOCAL_QDRANT_GRPC_PORT')
+        for ($i = 0; $i -lt $ports.Count; $i++) { $map[$ports[$i]] = [string]($PortBase + $i) }
+        $map['MINIO_PUBLIC_POINT'] = "http://127.0.0.1:$($map['MINIO_API_PORT'])"
+        $map['FRONTEND_ADMIN_HOST'] = "http://127.0.0.1:$($map['ADMIN_PORT'])/"
+        $map['FRONTEND_USER_HOST'] = "http://127.0.0.1:$($map['USER_PORT'])/"
+    }
     if ($WithRag) {
-        $map['SPRING_PROFILES_ACTIVE'] = 'dev,rag'
-        $map['CHEN_RAG_ENABLED'] = 'true'
+        if ($map['CHEN_RAG_EMBEDDING_API_KEY']) {
+            $map['SPRING_PROFILES_ACTIVE'] = 'dev,rag'
+            $map['CHEN_RAG_ENABLED'] = 'true'
+        }
         $map['CHEN_RAG_QDRANT_HOST'] = 'qdrant'
         $map['CHEN_RAG_QDRANT_TLS'] = 'false'
-        Write-Warn2 '已启用 RAG 环境变量；RAG 仍需要独立 Embedding 凭据与一次受控知识发布才会返回知识'
+        $map['CHEN_RAG_QDRANT_GRPC_PORT'] = '6334'
+        Write-Warn2 '本地 Qdrant 已选用；RAG 需要 Embedding 凭据与一次受控知识发布'
     }
     if ($map.Contains('SPRING_AI_OPENAI_API_KEY') -and [string]::IsNullOrWhiteSpace([string]$map['SPRING_AI_OPENAI_API_KEY'])) {
         Write-Warn2 'SPRING_AI_OPENAI_API_KEY 为空：小辰会返回模型服务错误，请在 .env 中填入 DeepSeek Key'
     }
 
-    # Redis 安全配置路径：隔离实例必须使用自己的目录，避免与默认实例共用 ACL。
-    if ($Instance -eq $DefaultInstance) {
-        $redisDir = Join-Path $ComposeDir 'redis-secure'
-    } else {
-        $redisDir = Join-Path $ComposeDir ".instances/$Instance/redis-secure"
-        $map['REDIS_SECURE_CONFIG_DIRECTORY'] = $redisDir
-        $map['REDIS_HEALTH_PASSWORD_FILE'] = (Join-Path $redisDir 'redis-app.secret')
-    }
+    $redisDir = Join-Path $RuntimeDir 'redis'
+    $map['REDIS_SECURE_CONFIG_DIRECTORY'] = $redisDir
+    $map['REDIS_HEALTH_PASSWORD_FILE'] = (Join-Path $redisDir 'redis-app.secret')
+    $map['AI_USAGE_DIRECTORY'] = Join-Path $RuntimeDir 'ai-usage'
     Write-DotEnv $envPath $map
     if ($generated.Count -gt 0) { Write-Ok ("已生成随机口令：" + ($generated -join ', ')) }
 
@@ -349,25 +410,84 @@ function New-InstanceOverride {
     Write-Ok "已生成隔离覆盖文件 $override"
 }
 
+function Assert-FreshCompose($EnvMap) {
+    $result = Invoke-Compose @('config', '--format', 'json') -AllowFailure
+    if ($result.ExitCode -ne 0) { throw '初始化 Compose 配置无法解析' }
+    $model = $result.Output | ConvertFrom-Json -AsHashtable
+    if ($model.name -cne $Instance) { throw 'Compose 项目名不符' }
+    foreach ($volume in $model.volumes.Values) {
+        if (($Instance -ne $DefaultInstance -and $volume.name -notlike "$Instance-*") -or
+            (Invoke-Docker @('volume', 'inspect', $volume.name) -AllowFailure).ExitCode -eq 0) {
+            throw "初始化要求独占新数据卷：$($volume.name)"
+        }
+    }
+    foreach ($network in $model.networks.Values) {
+        if (($Instance -ne $DefaultInstance -and $network.name -cne "$Instance-network") -or
+            (Invoke-Docker @('network', 'inspect', $network.name) -AllowFailure).ExitCode -eq 0) {
+            throw "初始化要求独占新网络：$($network.name)"
+        }
+    }
+    foreach ($key in $model.services.Keys) {
+        $service = $model.services[$key]
+        if ($Instance -ne $DefaultInstance -and $service.container_name -cne "$Instance-$key") {
+            throw "隔离容器名不符：$key"
+        }
+        if ((Invoke-Docker @('container', 'inspect', $service.container_name) -AllowFailure).ExitCode -eq 0) {
+            throw "已有容器：$($service.container_name)"
+        }
+        foreach ($mount in $service['volumes']) {
+            if ($mount['type'] -ne 'bind') { continue }
+            $source = [IO.Path]::GetFullPath($mount.source)
+            if (-not $source.StartsWith(($RepoRoot + [IO.Path]::DirectorySeparatorChar), [StringComparison]::OrdinalIgnoreCase)) {
+                throw "初始化绑定不在仓库内：$key/$($mount.target)"
+            }
+        }
+    }
+    $credentials = @{
+        mysql = @('MYSQL_ROOT_PASSWORD', 'MYSQL_PASSWORD')
+        backend = @('MYSQL_PASSWORD', 'REDIS_PASSWORD', 'MINIO_SECRET_KEY', 'CHEN_STACK_JWT_SECRET')
+        rabbitmq = @('RABBITMQ_DEFAULT_PASS')
+    }
+    foreach ($service in $credentials.Keys) {
+        foreach ($key in $credentials[$service]) {
+            if ($model.services[$service].environment[$key] -cne $EnvMap[$key]) {
+                throw "外部环境覆盖实例凭据：$key"
+            }
+        }
+    }
+    if ($Instance -ne $DefaultInstance) {
+        $published = @($model.services.Values | ForEach-Object { $_['ports'] } |
+                Where-Object { $_ } | ForEach-Object {
+                    if ($_['host_ip'] -cne '127.0.0.1') { throw '隔离端口必须绑定 loopback' }
+                    [int]$_['published']
+                } | Sort-Object)
+        $lastOffset = if ($WithRag) { 10 } else { 8 }
+        if (($published -join ',') -cne (($PortBase..($PortBase + $lastOffset)) -join ',')) {
+            throw '隔离端口被外部配置覆盖'
+        }
+    }
+    Write-Ok 'Compose 项目、容器、网络、卷和宿主挂载校验通过'
+}
+
 # ---------------------------------------------------------------- 构建
 
 function Build-HostArtifacts {
     if ($SkipBuild) { Write-Warn2 '已跳过宿主机产物构建（-SkipBuild）'; return }
     $jar = Join-Path $RepoRoot 'chen-stack-backend/target/zcx-chen-stack-backend-1.0-SNAPSHOT.jar'
-    if (Test-Path -LiteralPath $jar) {
+    if ($Action -ne 'upgrade' -and (Test-Path -LiteralPath $jar)) {
         Write-Ok '后端 JAR 已存在，复用现有产物'
     } else {
         Assert-Command 'mvn' '构建后端需要 JDK 21 + Maven 3.9+，或先在本地执行 mvn package'
         Write-Step '构建后端 JAR（跳过测试）'
         Push-Location (Join-Path $RepoRoot 'chen-stack-backend')
         try {
-            & mvn --batch-mode -DskipTests package
+            & mvn --batch-mode '-Dmaven.test.skip=true' package
             if ($LASTEXITCODE -ne 0) { throw '后端构建失败' }
         } finally { Pop-Location }
     }
     foreach ($name in @('chen-stack-admin', 'chen-stack-user')) {
         $dist = Join-Path $RepoRoot "chen-stack-frontend/$name/dist/index.html"
-        if (Test-Path -LiteralPath $dist) {
+        if ($Action -ne 'upgrade' -and (Test-Path -LiteralPath $dist)) {
             Write-Ok "$name dist 已存在，复用现有产物"
             continue
         }
@@ -375,7 +495,10 @@ function Build-HostArtifacts {
         Write-Step "构建 $name"
         Push-Location (Join-Path $RepoRoot "chen-stack-frontend/$name")
         try {
-            if (-not (Test-Path -LiteralPath 'node_modules')) { & npm ci --no-audit --no-fund }
+            if (-not (Test-Path -LiteralPath 'node_modules')) {
+                & npm ci --no-audit --no-fund
+                if ($LASTEXITCODE -ne 0) { throw "$name 依赖安装失败" }
+            }
             & npm run build
             if ($LASTEXITCODE -ne 0) { throw "$name 构建失败" }
         } finally { Pop-Location }
@@ -388,6 +511,28 @@ function Build-Images {
     $result = Invoke-Compose @('build', 'backend', 'frontend-admin', 'frontend-user')
     Write-Verbose $result.Output
     Write-Ok '镜像构建完成'
+}
+
+function Initialize-AdminAccount {
+    $mysql = Get-ContainerName 'mysql'
+    $image = $ImageServices['backend']
+    if ($Instance -ne $DefaultInstance) { $image = "${image}-$Instance`:$Instance" }
+    $password = New-Secret 8
+    $jshellInput = "System.out.println(""HASH="" + org.springframework.security.crypto.bcrypt.BCrypt.hashpw(""$password"", org.springframework.security.crypto.bcrypt.BCrypt.gensalt()));" + [char]10 + '/exit'
+    $hashScript = 'set -eu; cd "$(mktemp -d)"; entry=$(jar tf /app/app.jar | grep -E "^BOOT-INF/lib/spring-security-crypto-[^/]+\.jar$"); jar xf /app/app.jar "$entry"; exec jshell --feedback silent --class-path "$entry" -'
+    $output = @($jshellInput | & docker run -i --rm --pull never --network none --entrypoint sh $image -c $hashScript 2>$null)
+    if ($LASTEXITCODE) { throw '无法为新实例生成管理端密码' }
+    $hash = @($output | ForEach-Object {
+        if ($_ -match 'HASH=(\$2[aby]\$[0-9]{2}\$[A-Za-z0-9./]{53})') { $Matches[1] }
+    })
+    if ($hash.Count -ne 1) { throw '新实例管理端密码的哈希结果无效' }
+    $path = Join-Path $RuntimeDir 'secrets/initial-admin.env'
+    [IO.File]::WriteAllText($path, "USERNAME=chenstack`nPASSWORD=$password`n", [Text.UTF8Encoding]::new($false))
+    $sql = "UPDATE sys_user SET password='$($hash[0])' WHERE id=1 AND username='chenstack'; SELECT ROW_COUNT();"
+    $write = Invoke-Docker @('exec', $mysql, 'sh', '-c',
+        'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysql -uroot -D "$MYSQL_DATABASE" -N -B -e "$1"', 'sh', $sql) -AllowFailure
+    if ($write.ExitCode -ne 0 -or $write.Output -cne '1') { throw '无法初始化新实例的管理端账号' }
+    Write-Ok "首次管理端登录凭据已保存到 $path"
 }
 
 # ---------------------------------------------------------------- 服务与迁移
@@ -407,34 +552,32 @@ function Wait-Infrastructure {
     $mysql = Get-ContainerName 'mysql'
     if (-not $mysql) { throw '缺少 MySQL 容器' }
     if (-not (Wait-Until -Label 'MySQL 就绪' -TimeoutSeconds 300 -Probe {
-                (Invoke-Docker @('exec', $mysql, 'sh', '-c', 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql -uroot -N -B -e "SELECT 1"') -AllowFailure).Output -eq '1'
+                (Invoke-Docker @('exec', $mysql, 'sh', '-c', 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql --protocol=TCP -h127.0.0.1 -uroot -N -B -e "SELECT 1"') -AllowFailure).Output -eq '1'
             })) { throw 'MySQL 未在超时时间内就绪' }
 
     $redis = Get-ContainerName 'redis'
     if ($redis) {
-        [void](Wait-Until -Label 'Redis 就绪' -TimeoutSeconds 120 -Probe {
+        if (-not (Wait-Until -Label 'Redis 就绪' -TimeoutSeconds 120 -Probe {
                 (Invoke-Docker @('exec', $redis, 'sh', '-c', 'REDISCLI_AUTH="$(cat /run/secrets/redis-health-password)" redis-cli --no-auth-warning --user "$REDIS_USERNAME" ping') -AllowFailure).Output -match 'PONG'
-            })
+            })) { throw 'Redis 未就绪' }
     }
     $minio = Get-ContainerName 'minio'
     if ($minio) {
-        [void](Wait-Until -Label 'MinIO 就绪' -TimeoutSeconds 120 -Probe {
+        if (-not (Wait-Until -Label 'MinIO 就绪' -TimeoutSeconds 120 -Probe {
                 (Invoke-Docker @('exec', $minio, 'curl', '-fsS', 'http://localhost:9000/minio/health/live') -AllowFailure).ExitCode -eq 0
-            })
+            })) { throw 'MinIO 未就绪' }
     }
     $rabbit = Get-ContainerName 'rabbitmq'
     if ($rabbit) {
-        [void](Wait-Until -Label 'RabbitMQ 就绪' -TimeoutSeconds 180 -Probe {
+        if (-not (Wait-Until -Label 'RabbitMQ 就绪' -TimeoutSeconds 180 -Probe {
                 (Invoke-Docker @('exec', $rabbit, 'rabbitmq-diagnostics', '-q', 'ping') -AllowFailure).Output -match 'Ping succeeded'
-            })
+            })) { throw 'RabbitMQ 未就绪' }
     }
-    if ($WithRag) {
-        $qdrant = Get-ContainerName 'qdrant'
-        if ($qdrant) {
-            [void](Wait-Until -Label 'Qdrant 就绪' -TimeoutSeconds 120 -Probe {
+    $qdrant = Get-ContainerName 'qdrant'
+    if ($qdrant) {
+        if (-not (Wait-Until -Label 'Qdrant 就绪' -TimeoutSeconds 120 -Probe {
                     (Invoke-Docker @('exec', $qdrant, 'bash', '-ec', 'exec 3<>/dev/tcp/127.0.0.1/6333; printf "GET /readyz HTTP/1.0\r\nHost: localhost\r\n\r\n" >&3; head -n 1 <&3 | grep -q 200') -AllowFailure).ExitCode -eq 0
-                })
-        }
+                })) { throw 'Qdrant 未就绪' }
     }
 }
 
@@ -478,10 +621,10 @@ function Wait-Applications {
     }
     foreach ($service in @('frontend-admin', 'frontend-user')) {
         $name = Get-ContainerName $service
-        if (-not $name) { continue }
-        [void](Wait-Until -Label "$service 可访问" -TimeoutSeconds 120 -Probe {
+        if (-not $name) { throw "缺少前端容器：$service" }
+        if (-not (Wait-Until -Label "$service 可访问" -TimeoutSeconds 120 -Probe {
                 (Invoke-Docker @('exec', $name, 'curl', '-fsS', '-o', '/dev/null', 'http://127.0.0.1/') -AllowFailure).ExitCode -eq 0
-            })
+            })) { throw "前端未就绪：$service" }
     }
 }
 
@@ -533,36 +676,38 @@ function Invoke-Init {
     Write-Title "首次全新部署（实例 $Instance）"
     Assert-Command 'docker' '请先安装 Docker Desktop'
     [void](Invoke-Docker @('version', '--format', '{{.Server.Version}}'))
+    $existing = Invoke-Docker @('ps', '-aq', '--filter', "label=com.docker.compose.project=$Instance")
+    if ($existing.Output) {
+        throw "实例 $Instance 已有容器；请使用 up 或按已有数据流程升级"
+    }
+    if ($Instance -ne $DefaultInstance -and -not $PortBase) {
+        throw '首次创建隔离实例需指定 -PortBase'
+    }
     if ($Instance -ne $DefaultInstance) {
-        New-InstanceOverride
+        $ports = $PortBase..($PortBase + 10)
+        $listeners = [Net.NetworkInformation.IPGlobalProperties]::GetIPGlobalProperties().GetActiveTcpListeners()
+        if (@($listeners | Where-Object { $_.Port -in $ports }).Count) { throw '隔离端口范围已被占用' }
     }
-    $existing = @()
-    foreach ($service in ($ServiceContainers.Keys)) {
-        $name = Get-ContainerName $service
-        if ($name) { $existing += $name }
-    }
-    $backendContainer = Get-ContainerName 'backend'
-    if ($existing.Count -gt 0) {
-        if ($backendContainer -and (Test-ContainerRunning $backendContainer) -and -not $Force) {
-            throw "实例 $Instance 已在运行。日常启动请用 -Action up，升级请用 -Action upgrade；确认要重新初始化请加 -Force。"
-        }
-        Write-Warn2 "实例 $Instance 已有 $($existing.Count) 个容器，本次将按当前配置重建（数据卷保留）"
-    }
+    Initialize-PrivateRuntime
     $envMap = Initialize-Environment
+    New-InstanceOverride
+    Assert-FreshCompose $envMap
     Build-HostArtifacts
     Build-Images
 
     Write-Step '启动基础服务'
-    [void](Invoke-Compose (@('up', '-d', '--no-build') + $InfraServices))
+    $services = if ($WithRag) { $InfraServices + 'qdrant' } else { $InfraServices }
+    [void](Invoke-Compose (@('up', '-d', '--no-build') + $services))
     Wait-Infrastructure
     Invoke-Migrations
+    Initialize-AdminAccount
 
     Write-Step '启动应用服务'
     [void](Invoke-Compose (@('up', '-d', '--no-build', '--pull', 'never') + $AppServices))
     Wait-Applications
     Show-Access (Get-EnvPath)
     Write-Host ''
-    Write-Host '  首次登录提示：管理端账号来自 sql/chen_stack.sql 的初始数据，请在首次登录后立即修改演示密码。' -ForegroundColor Yellow
+    Write-Host '  首次登录后请修改管理端密码并删除初始凭据文件。' -ForegroundColor Yellow
     Write-Host '  小辰知识问答需要先准备知识：管理端「AI知识管理 → 整理知识」可手动新建并发布 Wiki 知识（无需 Embedding）。' -ForegroundColor Yellow
 }
 
@@ -620,6 +765,7 @@ function Invoke-Upgrade {
     $backend = Get-ContainerName 'backend'
     if (-not $backend) { throw "实例 $Instance 尚未初始化，请先执行 -Action init" }
     Assert-NotReleaseManaged $backend
+    Initialize-PrivateRuntime
 
     Write-Step '记录当前应用镜像，供回滚使用'
     foreach ($service in $ImageServices.Keys) {
@@ -647,6 +793,7 @@ function Invoke-Rollback {
     $backend = Get-ContainerName 'backend'
     if (-not $backend) { throw "实例 $Instance 尚未初始化" }
     Assert-NotReleaseManaged $backend
+    Initialize-PrivateRuntime
     foreach ($service in $ImageServices.Keys) {
         $tag = "$($ImageServices[$service]):previous"
         if ($Instance -ne $DefaultInstance) { $tag = "$($ImageServices[$service])-$Instance`:previous" }

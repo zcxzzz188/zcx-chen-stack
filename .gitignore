@@ -35,6 +35,7 @@ job
 
 # 本地工作证据
 /.work/
+/.runtime/
 
 
 node_modules/

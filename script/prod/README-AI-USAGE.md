@@ -1,7 +1,7 @@
 # 正式 AI 持续使用
 
 在原有部署 Compose 文件之后显式追加 `docker-compose-ai-usage.yml`，并将
-`AI_USAGE_DIRECTORY` 设置为仓库之外、已创建且仅运维账户可访问的持久目录。
+`AI_USAGE_DIRECTORY` 设置为已创建且仅运维账户可访问的私有持久目录，例如本地部署的 `.runtime/dev/ai-usage`。
 该 overlay 启用 `NORMAL_AI_USAGE=true`，将追加计量写入 `/ai-usage/events.jsonl`。
 正常问答和编译不需要测试 grant、到期时间或每轮总调用上限；历史发布命令仍使用独立授权。
 

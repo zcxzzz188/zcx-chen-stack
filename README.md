@@ -135,16 +135,23 @@ zcx-chen-stack/
 ### 5.1 环境要求
 
 - Windows 11 + Docker Desktop（Compose v2）+ PowerShell 7
-- 首次构建需要 JDK 21（Maven 3.9+）与 Node.js 20+
+- 首次构建需要 JDK 21、Maven 3.9+、Node.js 22 与 npm，并能访问依赖仓库和 Docker 镜像仓库。
 - 若仓库已带构建产物（`chen-stack-backend/target/*.jar`、两个前端 `dist/`），可加 `-SkipBuild` 跳过工具链要求
 
-### 5.2 一条命令
+### 5.2 全新克隆
 
 ```powershell
+git clone https://github.com/zcxzzz188/zcx-chen-stack.git
+Set-Location zcx-chen-stack
 pwsh -File script/deploy/ChenStack.ps1 -Action init
 ```
 
-脚本会生成 `.env`（随机强口令）、Redis ACL 配置、构建镜像、执行全部 SQL 迁移、启动并等待健康检查。
+脚本在 `.runtime/dev/` 生成 `.env`、随机强口令、Redis ACL 和 AI 用量账本，创建 RAG 私有目录，
+构建前后端与镜像，初始化数据库、执行增量迁移并等待服务就绪。克隆后直接运行即可，无需历史发布目录。
+`.runtime/` 受 Git 忽略，数据库、Redis、MinIO 和可选 Qdrant 的数据分别由 Docker 命名卷保存。
+
+本机已有部署时，请用 `-Instance chenstack-test -PortBase 29100` 创建隔离实例。
+选择未占用的连续 11 个端口，后续对该实例执行 `up`、`stop` 或 `status` 时继续传入相同的 `-Instance`。
 
 ### 5.3 之后常用
 
@@ -175,15 +182,15 @@ pwsh -File script/deploy/ChenStack.ps1 -Action stop      # 停止容器（保留
 | MinIO 控制台 | http://127.0.0.1:9001 |
 | RabbitMQ 管理 | http://127.0.0.1:15672 |
 
-初始管理员账号来自 `sql/chen_stack.sql` 演示数据，**首次登录后请立即修改密码**。
+首次管理端登录信息在 `.runtime/<实例名>/secrets/initial-admin.env`。登录后请修改密码并删除该文件。
 
 ### 5.5 知识准备（首次部署后）
 
-全新环境的**知识库是空的**：小辰能自然对话、能查本人文章，但知识类问题会如实回答「没有查到」。
+全新环境的**知识库是空的**。配置聊天 API Key 后才能使用小辰对话。可在管理端先准备知识。
 按需选择一条路径：
 
 1. **Wiki（最快，不需要 Embedding）**：管理端 →「AI知识管理 → 整理知识」→ 手动新建 → 审核 → 发布。
-2. **RAG（需要向量化）**：准备独立 Embedding 凭据与 Qdrant，按 `script/release/README.md`
+2. **RAG（需要向量化）**：首次部署可加 `-WithRag` 启动本地 Qdrant。准备独立 Embedding 凭据，按 `script/release/README.md`
    的受控发布流程导入 `src/main/resources/knowledge/` 下的草稿（会产生 Embedding 费用）。
 
 内置的 `knowledge/*.json` 是**未发布草稿**（`NOT_PUBLISHED` / `CONTENT_REVIEW_REQUIRED`），
@@ -192,9 +199,10 @@ pwsh -File script/deploy/ChenStack.ps1 -Action stop      # 停止容器（保留
 ## 6. 环境变量
 
 完整清单见 [`script/dev/.env.example`](script/dev/.env.example)（仅含占位符，不含任何真实密钥）。
-一键部署脚本会为所有空密码生成随机值。
+一键部署生成的口令保存在 `.runtime/<实例名>/.env`。在该文件填写可选 Provider 密钥。
+已有普通部署仍可使用原 env。更改 env 后需重建受影响服务，`up` 仅启动已有容器。
 
-### 必须设置
+### 自动生成的口令与可选模型 Key
 
 | 变量 | 用途 |
 |---|---|
@@ -225,7 +233,7 @@ pwsh -File script/deploy/ChenStack.ps1 -Action stop      # 停止容器（保留
 `BACKEND_PORT=5000`、`ADMIN_PORT=8000`、`USER_PORT=7000`、`MYSQL_PORT=3308`、
 `REDIS_PORT=6379`、`MINIO_API_PORT=9000`、`MINIO_CONSOLE_PORT=9001`、
 `RABBITMQ_PORT=5672`、`RABBITMQ_MANAGEMENT_PORT=15672`；
-RAG 选配 `CHEN_RAG_QDRANT_GRPC_PORT`（默认 6334 / 本地 profile 16334）。
+RAG 选配 `CHEN_RAG_QDRANT_GRPC_PORT`（容器内默认 6334）和 `CHEN_LOCAL_QDRANT_GRPC_PORT`（宿主默认 16334）。
 
 ## 7. 数据库初始化
 
@@ -266,7 +274,7 @@ cd chen-stack-frontend/chen-stack-user;  npm install; npm run dev; npm run test
 
 | 现象 | 原因与处理 |
 |---|---|
-| `init` 报「实例已存在容器」 | 已有部署，用 `-Action up` 或 `-Action upgrade`；确实要重建加 `-Force` |
+| `init` 报实例已有容器或数据卷 | 已有部署用 `-Action up` 或按已有数据流程升级。受控 RAG 实例使用发布流程。 |
 | `upgrade` 被拒绝 | 该实例由受控发布流程管理（见第 9 节），需走 `script/release` |
 | 后端启动失败、日志含 `PUBLICATION_*` | 运行 JAR 与 RAG 发布清单不匹配，属于 fail-closed；按受控发布流程重新生成清单 |
 | RAG 显示「知识索引尚未就绪」 | 未完成知识发布或 Qdrant/Embedding 不可用；混合模式会自动只用 Wiki |

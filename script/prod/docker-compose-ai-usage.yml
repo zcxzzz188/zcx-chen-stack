@@ -1,5 +1,5 @@
 # Optional supported overlay: durable normal AI metering, separate from release/test budgets.
-# Supply AI_USAGE_DIRECTORY as an existing, access-controlled directory outside the repository.
+# Set AI_USAGE_DIRECTORY to an existing private runtime directory.
 services:
   backend:
     environment:

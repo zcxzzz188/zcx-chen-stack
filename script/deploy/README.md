@@ -10,7 +10,7 @@
 | Docker Desktop | 4.x（Compose v2） | 必须已启动；Windows 建议开启 WSL2 后端 |
 | PowerShell | 7.0+ | 不要使用 Windows PowerShell 5.1 |
 | JDK | 21 | 仅首次构建后端 JAR 需要；也要有 `mvn`（Maven 3.9+） |
-| Node.js | 20+ | 仅首次构建两个前端 `dist/` 需要 |
+| Node.js | 22 与 npm | 仅首次构建两个前端 `dist/` 需要 |
 | 网络 | 可访问 Docker Hub / Maven 中央仓库 / npm | 首次构建与拉取基础镜像需要 |
 
 > 如果仓库里已经有 `chen-stack-backend/target/*.jar` 和两个前端的 `dist/`，
@@ -26,16 +26,19 @@ pwsh -File script/deploy/ChenStack.ps1 -Action init
 
 脚本会依次完成：
 
-1. 从 `script/dev/.env.example` 生成 `script/dev/.env`（**已存在则不覆盖**）；
+1. 从 `script/dev/.env.example` 生成 `.runtime/dev/.env`（已有值保留）；
 2. 为空密码生成随机强口令（MySQL / Redis / MinIO / RabbitMQ / JWT / Qdrant）；
-3. 生成 `script/dev/redis-secure/{redis.conf,users.acl,redis-app.secret}`（LF 换行，ACL 与 `.env` 口令一致）；
+3. 在 `.runtime/dev/` 生成 Redis 配置、连续计量账本和 RAG 控制目录。Redis ACL 使用 LF 换行并匹配 env 口令；
 4. 缺少产物时构建后端 JAR 与两个前端 `dist/`，然后构建三个应用镜像；
 5. `docker compose up -d` 启动 MySQL / Redis / MinIO / RabbitMQ，等待健康；
 6. **按顺序执行幂等 SQL 迁移**（见第 4 节），已应用的跳过；
-7. 启动 backend / admin / user，等待 `/actuator/health` 为 `UP` 与两个前端可访问；
+7. 为新库的初始管理员生成随机密码，再启动 backend / admin / user 并等待健康检查；
 8. 打印访问入口。
 
-首次登录账号来自 `sql/chen_stack.sql` 的演示数据，**登录后请立即修改密码**。
+首次登录信息写到 `.runtime/<实例名>/secrets/initial-admin.env`。登录后请修改密码并删除该文件。
+
+`init` 要求项目容器、网络和数据卷尚未创建。已有实例使用 `up` 或对应升级流程。
+可选的聊天 API Key 填入生成的 env，已有数据部署的旧 env 路径仍可读取。
 
 ### B. 已有数据环境升级
 
@@ -87,10 +90,8 @@ pwsh -File script/deploy/ChenStack.ps1 -Action migrate   # 只跑幂等迁移
 pwsh -File script/deploy/ChenStack.ps1 -Action init -WithRag
 ```
 
-* 追加 `compose --profile rag`，启动内置 Qdrant（`chen-stack-qdrant`，gRPC 16334）；
-* 把 `SPRING_PROFILES_ACTIVE` 改成 `dev,rag`、`CHEN_RAG_ENABLED=true`、`CHEN_RAG_QDRANT_HOST=qdrant`；
-* **仍然需要**：在 `.env` 里填 `CHEN_RAG_EMBEDDING_API_KEY`，并完成一次受控知识发布。
-  没有发布回执时，管理端会把 RAG 显示为「知识索引尚未就绪」，智能混合会自动只用 Wiki 一侧——这是**预期的 fail-closed**，不是 bug。
+* 追加 `compose --profile rag`，启动内置 Qdrant（`chen-stack-qdrant`，宿主 gRPC 默认 16334）。
+* 在实例 env 配置独立的 `CHEN_RAG_EMBEDDING_API_KEY`，启用 `dev,rag` 和 `CHEN_RAG_ENABLED=true` 后，按 [受控发布流程](../release/README.md) 准备知识及回执。未配置 Embedding 凭据时，本地 Qdrant 可就绪，RAG 读取保持关闭。
 
 不想启用 RAG 时，最快的知识体验路径是 **Wiki**（纯数据库，无需 Embedding）：
 管理端 →「AI知识管理 → 整理知识」→ 手动新建 → 审核 → 发布，小辰即可引用该知识回答。
@@ -113,16 +114,13 @@ pwsh -File script/deploy/ChenStack.ps1 -Action init -WithRag
 ## 5. 隔离实例（并行验证）
 
 ```powershell
-pwsh -File script/deploy/ChenStack.ps1 -Action init -Instance chenstack-test -SkipBuild
+pwsh -File script/deploy/ChenStack.ps1 -Action init -Instance chenstack-test -PortBase 29100
 ```
 
-`-Instance` 会生成 `script/dev/.instances/<实例名>/override.yml`：
-容器名、数据卷名、网络名与三个应用镜像名都会加实例后缀，因此**不会影响默认实例**。
-隔离实例的配置与 Redis 密钥都放在该目录下（已被 `.gitignore` 忽略）。
+`-Instance` 会生成 `.runtime/<实例名>/override.yml`，隔离容器、镜像、数据卷和网络。
+`-PortBase` 选择独立的连续 11 个 loopback 端口，使用相同 `-Instance` 管理该实例。
 
-> 端口仍来自 `.env`：并行运行前请把该实例 `.env` 里的 `MYSQL_PORT`、`BACKEND_PORT` 等改成未占用端口。
-
-## 6. 已验证范围（2026-11-04）
+## 6. 历史验收记录（2026-11-04）
 
 在隔离实例 `chenstack-verify`（独立端口 15000/18000/17000/13308/26379）上实测：
 
@@ -140,15 +138,4 @@ pwsh -File script/deploy/ChenStack.ps1 -Action init -Instance chenstack-test -Sk
 
 ## 7. Linux / macOS
 
-脚本为 PowerShell 编写。Linux/macOS 上可用 `pwsh`（PowerShell 7 跨平台）执行同一命令；
-也可直接用 Docker Compose 手工等价操作，但需要自行完成第 2 节的 A 步 1~6：
-
-```bash
-cp script/dev/.env.example script/dev/.env   # 然后手工填密码
-# 生成 redis-secure/{redis.conf,users.acl,redis-app.secret}（必须 LF 换行）
-docker compose -p dev --project-directory script/dev -f script/dev/docker-compose.yml up -d --no-build mysql redis minio rabbitmq
-# 依次导入 sql/g2_rag_catalog.sql、g3_wiki_*.sql、g3_ai_knowledge_*.sql
-docker compose -p dev --project-directory script/dev -f script/dev/docker-compose.yml up -d --no-build backend frontend-admin frontend-user
-```
-
-该手工路径未在本轮实测，标记为 **NOT_VERIFIED**。
+Linux/macOS 可使用 PowerShell 7 尝试同一入口。本轮端到端验收环境为 Windows 11 和 Docker Desktop。
