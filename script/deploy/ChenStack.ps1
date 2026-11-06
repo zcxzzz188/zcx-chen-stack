@@ -32,7 +32,7 @@
     仍需独立 Embedding 凭据与一次受控知识发布，RAG 才会有可检索的知识。
 
 .PARAMETER SkipBuild
-    跳过宿主机产物构建与镜像重建（复用已有 target/*.jar 与 dist/）。
+    跳过宿主机产物和应用镜像构建，要求目标实例已有匹配的本地镜像。
 
 .PARAMETER PortBase
     隔离实例首次初始化时使用的起始端口，预留连续 11 个 loopback 端口。
@@ -385,7 +385,7 @@ function Initialize-Environment {
     return $map
 }
 
-function New-InstanceOverride {
+function New-InstanceOverride([System.Collections.IDictionary]$EnvMap) {
     $override = Get-OverridePath
     if (-not $override) { return }
     $directory = Split-Path -Parent $override
@@ -394,6 +394,12 @@ function New-InstanceOverride {
     foreach ($service in $ServiceContainers.Keys) {
         $lines += "  ${service}:"
         $lines += "    container_name: $Instance-$service"
+        if ($service -eq 'backend') {
+            $origins = @($EnvMap['FRONTEND_ADMIN_HOST'].TrimEnd('/'), $EnvMap['FRONTEND_USER_HOST'].TrimEnd('/'))
+            $springJson = @{ 'chen-stack' = @{ 'allow-origins' = $origins } } | ConvertTo-Json -Depth 4 -Compress
+            $lines += '    environment:'
+            $lines += "      SPRING_APPLICATION_JSON: '$springJson'"
+        }
         if ($ImageServices.ContainsKey($service)) {
             $lines += "    image: $($ImageServices[$service])-$Instance`:$Instance"
         }
@@ -485,23 +491,30 @@ function Build-HostArtifacts {
             if ($LASTEXITCODE -ne 0) { throw '后端构建失败' }
         } finally { Pop-Location }
     }
-    foreach ($name in @('chen-stack-admin', 'chen-stack-user')) {
-        $dist = Join-Path $RepoRoot "chen-stack-frontend/$name/dist/index.html"
-        if ($Action -ne 'upgrade' -and (Test-Path -LiteralPath $dist)) {
-            Write-Ok "$name dist 已存在，复用现有产物"
-            continue
+    Assert-Command 'npm' '构建前端需要 Node.js 22.12+ 与 npm'
+    $previousBackend = $env:VITE_BACKEND_SERVER
+    if ($Instance -ne $DefaultInstance) {
+        $envMap = Read-DotEnv (Get-EnvPath)
+        $backendPort = [int]$envMap['BACKEND_PORT']
+        if ($backendPort -lt 1 -or $backendPort -gt 65535) { throw '隔离实例 BACKEND_PORT 无效' }
+        $env:VITE_BACKEND_SERVER = "http://127.0.0.1:$backendPort"
+    }
+    try {
+        # dist 内嵌 API 地址，同一工作区内的其他实例可能已覆盖旧产物。
+        foreach ($name in @('chen-stack-admin', 'chen-stack-user')) {
+            Write-Step "构建 $name"
+            Push-Location (Join-Path $RepoRoot "chen-stack-frontend/$name")
+            try {
+                if (-not (Test-Path -LiteralPath 'node_modules')) {
+                    & npm ci --no-audit --no-fund
+                    if ($LASTEXITCODE -ne 0) { throw "$name 依赖安装失败" }
+                }
+                & npm run build
+                if ($LASTEXITCODE -ne 0) { throw "$name 构建失败" }
+            } finally { Pop-Location }
         }
-        Assert-Command 'npm' '构建前端需要 Node.js 20+ 与 npm，或先在各前端目录执行 npm run build'
-        Write-Step "构建 $name"
-        Push-Location (Join-Path $RepoRoot "chen-stack-frontend/$name")
-        try {
-            if (-not (Test-Path -LiteralPath 'node_modules')) {
-                & npm ci --no-audit --no-fund
-                if ($LASTEXITCODE -ne 0) { throw "$name 依赖安装失败" }
-            }
-            & npm run build
-            if ($LASTEXITCODE -ne 0) { throw "$name 构建失败" }
-        } finally { Pop-Location }
+    } finally {
+        $env:VITE_BACKEND_SERVER = $previousBackend
     }
 }
 
@@ -690,7 +703,7 @@ function Invoke-Init {
     }
     Initialize-PrivateRuntime
     $envMap = Initialize-Environment
-    New-InstanceOverride
+    New-InstanceOverride $envMap
     Assert-FreshCompose $envMap
     Build-HostArtifacts
     Build-Images

@@ -1,141 +1,106 @@
-# 辰栈一键部署（`script/deploy`）
+# 辰栈本地部署与运维
 
-本目录提供 **Windows 11 + PowerShell 7** 的一键部署与运维脚本，Linux/macOS 见文末。
-脚本把四种场景拆开，避免「一条命令打天下」误伤已有数据。
+以下命令在 **Windows 11 + PowerShell 7** 中从仓库根目录执行。启动 Docker Desktop，使用 Linux 容器和支持 `docker compose config --format json` 的 Compose 插件。首次正常构建需要 JDK 21、Maven 3.9+、Node.js 22.12+ 和 npm，以及镜像和依赖仓库的网络访问。Linux/macOS 有脚本分支，但此指南的部署步骤针对 Windows。
 
-## 1. 前置条件
-
-| 依赖 | 版本 | 说明 |
-|---|---|---|
-| Docker Desktop | 4.x（Compose v2） | 必须已启动；Windows 建议开启 WSL2 后端 |
-| PowerShell | 7.0+ | 不要使用 Windows PowerShell 5.1 |
-| JDK | 21 | 仅首次构建后端 JAR 需要；也要有 `mvn`（Maven 3.9+） |
-| Node.js | 22 与 npm | 仅首次构建两个前端 `dist/` 需要 |
-| 网络 | 可访问 Docker Hub / Maven 中央仓库 / npm | 首次构建与拉取基础镜像需要 |
-
-> 如果仓库里已经有 `chen-stack-backend/target/*.jar` 和两个前端的 `dist/`，
-> 可以不装 JDK/Maven/Node，直接加 `-SkipBuild` 使用已有产物。
-
-## 2. 四种场景
-
-### A. 首次全新部署
+## 首次初始化
 
 ```powershell
-pwsh -File script/deploy/ChenStack.ps1 -Action init
+pwsh -NoProfile -File ./script/deploy/ChenStack.ps1 -Action init
 ```
 
-脚本会依次完成：
+`init` 要求目标项目的容器、网络和数据卷均未创建。首次启动时脚本按以下顺序执行。
 
-1. 从 `script/dev/.env.example` 生成 `.runtime/dev/.env`（已有值保留）；
-2. 为空密码生成随机强口令（MySQL / Redis / MinIO / RabbitMQ / JWT / Qdrant）；
-3. 在 `.runtime/dev/` 生成 Redis 配置、连续计量账本和 RAG 控制目录。Redis ACL 使用 LF 换行并匹配 env 口令；
-4. 缺少产物时构建后端 JAR 与两个前端 `dist/`，然后构建三个应用镜像；
-5. `docker compose up -d` 启动 MySQL / Redis / MinIO / RabbitMQ，等待健康；
-6. **按顺序执行幂等 SQL 迁移**（见第 4 节），已应用的跳过；
-7. 为新库的初始管理员生成随机密码，再启动 backend / admin / user 并等待健康检查；
-8. 打印访问入口。
+1. 生成 `.runtime/dev/.env`，为空的本地服务密码和密钥生成随机值。创建 Redis 配置、账本目录及 RAG 私有目录。
+2. 构建后端 JAR、两个前端的静态产物和应用镜像。首次初始化会复用已有的目标路径 JAR，因此切换过源码时请先构建匹配的 JAR。
+3. 启动 MySQL、Redis、MinIO、RabbitMQ 并等待就绪。MySQL 在新卷上导入基础 SQL，脚本再执行[增量迁移](#数据库迁移)。
+4. 写入初始管理员密码并启动后端和两个前端。浏览器使用脚本打印的地址。
 
-首次登录信息写到 `.runtime/<实例名>/secrets/initial-admin.env`。登录后请修改密码并删除该文件。
+在本机打开 `.runtime/<实例名>/secrets/initial-admin.env` 获取 `chenstack` 的随机密码。登录管理端后修改密码，再删除该文件。普通账号的邮件注册和找回密码需要另行配置 SMTP。初始管理员的密码不会随常规启停或升级重置。
 
-`init` 要求项目容器、网络和数据卷尚未创建。已有实例使用 `up` 或对应升级流程。
-可选的聊天 API Key 填入生成的 env，已有数据部署的旧 env 路径仍可读取。
+`-SkipBuild` 同时跳过宿主产物和 Docker 镜像构建。仅当本机已有目标实例所需的三个匹配镜像时使用。只有 JAR 和 `dist/` 仍需构建镜像，首次克隆应使用正常 `init`。
 
-### B. 已有数据环境升级
+## 日常运维
 
-```powershell
-pwsh -File script/deploy/ChenStack.ps1 -Action upgrade
-```
-
-1. 把当前三个应用镜像打上 `:previous` 标签（供回滚）；
-2. 重新构建产物与镜像；
-3. 再次执行幂等迁移；
-4. 只重建三个应用容器，基础服务与数据卷不动；
-5. 等待健康检查。
-
-> **受控发布实例会被拒绝升级。** 如果检测到容器带 `chen.release.*` 标签、挂载了 `/release`，
-> 或设置了 `CHEN_RAG_RELEASE_RECOVERY_ENABLED=true`，脚本会直接退出并提示改用
-> `script/release` 的受控发布流程。原因：正式 RAG 读取权限由「发布清单 + 已完成回执」授予，
-> 清单绑定运行 JAR 的 SHA256，用普通 Compose 重建会让运行制品与清单不一致，后端会 fail-closed 拒绝启动。
-
-### C. 电脑重启后的正常启动
-
-```powershell
-pwsh -File script/deploy/ChenStack.ps1 -Action up
-```
-
-* 容器都带 `restart: unless-stopped`，Docker Desktop 随开机启动时会自动拉起；
-  若没有自动拉起，执行本命令即可。
-* `up` 只做 `docker start`，**不重建、不迁移、不重新构建**，因此不会改变运行制品身份。
-* 常用替代：`-Action stop`（停止但保留容器与卷）、`-Action restart`（只重启三个应用容器）。
-
-### D. 需要回滚
-
-```powershell
-pwsh -File script/deploy/ChenStack.ps1 -Action rollback
-```
-
-把三个应用镜像标签指回 `:previous` 并重建应用容器；基础服务与数据卷不变。
-只能回滚到「上一次 upgrade 之前」的镜像；更早的历史需要从备份或 Git 重新构建。
-
-### 其它
-
-```powershell
-pwsh -File script/deploy/ChenStack.ps1 -Action status    # 容器、健康、默认知识模式
-pwsh -File script/deploy/ChenStack.ps1 -Action migrate   # 只跑幂等迁移
-```
-
-## 3. 可选：本地启用 RAG
-
-```powershell
-pwsh -File script/deploy/ChenStack.ps1 -Action init -WithRag
-```
-
-* 追加 `compose --profile rag`，启动内置 Qdrant（`chen-stack-qdrant`，宿主 gRPC 默认 16334）。
-* 在实例 env 配置独立的 `CHEN_RAG_EMBEDDING_API_KEY`，启用 `dev,rag` 和 `CHEN_RAG_ENABLED=true` 后，按 [受控发布流程](../release/README.md) 准备知识及回执。未配置 Embedding 凭据时，本地 Qdrant 可就绪，RAG 读取保持关闭。
-
-不想启用 RAG 时，最快的知识体验路径是 **Wiki**（纯数据库，无需 Embedding）：
-管理端 →「AI知识管理 → 整理知识」→ 手动新建 → 审核 → 发布，小辰即可引用该知识回答。
-
-## 4. 数据库迁移
-
-| 顺序 | 文件 | 幂等标记 |
-|---|---|---|
-| 1 | `sql/g2_rag_catalog.sql` | 表 `rag_catalog_state` |
-| 2 | `sql/g3_wiki_foundation.sql` | 表 `wiki_source` |
-| 3 | `sql/g3_wiki_compiler.sql` | 表 `wiki_compile_budget` |
-| 4 | `sql/g3_wiki_invalidation.sql` | 触发器 `wiki_article_changed` |
-| 5 | `sql/g3_wiki_product.sql` | 表 `wiki_page` |
-| 6 | `sql/g3_ai_knowledge_management.sql` | 菜单 `9300` |
-| 7 | `sql/g3_ai_knowledge_configuration.sql` | 表 `ai_runtime_config` |
-
-基础表结构由 `sql/chen_stack.sql` 在 MySQL 首次初始化时自动导入（挂载到 `/docker-entrypoint-initdb.d/`）。
-`sql/*_rollback.sql` 只用于明确回滚，脚本不会自动执行。
-
-## 5. 隔离实例（并行验证）
-
-```powershell
-pwsh -File script/deploy/ChenStack.ps1 -Action init -Instance chenstack-test -PortBase 29100
-```
-
-`-Instance` 会生成 `.runtime/<实例名>/override.yml`，隔离容器、镜像、数据卷和网络。
-`-PortBase` 选择独立的连续 11 个 loopback 端口，使用相同 `-Instance` 管理该实例。
-
-## 6. 历史验收记录（2026-11-04）
-
-在隔离实例 `chenstack-verify`（独立端口 15000/18000/17000/13308/26379）上实测：
-
-| 场景 | 结果 |
+| Action | 条件和实际行为 |
 |---|---|
-| 首次全新部署 `init`（含 7 个迁移、健康检查、真实管理员登录、AI 配置读取、真实 DeepSeek 对话、额度接口） | PASS |
-| 停止后 `up` 恢复（数据卷持久化，改前的管理员密码与菜单迁移保持） | PASS |
-| `upgrade`（镜像重建 + 容器重建 + 数据保留 + `:previous` 标签） | PASS |
-| `rollback`（镜像指回 `:previous` + 健康检查） | PASS |
-| 受控发布实例上执行 `upgrade` | 按预期拒绝，未触碰任何容器 |
-| 生产实例上执行 `status` / `up` | 只读，容器未重建 |
+| `up` | 启动已有容器并检查基础设施和应用就绪，包括已有的 Qdrant。不会创建缺失容器，也不会应用新的 env。 |
+| `stop` | 停止该实例正在运行的容器，保留卷、容器和私有配置。 |
+| `restart` | 重启后端和两个前端，使用容器原有镜像、挂载和环境。 |
+| `status`（默认） | 显示容器、镜像标识、后端健康和 env 中的部署默认知识模式。实际模式以管理端显示的数据库配置为准。 |
+| `upgrade` | 要求普通实例及可用的 MySQL。先保存当前应用镜像到 `:previous`，再构建、检查迁移，并按 Compose 配置更新应用容器。基础服务及其端口不更新。 |
+| `rollback` | 要求三个 `:previous` 镜像标签，按当前 Compose/env 恢复应用镜像。不会恢复旧配置或回滚数据库迁移。 |
+| `migrate` | 只对已有、可用的 MySQL 执行缺失的增量迁移。不启动应用或构建镜像。 |
 
-未验证：Linux/macOS 原生命令、需要联网首次构建的全新机器、`-WithRag` 的完整知识发布链路
-（需要额外的 Embedding 凭据与付费调用）。
+例如：
 
-## 7. Linux / macOS
+```powershell
+pwsh -NoProfile -File ./script/deploy/ChenStack.ps1 -Action stop
+pwsh -NoProfile -File ./script/deploy/ChenStack.ps1 -Action up
+```
 
-Linux/macOS 可使用 PowerShell 7 尝试同一入口。本轮端到端验收环境为 Windows 11 和 Docker Desktop。
+普通实例的镜像升级前先备份数据和私有配置，确认新版数据库兼容性与回退方案。部署脚本会拒绝对带受控发布标记、挂载 `/release` 或启用 RAG 恢复的后端执行 `upgrade` 或 `rollback`。这类实例使用[受控发布手册](../release/README.md)，迁移也需纳入实际发布计划。
+
+`status` 会探测运行后端的 HTTP 健康端点。只想核对容器状态时，可直接按实例查询 Docker。
+
+```powershell
+docker ps -a --filter 'label=com.docker.compose.project=dev'
+```
+
+## 私有配置与应用变更
+
+默认读取 `.runtime/<实例名>/.env`。只有该文件不存在时，才兼容旧环境的 `script/dev/.env`（默认实例）或 `script/dev/.instances/<实例名>/.env`（旧隔离实例）。新安装由脚本生成 env，无需手工复制模板。Docker Compose 的同名进程环境变量可覆盖 env 文件，启动前清除与目标实例冲突的临时变量。
+
+聊天 Key、模型和服务地址在实例 env 配置。对已经运行且已完成迁移的**普通实例**，只修改这些应用配置时可复用本地应用镜像。
+
+```powershell
+pwsh -NoProfile -File ./script/deploy/ChenStack.ps1 -Action upgrade -SkipBuild
+```
+
+该命令仍检查待应用迁移，并按配置更新应用容器。进程重启不会重新注入 env。Redis 用户、ACL、健康检查密码文件和后端密码必须一致。修改 env 中的基础服务端口或密码不能单独完成既有实例的配置变更，需按该服务的持久化与轮换流程操作。
+
+本地持久目录为 `.runtime/<实例名>/ai-usage`。后端默认启用 `NORMAL_AI_USAGE` 并创建 `events.jsonl`，应用重建后继续使用原文件。MySQL、Redis、MinIO、RabbitMQ 和可选 Qdrant 使用 Docker 命名卷。
+
+## 隔离实例
+
+```powershell
+pwsh -NoProfile -File ./script/deploy/ChenStack.ps1 -Action init -Instance chenstack-test -PortBase 29100
+pwsh -NoProfile -File ./script/deploy/ChenStack.ps1 -Action status -Instance chenstack-test
+```
+
+实例名以小写字母开头，后接小写字母、数字或连字符，最长 48 个字符。非默认实例的首次 `init` 需要 `-PortBase`，可选范围为 `1024..65525`。脚本检查从基准端口起连续 11 个 TCP 端口，基础安装绑定前 9 个，启用 Qdrant 时再绑定最后两个。后续操作只需继续指定相同实例名。
+
+| 相对基准偏移 | 服务 | 示例宿主端口 |
+|---|---|---|
+| +0 / +1 | MySQL / Redis | 29100 / 29101 |
+| +2 / +3 | MinIO API / 控制台 | 29102 / 29103 |
+| +4 / +5 | RabbitMQ AMQP / 管理台 | 29104 / 29105 |
+| +6 / +7 / +8 | 后端 / 管理端 / 用户端 | 29106 / 29107 / 29108 |
+| +9 / +10 | Qdrant HTTP / gRPC | 29109 / 29110 |
+
+脚本生成 `.runtime/<实例名>/override.yml`，隔离项目、容器、镜像、卷和网络。同一工作树中的初始化和升级应顺序执行，因为宿主机构建目录共用。初始化为两个前端打包隔离后端的 API 地址，并在后端配置对应的两个浏览器来源。用 `http://127.0.0.1:<端口>` 打开前端。已有隔离实例的 override 不会随升级改写，如果缺少来源配置，应按实际端口在原 override 中合并 `backend.environment.SPRING_APPLICATION_JSON` 的 `chen-stack.allow-origins`，保留其他设置。
+
+## 可选 Qdrant 与知识准备
+
+```powershell
+pwsh -NoProfile -File ./script/deploy/ChenStack.ps1 -Action init -Instance chenstack-rag -PortBase 29200 -WithRag
+```
+
+`-WithRag` 用于全新实例，启用本地 `rag` Compose profile。脚本将后端 Qdrant 目标设为容器网络中的 `qdrant:6334`（本地无 TLS），并给空的 Qdrant Key 生成值。默认空的 Embedding Key 会让后端保持 `dev` 且 RAG 关闭。若初始化前已在所选 env 配置 Embedding Key，脚本会设为 `dev,rag` 并打开 RAG 开关。创建 Qdrant 不会导入任何知识或授权读取。既有实例不能靠重跑 `init` 或给 `up` 加 `-WithRag` 补建容器。
+
+发布内置知识须单独准备受控环境、已审校主题、独立凭据、清单与完成回执。默认的本地 Qdrant 参数不能直接通过受控预检。第一次体验知识问答可以按[主文档的 Wiki 流程](../../README.md#54-准备-wikirag-和混合问答)发布手动页面。
+
+## 数据库迁移
+
+[基础 SQL](../../sql/chen_stack.sql)只在 MySQL 初始化空数据卷时导入。脚本按下表顺序检查标记，跳过已有项。
+
+| 顺序 | 文件（`sql/` 下） | 标记 |
+|---|---|---|
+| 1 | `g2_rag_catalog.sql` | 表 `rag_catalog_state` |
+| 2 | `g3_wiki_foundation.sql` | 表 `wiki_source` |
+| 3 | `g3_wiki_compiler.sql` | 表 `wiki_compile_budget` |
+| 4 | `g3_wiki_invalidation.sql` | 触发器 `wiki_article_changed` |
+| 5 | `g3_wiki_product.sql` | 表 `wiki_page` |
+| 6 | `g3_ai_knowledge_management.sql` | 菜单 `9300` |
+| 7 | `g3_ai_knowledge_configuration.sql` | 表 `ai_runtime_config` |
+
+出现部分迁移失败时先核对现场和标记。部署脚本不会删除卷，也不会自动执行 `sql/*_rollback.sql`。

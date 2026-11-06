@@ -20,7 +20,7 @@
 并在其中嵌入一个**统一的站内智能助手**：
 
 - 用户说「你好」「谢谢」时，小辰自然回应，**不会**去检索知识库；
-- 用户问平台规则、操作步骤时，小辰先取证据再回答，查不到就说明查不到，**不编造**功能、按钮或政策；
+- 用户问平台规则、操作步骤时，小辰先取证据再回答，证据不足时提示未查到；
 - 用户问「我有哪些草稿」这类实时个人数据时，小辰通过**服务端只读工具**查询本人数据，
   不经过向量库，也看不到别人的文章；
 - 管理员可以切换小辰的知识模式、调整每位用户的每日额度，并查看真实生效状态与修改审计。
@@ -51,16 +51,15 @@
 | **AI 知识管理** | 原始知识（RAG）、整理知识（Wiki）、知识来源、智能整理、检索验证 |
 | **AI 配置** | 三档知识模式、每日额度、最近修改记录 |
 
-### 智能助手能力（G3）
+### 智能助手能力
 
 - **三档知识模式**（管理员配置，普通用户无感）：
   - `RAG 知识检索`：只使用已审校的原始知识目录；
-  - `Wiki 知识问答`：只使用当前已发布且来源有效的整理知识；
-  - `智能混合（推荐）`：按问题在两者之间按需选择，简单交流不检索。
+  - `Wiki 知识问答`：从当前已发布且来源有效的整理知识中检索；
+  - `智能混合`：按问题在两者之间按需选择，简单交流不检索。
 - **按需检索**：混合模式先用一次轻量范围分类判断是否需要知识；需要时先读最相关的一侧，
   证据不足才补另一侧，不做「每轮都双查」。
-- **来源与版本可追溯**：后端记录真实知识模式、来源 ID/标题/版本；普通用户界面只展示标题级来源，
-  不展示内部 ID、向量分数或 Wiki 技术版本。
+- **来源与版本可追溯**：后端记录实际知识模式和来源，用户可以查看回答引用的资料。
 - **实时个人数据走工具**：只有「查询本人可编辑文章」这一个只读业务工具，参数不含用户 ID/文章 ID，
   归属与 RBAC 全部在服务端判定。
 - **额度与限流**：每位用户每日默认 100 次（北京时间自然日恢复），三档模式共用；
@@ -81,15 +80,15 @@
 | 缓存 / 队列 | Redis 7（含 ACL）、RabbitMQ 3（管理插件） |
 | 对象存储 | MinIO（RELEASE.2025-04-08） |
 | 向量库 | Qdrant v1.13.6（仅 RAG 需要；gRPC，可开 TLS） |
-| 其它 | Lombok、Hutool、fastjson2、easy-captcha、MinIO SDK 8.3.6、阿里云内容安全 |
+| 其它 | Lombok、Hutool、Fastjson、easy-captcha、MinIO SDK 8.3.6、阿里云内容安全 |
 
 ### 前端
 
 | 端 | 选型 |
 |---|---|
-| 两端通用 | Vue 3.5、Vite 8（`vite-plus` 工具链）、Pinia 3、Element Plus 2.10、Axios、Vue Router 4 |
+| 两端通用 | Vue 3.5、Vite+ 0.1.15（构建核心 Vite 8.0.3）、Pinia 3、Element Plus 2、Axios、Vue Router 4 |
 | 管理端 | Element Plus 组件体系 + 自研管理卡片/表格/分页组件、AntV G2 图表、xlsx 导出 |
-| 用户端 | Element Plus、markdown-it、DOMPurify、文件保存、SSE 流式渲染 |
+| 用户端 | Element Plus、markdown-it、DOMPurify、SSE 流式渲染 |
 
 ### 部署
 
@@ -106,9 +105,9 @@ zcx-chen-stack/
 │  │  ├─ controller/  service/  mapper/  domain/  config/  security/
 │  │  ├─ rag/                          # RAG 知识目录、检索、发布与运行配置
 │  │  ├─ wiki/                         # LLM Wiki 来源、编译、发布与阅读
-│  │  ├─ websocket/ redis/ rabbitmq/ minio/ task/ aspect/
-│  │  └─ resources/knowledge/          # 内置知识草稿（未发布，需审计后发布）
-│  ├─ src/test/java/                   # 正式回归测试（337 个用例）
+│  │  └─ websocket/  redis/  rabbitmq/
+│  ├─ src/main/resources/knowledge/    # 待审校的 RAG 知识资源
+│  ├─ src/test/java/                   # 后端回归测试
 │  └─ Dockerfile
 ├─ chen-stack-frontend/
 │  ├─ chen-stack-admin/                # 管理端（Vue 3）
@@ -119,179 +118,158 @@ zcx-chen-stack/
 │     ├─ src/components/CustomerService/  # 小辰聊天、卡片、SSE 协议
 │     └─ Dockerfile
 ├─ script/
-│  ├─ deploy/                          # ★ 一键部署与运维（init/up/upgrade/rollback）
+│  ├─ deploy/                          # 本地部署、启动、升级与回滚
 │  ├─ dev/                             # docker-compose、.env.example、Redis 安全配置模板
 │  ├─ release/                         # 正式受控发布（构建、清单、发布操作）
 │  └─ prod/                            # 生产编排模板与备份脚本
-├─ sql/                                # 基础表结构 + G2/G3 增量迁移（含回滚脚本）
+├─ sql/                                # MySQL 初始表结构与增量迁移
 ├─ AGENTS.md                           # 协作规则
 └─ README.md
 ```
 
-## 5. 快速开始（Docker 一键部署）
+## 5. 快速开始
 
-> 详细说明见 [`script/deploy/README.md`](script/deploy/README.md)。
+以下命令在 **Windows 11 的 PowerShell 7** 执行。从 GitHub 全新克隆只需要源码，初始化会创建独立的本地数据和凭据。
 
-### 5.1 环境要求
+### 5.1 准备环境
 
-- Windows 11 + Docker Desktop（Compose v2）+ PowerShell 7
-- 首次构建需要 JDK 21、Maven 3.9+、Node.js 22 与 npm，并能访问依赖仓库和 Docker 镜像仓库。
-- 若仓库已带构建产物（`chen-stack-backend/target/*.jar`、两个前端 `dist/`），可加 `-SkipBuild` 跳过工具链要求
+- Git、已启动的 Docker Desktop（Linux 容器），以及支持 `docker compose config --format json` 的 Compose 插件。
+- JDK 21、Maven 3.9+、Node.js 22.12+ 和 npm。后端 JAR 和两个前端 `dist/` 先在宿主机生成，再打包进 Docker 镜像。构建需要访问 Maven、npm 锁文件所用的镜像站和 Docker 镜像仓库。
+- 预留默认端口。如果本机已有辰栈或端口冲突，直接选用下方的隔离实例。
 
-### 5.2 全新克隆
+### 5.2 克隆并初始化
 
 ```powershell
 git clone https://github.com/zcxzzz188/zcx-chen-stack.git
+if ($LASTEXITCODE -ne 0) { throw '克隆失败' }
 Set-Location zcx-chen-stack
-pwsh -File script/deploy/ChenStack.ps1 -Action init
+pwsh -NoProfile -File ./script/deploy/ChenStack.ps1 -Action init
 ```
 
-脚本在 `.runtime/dev/` 生成 `.env`、随机强口令、Redis ACL 和 AI 用量账本，创建 RAG 私有目录，
-构建前后端与镜像，初始化数据库、执行增量迁移并等待服务就绪。克隆后直接运行即可，无需历史发布目录。
-`.runtime/` 受 Git 忽略，数据库、Redis、MinIO 和可选 Qdrant 的数据分别由 Docker 命名卷保存。
+`init` 从模板生成 `.runtime/dev/.env` 和随机凭据，配置 Redis ACL，构建应用，启动 MySQL、Redis、MinIO 和 RabbitMQ，再导入基础库、执行七项迁移并启动后端和两个前端。默认的 `dev` 项目要求容器、网络和数据卷均为新资源。全新克隆应保留默认构建步骤。
 
-本机已有部署时，请用 `-Instance chenstack-test -PortBase 29100` 创建隔离实例。
-选择未占用的连续 11 个端口，后续对该实例执行 `up`、`stop` 或 `status` 时继续传入相同的 `-Instance`。
-
-### 5.3 之后常用
+如需并行部署，从仓库根目录改用下面的命令。此例用户端为 **29108**，管理端为 **29107**，后端为 **29106**，请使用脚本输出的 `127.0.0.1` 地址。后续命令继续传入 `-Instance chenstack-test`。完整端口映射及构建选项见[部署手册](script/deploy/README.md)。
 
 ```powershell
-pwsh -File script/deploy/ChenStack.ps1 -Action up        # 电脑重启后启动（不重建）
-pwsh -File script/deploy/ChenStack.ps1 -Action status    # 查看容器、健康与默认知识模式
-pwsh -File script/deploy/ChenStack.ps1 -Action upgrade   # 以现有数据升级（自动留 :previous 镜像）
-pwsh -File script/deploy/ChenStack.ps1 -Action rollback  # 回滚到 upgrade 之前的应用镜像
-pwsh -File script/deploy/ChenStack.ps1 -Action stop      # 停止容器（保留数据卷）
+pwsh -NoProfile -File ./script/deploy/ChenStack.ps1 -Action init -Instance chenstack-test -PortBase 29100
 ```
 
-**四种场景不要混用**：
+### 5.3 登录与日常启停
 
-| 场景 | 命令 | 是否重建容器 | 是否迁移 |
-|---|---|---|---|
-| 首次全新部署 | `init` | 创建 | 是 |
-| 已有数据升级 | `upgrade` | 仅三个应用容器 | 是（幂等） |
-| 关机重启后启动 | `up` | 否（只 `docker start`） | 否 |
-| 回滚 | `rollback` | 仅三个应用容器 | 否 |
-
-### 5.4 访问地址
-
-| 入口 | 默认地址 |
+| 服务 | 默认宿主地址或端口 |
 |---|---|
-| 管理端 | http://127.0.0.1:8000 |
 | 用户端 | http://127.0.0.1:7000 |
+| 管理端 | http://127.0.0.1:8000 |
 | 后端 API | http://127.0.0.1:5000 |
-| MinIO 控制台 | http://127.0.0.1:9001 |
-| RabbitMQ 管理 | http://127.0.0.1:15672 |
+| MySQL / Redis | `127.0.0.1:3308` / `127.0.0.1:6379` |
+| MinIO API / 控制台 | `127.0.0.1:9000` / http://127.0.0.1:9001 |
+| RabbitMQ AMQP / 管理台 | `127.0.0.1:5672` / http://127.0.0.1:15672 |
+| Qdrant（仅 `-WithRag`） | `127.0.0.1:16333` HTTP / `127.0.0.1:16334` gRPC |
 
-首次管理端登录信息在 `.runtime/<实例名>/secrets/initial-admin.env`。登录后请修改密码并删除该文件。
-
-### 5.5 知识准备（首次部署后）
-
-全新环境的**知识库是空的**。配置聊天 API Key 后才能使用小辰对话。可在管理端先准备知识。
-按需选择一条路径：
-
-1. **Wiki（最快，不需要 Embedding）**：管理端 →「AI知识管理 → 整理知识」→ 手动新建 → 审核 → 发布。
-2. **RAG（需要向量化）**：首次部署可加 `-WithRag` 启动本地 Qdrant。准备独立 Embedding 凭据，按 `script/release/README.md`
-   的受控发布流程导入 `src/main/resources/knowledge/` 下的草稿（会产生 Embedding 费用）。
-
-内置的 `knowledge/*.json` 是**未发布草稿**（`NOT_PUBLISHED` / `CONTENT_REVIEW_REQUIRED`），
-必须经过发布审计才能成为公开知识。
-
-## 6. 环境变量
-
-完整清单见 [`script/dev/.env.example`](script/dev/.env.example)（仅含占位符，不含任何真实密钥）。
-一键部署生成的口令保存在 `.runtime/<实例名>/.env`。在该文件填写可选 Provider 密钥。
-已有普通部署仍可使用原 env。更改 env 后需重建受影响服务，`up` 仅启动已有容器。
-
-### 自动生成的口令与可选模型 Key
-
-| 变量 | 用途 |
-|---|---|
-| `MYSQL_ROOT_PASSWORD` / `MYSQL_PASSWORD` | MySQL root 与应用账号口令 |
-| `REDIS_PASSWORD` | Redis ACL 用户口令（同时写入只读 ACL 文件） |
-| `MINIO_SECRET_KEY` | MinIO 密钥 |
-| `RABBITMQ_DEFAULT_PASS` | RabbitMQ 口令 |
-| `CHEN_STACK_JWT_SECRET` | JWT 签名密钥（生产建议 48 字节以上随机值） |
-| `SPRING_AI_OPENAI_API_KEY` | DeepSeek API Key（不填则小辰返回模型服务错误） |
-
-### 常用可选项
-
-| 变量 | 默认 | 说明 |
-|---|---|---|
-| `AI_KNOWLEDGE_MODE` | `hybrid` | 部署默认知识模式；管理员在线配置优先 |
-| `CHEN_STACK_AI_DAILY_LIMIT` | `100` | 每位用户每日消息额度 |
-| `CHEN_WIKI_ENABLED` / `CHEN_WIKI_PRODUCT_ENABLED` | `true` | Wiki 产品开关（需先执行迁移） |
-| `WIKI_PUBLIC_PORTAL_ENABLED` | `false` | 是否开放公开 Wiki 阅读入口 |
-| `SPRING_PROFILES_ACTIVE` | `dev` | 启用 RAG 时追加 `,rag` |
-| `CHEN_RAG_ENABLED` | `false` | RAG 总开关（还需 Embedding 凭据与知识发布） |
-| `CHEN_RAG_EMBEDDING_API_KEY` | 空 | 独立 Embedding 凭据，**不得复用**聊天 Key |
-| `MAIL_USERNAME` / `MAIL_PASSWORD` | 占位 | 找回密码等邮件功能 |
-| `ALIYUN_ACCESS_KEY_ID` / `_SECRET` | 空 | 阿里云图片内容安全（可选） |
-| `CHEN_STACK_RATE_LIMIT_ENABLED` | `true` | 接口限流开关 |
-
-### 端口
-
-`BACKEND_PORT=5000`、`ADMIN_PORT=8000`、`USER_PORT=7000`、`MYSQL_PORT=3308`、
-`REDIS_PORT=6379`、`MINIO_API_PORT=9000`、`MINIO_CONSOLE_PORT=9001`、
-`RABBITMQ_PORT=5672`、`RABBITMQ_MANAGEMENT_PORT=15672`；
-RAG 选配 `CHEN_RAG_QDRANT_GRPC_PORT`（容器内默认 6334）和 `CHEN_LOCAL_QDRANT_GRPC_PORT`（宿主默认 16334）。
-
-## 7. 数据库初始化
-
-- 基础表结构：`sql/chen_stack.sql`，MySQL 容器**首次**初始化时自动导入；
-- G3 增量迁移：`sql/g2_rag_catalog.sql`、`sql/g3_wiki_*.sql`、`sql/g3_ai_knowledge_*.sql`，
-  由 `ChenStack.ps1 -Action init/upgrade/migrate` 按顺序**幂等**执行（以目标表/菜单为标记）；
-- 回滚脚本：`sql/*_rollback.sql`，仅在明确回退时手工执行；
-- 已有数据环境升级不会重建数据库、不会清空向量库、不会删除已发布 Wiki。
-
-## 8. 开发说明
+管理端账号为 `chenstack`。在本机打开 `.runtime/<实例名>/secrets/initial-admin.env` 获取随机密码。首次登录后修改密码，再删除初始凭据文件。管理端和博客浏览可以先用，用户注册和找回密码需要配置邮件。
 
 ```powershell
-# 后端（回归测试 337 个用例）
+pwsh -NoProfile -File ./script/deploy/ChenStack.ps1 -Action status
+pwsh -NoProfile -File ./script/deploy/ChenStack.ps1 -Action stop
+pwsh -NoProfile -File ./script/deploy/ChenStack.ps1 -Action up
+```
+
+`stop` 保留容器、配置和数据卷，`up` 启动已有容器并检查就绪。改过环境变量时，需要按[部署手册](script/deploy/README.md)重新创建应用容器。`restart` 仅重启三个应用容器，`upgrade` 和 `rollback` 只用于普通实例。
+
+### 5.4 准备 Wiki、RAG 和混合问答
+
+全新实例没有已发布知识。最快的体验路径是手动发布 Wiki 页面，编辑和审核无需模型或 Embedding。
+
+1. 准备一篇自己有权使用的公开、已发布、审核通过的文章或专栏。全新站点可以先配置邮件并注册普通账号，发布一篇文章，再在管理端确认审核状态。
+2. 进入 **AI知识管理 → 知识来源**，选择材料，点 **检查并授权**，核对当前版本并确认授权。
+3. 在 **整理知识** 中新增知识，填写标题、摘要和正文，选择已授权来源，创建待审版本。打开版本后 **提交审核 → 核查来源与内容 → 审核通过 → 正式发布**。
+4. 配置聊天 Key 后，在 **AI知识管理 → AI配置** 选择 **Wiki 知识问答**，用普通账号在用户端向小辰提问。默认关闭的公开 Wiki 阅读入口不影响小辰使用已发布页面。
+
+`-WithRag` 用于在**全新实例**启动本地 Qdrant。它不会自动建立可检索的知识。RAG 首次发布需要独立 Embedding Key、匹配的服务地址和模型、Qdrant 连接与独立 Key，以及与实际制品匹配的发布清单和完成回执。内置的 [`knowledge/`](chen-stack-backend/src/main/resources/knowledge/) 是审校材料。正式发布见[受控发布手册](script/release/README.md)。
+
+普通 Compose 的部署默认值是 `hybrid`。要体验两路混合检索，先让 RAG 和 Wiki 都有有效的已发布知识，再在 AI 配置中选择 **智能混合**。运行时会按问题选择知识路径。仅使用 Wiki 的实例可直接选择 Wiki 模式。
+
+## 6. 配置与凭据
+
+常用配置见 [`.env.example`](script/dev/.env.example)。一键部署读取 `.runtime/<实例名>/.env`。填写模型 Key 时，在实例的私有 env 中设置 `SPRING_AI_OPENAI_API_KEY`，并核对 `SPRING_AI_OPENAI_BASE_URL` 和 `SPRING_AI_OPENAI_CHAT_OPTIONS_MODEL`。在普通实例运行下列命令，复用已有应用镜像，并由 Compose 应用修改后的环境配置。
+
+```powershell
+pwsh -NoProfile -File ./script/deploy/ChenStack.ps1 -Action upgrade -SkipBuild
+```
+
+先启动目标实例的基础服务。隔离实例附加相同的 `-Instance`。受控发布实例按[受控发布手册](script/release/README.md)操作。勿通过只改 env 轮换现有数据库、Redis 或 MinIO 凭据。
+
+| 配置 | 本地部署默认行为 |
+|---|---|
+| `MYSQL_ROOT_PASSWORD`、`MYSQL_PASSWORD`、`MINIO_SECRET_KEY`、`RABBITMQ_DEFAULT_PASS`、`CHEN_STACK_JWT_SECRET` | 初始化为空的项生成随机值 |
+| `REDIS_USERNAME` / `REDIS_PASSWORD` | 后端通过命名 ACL 用户认证，Redis 禁用默认用户，配置和健康检查密码文件在实例的 `redis/` |
+| `NORMAL_AI_USAGE` | 默认启用，后端在 `ai-usage/events.jsonl` 初始化并追加 Provider 用量记录 |
+| `AI_KNOWLEDGE_MODE` / `CHEN_STACK_AI_DAILY_LIMIT` | 本地默认 `hybrid` / 每人每日 100 次，数据库中的在线配置优先 |
+| `CHEN_WIKI_ENABLED` / `CHEN_WIKI_PRODUCT_ENABLED` | 本地默认开启，初始化执行所需迁移 |
+| `CHEN_WIKI_COMPILER_ENABLED` / `WIKI_PUBLIC_PORTAL_ENABLED` | 默认关闭，分别控制智能整理和公开 Wiki 阅读 |
+| `MAIL_USERNAME` / `MAIL_PASSWORD` | 注册、重置密码等邮件功能。默认 SMTP 主机是 `smtp.qq.com`，使用邮箱及其 SMTP 授权码 |
+| `ALIYUN_ACCESS_KEY_ID` / `ALIYUN_ACCESS_KEY_SECRET` | 可选图片内容安全服务 |
+
+## 7. 数据库与运行数据
+
+MySQL 仅在初始化新数据卷时导入 [`sql/chen_stack.sql`](sql/chen_stack.sql)。部署脚本的 `init`、`upgrade`、`migrate` 按[部署手册中的固定顺序](script/deploy/README.md#数据库迁移)检查并应用增量 SQL。脚本根据表、触发器或菜单标记跳过已应用项。
+
+MySQL、Redis（AOF）、MinIO、RabbitMQ 和可选 Qdrant 使用 Docker 命名卷。AI 用量文件和 Redis 配置保存在 `.runtime/<实例名>/`。应用镜像回滚不回滚 SQL 或知识数据。升级前备份数据和运行配置，保留原卷和凭据。
+
+## 8. 开发与测试
+
+从仓库根目录执行后端测试和打包。
+
+```powershell
 mvn --file chen-stack-backend/pom.xml test
 mvn --file chen-stack-backend/pom.xml -DskipTests package
-
-# 管理端 / 用户端
-cd chen-stack-frontend/chen-stack-admin; npm install; npm run dev; npm run test
-cd chen-stack-frontend/chen-stack-user;  npm install; npm run dev; npm run test
 ```
 
-- 前端开发服务器需把 API 指向 `http://127.0.0.1:5000`；
-- 后端本地运行需要 MySQL/Redis/MinIO/RabbitMQ 可达（可只启动基础服务容器）；
-- 正式回归入口：`mvn test`（后端）与 `vp test run`（管理端）。临时实验与证据放在 `.work/`（不入库）。
+两个前端使用各自的 `package-lock.json`。以下命令从仓库根目录连续执行。
 
-## 9. 安全说明
+```powershell
+npm --prefix ./chen-stack-frontend/chen-stack-admin ci
+npm --prefix ./chen-stack-frontend/chen-stack-admin run test:run
+npm --prefix ./chen-stack-frontend/chen-stack-user ci
+npm --prefix ./chen-stack-frontend/chen-stack-user run test:run
+```
 
-- 仓库**不包含任何真实凭据**：`.env`、`script/dev/rag-tls/`、`script/dev/.instances/`、
-  `script/dev/redis-secure/{redis.conf,users.acl,redis-app.secret}` 均已被 `.gitignore` 忽略。
-- 生产环境请使用独立强口令，并通过 `script/release` 的受控发布流程部署；
-  普通 Compose 重建会被脚本拒绝，避免运行制品与 RAG 发布清单不一致。
-- RBAC 在后端回源校验，菜单、角色、权限与操作权限**不缓存信任**；聊天中的自称身份不参与授权。
-- 小辰的导航按钮只来自白名单枚举，前端只执行白名单路由；不存在任意 URL 跳转。
-- 知识来源撤权后立即失效：RAG 校验目录快照与来源授权，Wiki 每轮重新读取已发布正文。
-- 内容安全：图片可接阿里云内容安全，文章/评论支持自动审核开关（默认关闭或仅文章开启）。
+在两个终端中分别启动开发服务器。示例假定默认 Docker 后端已经运行。先停止同端口的 Docker 前端，保留后端和基础服务。前端的 `VITE_BACKEND_SERVER` 是构建或开发服务器启动时读取的公开 API 地址。
 
-## 10. 常见问题
+```powershell
+# 终端一，仓库根目录
+$env:VITE_BACKEND_SERVER = 'http://127.0.0.1:5000'
+npm --prefix ./chen-stack-frontend/chen-stack-admin run dev
+```
 
-| 现象 | 原因与处理 |
+```powershell
+# 终端二，仓库根目录
+$env:VITE_BACKEND_SERVER = 'http://127.0.0.1:5000'
+npm --prefix ./chen-stack-frontend/chen-stack-user run dev
+```
+
+Vite 开发端口为 8000 和 7000。自定义端口时需要同步配置后端的 `chen-stack.allow-origins`。直接运行后端 JVM 时，要显式注入依赖地址和凭据，Spring 不会自动加载仓库里的 `.env`。
+
+## 9. 安全与常见问题
+
+一键部署的 Docker 端口只绑定本机。保护 `.runtime/` 下的 env、初始管理员文件、Redis ACL、账本和发布授权。它们受 Git 忽略。旧普通部署的 env 兼容路径见[部署手册](script/deploy/README.md)，受控实例应保留完整 Compose、凭据和挂载。查看配置时使用 `docker compose config --quiet`，避免展开秘密。
+
+| 现象 | 检查与处理 |
 |---|---|
-| `init` 报实例已有容器或数据卷 | 已有部署用 `-Action up` 或按已有数据流程升级。受控 RAG 实例使用发布流程。 |
-| `upgrade` 被拒绝 | 该实例由受控发布流程管理（见第 9 节），需走 `script/release` |
-| 后端启动失败、日志含 `PUBLICATION_*` | 运行 JAR 与 RAG 发布清单不匹配，属于 fail-closed；按受控发布流程重新生成清单 |
-| RAG 显示「知识索引尚未就绪」 | 未完成知识发布或 Qdrant/Embedding 不可用；混合模式会自动只用 Wiki |
-| 知识问题回答「没有查到」 | 知识库为空或未命中；先按 5.5 准备知识 |
-| 小辰回复「模型服务暂时不可用」 | `SPRING_AI_OPENAI_API_KEY` 未配置或额度耗尽 |
-| Redis 容器 unhealthy | `redis-secure` 文件缺失或口令与 `.env` 不一致；重新执行 `init` 会自愈生成 |
-| 端口被占用 | 修改 `script/dev/.env` 中对应端口后 `-Action upgrade`（或重建该容器） |
+| `init` 报已有容器、卷或网络 | 已初始化的实例用 `up`。另起一套时指定新实例名与空闲端口。部分初始化失败时先保留资源并排查。 |
+| 浏览器提示请求或跨域失败 | 确认访问脚本输出的地址、API 端口和后端来源白名单。前端构建后更改 API 地址需要重新打包。 |
+| Redis 不健康 | 检查实例 `redis/` 下的配置、LF 格式 ACL 和健康检查密码文件，确认命名用户与应用 env 一致。 |
+| 小辰提示模型服务不可用 | 核对 Key、API 地址、模型权限与 Provider 额度，并确认 backend 使用了新环境。 |
+| 知识未命中或索引未就绪 | 检查在线生效模式、Wiki 来源和发布状态，或 RAG 的 Qdrant、Embedding、目录及发布回执。 |
+| `upgrade` 被拒绝或启动出现 `PUBLICATION_*` | 核对受控实例的运行 JAR、清单和发布回执，按[发布手册](script/release/README.md)处理。 |
 
-## 11. 文档索引
+## 10. 文档索引
 
-| 文档 | 内容 |
-|---|---|
-| [`script/deploy/README.md`](script/deploy/README.md) | 一键部署四种场景、迁移清单、隔离实例、已验证范围 |
-| [`script/release/README.md`](script/release/README.md) | 正式受控发布流程（构建、发布清单、RECOVER 回执） |
-| [`script/prod/README-AI-USAGE.md`](script/prod/README-AI-USAGE.md) | Provider 用量账本与计量说明 |
-| [`AGENTS.md`](AGENTS.md) | 仓库协作与数据安全规则 |
+- [本地部署和日常运维](script/deploy/README.md)
+- [受控 RAG 发布与恢复](script/release/README.md)
+- [AI 持续使用与计量](script/prod/README-AI-USAGE.md)
+- [仓库协作规则](AGENTS.md)
 
-## 12. 许可证
+## 11. 使用说明
 
-本项目用于学习与技术实践。引用或二次开发请注明来源。
+本项目用于学习与技术实践。仓库目前没有单独的 `LICENSE` 文件。
