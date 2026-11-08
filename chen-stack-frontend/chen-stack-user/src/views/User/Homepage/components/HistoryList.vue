@@ -49,16 +49,7 @@
           @click="goToArticle(history.articleId)"
         >
           <!-- 文章封面 -->
-          <el-image :src="history.coverUrl" class="history-cover">
-            <template #placeholder>
-              <div class="loading-text">加载中...</div>
-            </template>
-            <template #error>
-              <div class="error">
-                <el-icon><Picture /></el-icon>
-              </div>
-            </template>
-          </el-image>
+          <ArticleCover :src="history.coverUrl" class="history-cover" />
 
           <!-- 文章内容 -->
           <div class="history-content-info">
@@ -94,9 +85,10 @@
 </template>
 
 <script setup>
+import ArticleCover from '@/components/Article/ArticleCover.vue'
 import { ref, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { Delete, Picture, Clock } from '@element-plus/icons-vue'
+import { Delete, Clock } from '@element-plus/icons-vue'
 import { getUserHistoryList, clearUserHistory } from '@/api/history'
 import { formatDate } from '@/utils/formatTime'
 import EmptyState from '@/components/Loading/EmptyState.vue'

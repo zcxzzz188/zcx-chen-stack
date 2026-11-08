@@ -147,18 +147,7 @@
         <div v-else class="article-cards">
           <el-card v-for="article in articles" :key="article.id" class="article-card">
             <div class="article-card-content">
-              <el-image :src="article.coverUrl" alt="文章封面" class="article-cover">
-                <template #placeholder>
-                  <div class="loading-text">加载中...</div>
-                </template>
-                <template #error>
-                  <div class="error">
-                    <el-icon>
-                      <Picture />
-                    </el-icon>
-                  </div>
-                </template>
-              </el-image>
+              <ArticleCover :src="article.coverUrl" alt="文章封面" class="article-cover" />
               <div class="article-info">
                 <div class="article-header">
                   <span class="article-title">{{ article.title }}</span>
@@ -251,6 +240,7 @@
 </template>
 
 <script setup>
+import ArticleCover from '@/components/Article/ArticleCover.vue'
 import { ref, onMounted, onUnmounted, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import {

@@ -99,16 +99,7 @@
                     @click="handleArticleClick(article.id)"
                   >
                     <!-- 文章封面 -->
-                    <el-image :src="article.coverUrl || ''" class="article-cover">
-                      <template #placeholder>
-                        <div class="loading-text">加载中...</div>
-                      </template>
-                      <template #error>
-                        <div class="error">
-                          <el-icon><Picture /></el-icon>
-                        </div>
-                      </template>
-                    </el-image>
+                    <ArticleCover :src="article.coverUrl || ''" class="article-cover" />
 
                     <!-- 文章内容 -->
                     <div class="article-content">
@@ -197,7 +188,8 @@
 </template>
 
 <script setup>
-import { Star, Collection, ArrowDown, Picture, Setting } from '@element-plus/icons-vue'
+import ArticleCover from '@/components/Article/ArticleCover.vue'
+import { Star, Collection, ArrowDown, Setting } from '@element-plus/icons-vue'
 import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
 import { formatCompactNumber } from '@/utils/formatNumber'
 import EmptyState from '@/components/Loading/EmptyState.vue'

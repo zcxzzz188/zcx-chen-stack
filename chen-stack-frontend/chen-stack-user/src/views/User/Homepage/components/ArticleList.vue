@@ -55,18 +55,7 @@
         >
           <!-- 文章封面 -->
           <div class="article-cover-wrapper">
-            <el-image :src="article.coverUrl || ''" class="article-cover">
-              <template #placeholder>
-                <div class="loading-text">
-                  <el-icon class="loading-icon"><Picture /></el-icon>
-                </div>
-              </template>
-              <template #error>
-                <div class="error">
-                  <el-icon><Picture /></el-icon>
-                </div>
-              </template>
-            </el-image>
+            <ArticleCover :src="article.coverUrl || ''" class="article-cover" />
             <div class="cover-overlay"></div>
           </div>
 
@@ -129,8 +118,9 @@
 </template>
 
 <script setup>
+import ArticleCover from '@/components/Article/ArticleCover.vue'
 import { ref, watch } from 'vue'
-import { Picture, Clock, View, Star, Collection, ChatDotRound } from '@element-plus/icons-vue'
+import { Clock, View, Star, Collection, ChatDotRound } from '@element-plus/icons-vue'
 import { formatCompactNumber } from '@/utils/formatNumber'
 import EmptyState from '@/components/Loading/EmptyState.vue'
 

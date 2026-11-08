@@ -188,18 +188,7 @@
               class="article-card"
               @click="goToArticle(article)"
             >
-              <el-image :src="article.coverUrl || ''" class="article-cover" fit="cover">
-                <template #placeholder>
-                  <div class="image-placeholder">
-                    <el-icon class="is-loading"><Loading /></el-icon>
-                  </div>
-                </template>
-                <template #error>
-                  <div class="image-error">
-                    <el-icon><Picture /></el-icon>
-                  </div>
-                </template>
-              </el-image>
+              <ArticleCover :src="article.coverUrl || ''" class="article-cover" fit="cover" />
 
               <div class="article-content">
                 <h3 class="article-title">{{ article.title }}</h3>
@@ -300,9 +289,10 @@
 </template>
 
 <script setup>
+import ArticleCover from '@/components/Article/ArticleCover.vue'
 import { ref, reactive, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
-import { Search, Close, ArrowDown, Loading, Picture, DocumentDelete } from '@element-plus/icons-vue'
+import { Search, Close, ArrowDown, Loading, DocumentDelete } from '@element-plus/icons-vue'
 import {
   searchArticleByTitle,
   searchArticleByTag,

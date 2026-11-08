@@ -562,16 +562,7 @@
                 <div class="sort-number">{{ index + 1 }}</div>
 
                 <!-- 文章封面 -->
-                <el-image :src="article.coverUrl" class="article-cover" fit="cover">
-                  <template #placeholder>
-                    <div class="loading-text">加载中...</div>
-                  </template>
-                  <template #error>
-                    <div class="error-placeholder">
-                      <el-icon><Picture /></el-icon>
-                    </div>
-                  </template>
-                </el-image>
+                <ArticleCover :src="article.coverUrl" class="article-cover" fit="cover" />
 
                 <!-- 文章信息 -->
                 <div class="article-info">
@@ -627,6 +618,7 @@
 </template>
 
 <script setup>
+import ArticleCover from '@/components/Article/ArticleCover.vue'
 import { ref, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import {

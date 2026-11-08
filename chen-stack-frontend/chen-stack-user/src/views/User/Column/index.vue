@@ -226,16 +226,7 @@
                   <div class="article-index">{{ index + 1 }}</div>
 
                   <!-- 文章封面 -->
-                  <el-image :src="article.coverUrl || ''" class="article-cover">
-                    <template #placeholder>
-                      <div class="loading-text">加载中...</div>
-                    </template>
-                    <template #error>
-                      <div class="error">
-                        <el-icon><Picture /></el-icon>
-                      </div>
-                    </template>
-                  </el-image>
+                  <ArticleCover :src="article.coverUrl || ''" class="article-cover" />
 
                   <!-- 文章内容 -->
                   <div class="article-content">
@@ -316,6 +307,7 @@
 </template>
 
 <script setup>
+import ArticleCover from '@/components/Article/ArticleCover.vue'
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {

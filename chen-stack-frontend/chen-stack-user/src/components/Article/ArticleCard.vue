@@ -7,18 +7,7 @@
     <!-- Grid 模式 -->
     <template v-if="mode === 'grid'">
       <div class="article-image">
-        <el-image :src="article.coverUrl" class="article-cover" fit="cover">
-          <template #placeholder>
-            <div class="image-placeholder">
-              <el-icon class="is-loading"><Loading /></el-icon>
-            </div>
-          </template>
-          <template #error>
-            <div class="image-error">
-              <el-icon><Picture /></el-icon>
-            </div>
-          </template>
-        </el-image>
+        <ArticleCover :src="article.coverUrl" class="article-cover" fit="cover" />
       </div>
       <div class="article-content">
         <div class="article-tags">
@@ -42,18 +31,7 @@
     <!-- List 模式 -->
     <template v-else-if="mode === 'list'">
       <div class="article-cover-wrapper">
-        <el-image :src="article.coverUrl || ''" class="article-cover">
-          <template #placeholder>
-            <div class="loading-text">
-              <el-icon class="loading-icon"><Picture /></el-icon>
-            </div>
-          </template>
-          <template #error>
-            <div class="error">
-              <el-icon><Picture /></el-icon>
-            </div>
-          </template>
-        </el-image>
+        <ArticleCover :src="article.coverUrl || ''" class="article-cover" />
         <div class="cover-overlay"></div>
       </div>
 
@@ -124,16 +102,7 @@
     <!-- Simple 模式 -->
     <template v-else-if="mode === 'simple'">
       <div class="article-cover">
-        <el-image :src="article.coverUrl" class="cover-image">
-          <template #placeholder>
-            <div class="loading-text">加载中...</div>
-          </template>
-          <template #error>
-            <div class="error">
-              <el-icon><Picture /></el-icon>
-            </div>
-          </template>
-        </el-image>
+        <ArticleCover :src="article.coverUrl" class="cover-image" />
       </div>
 
       <div class="article-content">
@@ -176,10 +145,9 @@
 </template>
 
 <script setup>
+import ArticleCover from '@/components/Article/ArticleCover.vue'
 import { computed } from 'vue'
 import {
-  Picture,
-  Loading,
   Clock,
   View,
   Star,

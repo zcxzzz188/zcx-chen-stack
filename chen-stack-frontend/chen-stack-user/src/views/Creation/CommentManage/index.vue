@@ -84,18 +84,7 @@
             <div class="comment-card-content">
               <!-- 文章信息区域 -->
               <div class="article-info">
-                <el-image :src="comment.articleCoverUrl" alt="文章封面" class="article-cover">
-                  <template #placeholder>
-                    <div class="loading-text">加载中...</div>
-                  </template>
-                  <template #error>
-                    <div class="error">
-                      <el-icon>
-                        <Picture />
-                      </el-icon>
-                    </div>
-                  </template>
-                </el-image>
+                <ArticleCover :src="comment.articleCoverUrl" alt="文章封面" class="article-cover" />
                 <div class="article-details">
                   <h4 class="article-title" @click="goToArticle(comment)">
                     {{ comment.articleTitle }}
@@ -197,6 +186,7 @@
 </template>
 
 <script setup>
+import ArticleCover from '@/components/Article/ArticleCover.vue'
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { Search, Picture, ChatLineRound } from '@element-plus/icons-vue'

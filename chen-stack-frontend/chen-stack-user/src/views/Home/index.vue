@@ -352,6 +352,10 @@ const typedSubtitle = ref('')
 let subtitleIndex = 0
 let charIndex = 0
 let isDeleting = false
+let subtitleTimer
+let entranceTimer
+let entranceObserver
+let disposed = false
 
 const subtitles = ['分享技术、经验和见解', '探索代码的无限可能', '与开发者共同成长']
 
@@ -366,21 +370,21 @@ const typeSubtitle = () => {
     if (charIndex < current.length) {
       typedSubtitle.value = current.substring(0, charIndex + 1)
       charIndex++
-      setTimeout(typeSubtitle, TYPE_SPEED)
+      subtitleTimer = setTimeout(typeSubtitle, TYPE_SPEED)
     } else {
       isDeleting = true
-      setTimeout(typeSubtitle, PAUSE_AFTER_TYPE)
+      subtitleTimer = setTimeout(typeSubtitle, PAUSE_AFTER_TYPE)
     }
   } else {
     if (charIndex > 0) {
       typedSubtitle.value = current.substring(0, charIndex - 1)
       charIndex--
-      setTimeout(typeSubtitle, DELETE_SPEED)
+      subtitleTimer = setTimeout(typeSubtitle, DELETE_SPEED)
     } else {
       isDeleting = false
       subtitleIndex = (subtitleIndex + 1) % subtitles.length
       charIndex = 0
-      setTimeout(typeSubtitle, PAUSE_AFTER_DELETE)
+      subtitleTimer = setTimeout(typeSubtitle, PAUSE_AFTER_DELETE)
     }
   }
 }
@@ -403,6 +407,7 @@ const observeElements = () => {
     },
     { threshold: 0.1 },
   )
+  entranceObserver = observer
 
   // 观察每个文章卡片
   const articleCards = document.querySelectorAll('.article-card:not(.skeleton)')
@@ -624,15 +629,20 @@ const loadCommunityStats = async () => {
 }
 
 onMounted(async () => {
-  setTimeout(typeSubtitle, 500)
+  subtitleTimer = setTimeout(typeSubtitle, 500)
   await Promise.all([fetchArticleList(), loadHotTags(), loadCommunityStats()])
+  if (disposed) return
   // 数据加载完成后，等待 DOM 更新再观察元素
-  setTimeout(() => {
+  entranceTimer = setTimeout(() => {
     observeElements()
   }, 100)
 })
 
 onBeforeUnmount(() => {
+  disposed = true
+  clearTimeout(subtitleTimer)
+  clearTimeout(entranceTimer)
+  entranceObserver?.disconnect()
   restoreBodyScroll()
 })
 </script>
