@@ -118,7 +118,8 @@ zcx-chen-stack/
 │     ├─ src/components/CustomerService/  # 小辰聊天、卡片、SSE 协议
 │     └─ Dockerfile
 ├─ script/
-│  ├─ deploy/                          # 本地部署、启动、升级与回滚
+│  ├─ deploy/                          # 本地部署、启动、升级与回滚，doctor 诊断与端口恢复
+│  │  └─ tests/                        # 隔离故障注入验收（假 Docker/HTTP，不接触正式实例）
 │  ├─ dev/                             # docker-compose、.env.example、Redis 安全配置模板
 │  ├─ release/                         # 正式受控发布（构建、清单、发布操作）
 │  └─ prod/                            # 生产编排模板与备份脚本
@@ -133,9 +134,14 @@ zcx-chen-stack/
 
 ### 5.1 准备环境
 
-- Git、已启动的 Docker Desktop（Linux 容器），以及支持 `docker compose config --format json` 的 Compose 插件。
-- JDK 21、Maven 3.9+、Node.js 22.12+ 和 npm。后端 JAR 和两个前端 `dist/` 先在宿主机生成，再打包进 Docker 镜像。构建需要访问 Maven、npm 锁文件所用的镜像站和 Docker 镜像仓库。
-- 预留默认端口。如果本机已有辰栈或端口冲突，直接选用下方的隔离实例。
+- **先启动 Docker Desktop**（使用 Linux 容器），等托盘图标显示 Engine 已运行后再执行任何部署命令。脚本会读取 Docker Engine 版本；Engine 未启动时 `up`、`status`、`doctor` 都会直接失败并提示。
+- Git，以及支持 `docker compose config --format json` 的 Compose 插件。可用下面的命令确认环境：
+  ```powershell
+  docker version --format '{{.Server.Version}}'
+  docker compose version --short
+  ```
+- 仅**首次初始化或升级构建**需要 JDK 21、Maven 3.9+、Node.js 22.12+ 和 npm。后端 JAR 和两个前端 `dist/` 先在宿主机生成，再打包进 Docker 镜像。日常 `up`、`stop`、`status`、`doctor` 不读取这些工具链。
+- 预留默认端口：5000（后端）、7000（用户端）、8000（管理端）等。如果本机已有辰栈或端口冲突，直接选用下方的隔离实例，不要修改业务源码或切换正式端口。
 
 ### 5.2 克隆并初始化
 
@@ -147,6 +153,8 @@ pwsh -NoProfile -File ./script/deploy/ChenStack.ps1 -Action init
 ```
 
 `init` 从模板生成 `.runtime/dev/.env` 和随机凭据，配置 Redis ACL，构建应用，启动 MySQL、Redis、MinIO 和 RabbitMQ，再导入基础库、执行七项迁移并启动后端和两个前端。默认的 `dev` 项目要求容器、网络和数据卷均为新资源。全新克隆应保留默认构建步骤。
+
+> **`init` 只用于全新实例。** 它要求目标项目的容器、网络和数据卷都不存在，任一已存在就会直接拒绝。已经在运行、已有数据、或由受控发布流程管理（正式 G3、R2 前端等）的实例，日常启动使用 `up`，不要用 `init`“修复”。初始化与恢复已有数据的区别见[部署手册](script/deploy/README.md#首次初始化与已有数据)。
 
 如需并行部署，从仓库根目录改用下面的命令。此例用户端为 **29108**，管理端为 **29107**，后端为 **29106**，请使用脚本输出的 `127.0.0.1` 地址。后续命令继续传入 `-Instance chenstack-test`。完整端口映射及构建选项见[部署手册](script/deploy/README.md)。
 
@@ -176,6 +184,12 @@ pwsh -NoProfile -File ./script/deploy/ChenStack.ps1 -Action up
 
 `stop` 保留容器、配置和数据卷，`up` 启动已有容器并检查就绪。改过环境变量时，需要按[部署手册](script/deploy/README.md)重新创建应用容器。`restart` 仅重启三个应用容器，`upgrade` 和 `rollback` 只用于普通实例。
 
+`up` 不只看 Docker 是否 `Running`。它会在容器内健康之后继续核对：实际端口是否发布、`127.0.0.1` 的 `/actuator/health` 是否 `UP`、用户端与管理端是否能打开页面。任何一项不满足都会打印诊断、以非 0 退出，**不会**报告“启动成功”。想单独做一次完整检查时使用 `doctor`：
+
+```powershell
+pwsh -NoProfile -File ./script/deploy/ChenStack.ps1 -Action doctor
+```
+
 ### 5.4 准备 Wiki、RAG 和混合问答
 
 全新实例没有已发布知识。最快的体验路径是手动发布 Wiki 页面，编辑和审核无需模型或 Embedding。
@@ -188,6 +202,58 @@ pwsh -NoProfile -File ./script/deploy/ChenStack.ps1 -Action up
 `-WithRag` 用于在**全新实例**启动本地 Qdrant。它不会自动建立可检索的知识。RAG 首次发布需要独立 Embedding Key、匹配的服务地址和模型、Qdrant 连接与独立 Key，以及与实际制品匹配的发布清单和完成回执。内置的 [`knowledge/`](chen-stack-backend/src/main/resources/knowledge/) 是审校材料。正式发布见[受控发布手册](script/release/README.md)。
 
 普通 Compose 的部署默认值是 `hybrid`。要体验两路混合检索，先让 RAG 和 Wiki 都有有效的已发布知识，再在 AI 配置中选择 **智能混合**。运行时会按问题选择知识路径。仅使用 Wiki 的实例可直接选择 Wiki 模式。
+
+### 5.5 部署健康检查与安全恢复
+
+Docker 显示容器 `Running`、容器内 `/actuator/health` 返回 `UP`，都不代表宿主机能访问服务。2026-11-10 的真实故障就是这样：容器与 Spring Boot 都正常，`HostConfig.PortBindings` 也配置了 `127.0.0.1:5000 -> 5000/tcp`，但 `NetworkSettings.Ports` 是空的，`127.0.0.1:5000` 无法访问，登录验证码加载失败，而 `up` 仍报告成功。现在脚本把这类问题当作失败处理。
+
+只读诊断（不会启动、停止、重启或删除任何东西）：
+
+```powershell
+pwsh -NoProfile -File ./script/deploy/ChenStack.ps1 -Action doctor
+```
+
+`doctor` 会检查 Docker Engine、实例容器与已停止的历史容器、实际端口发布（`HostConfig` 与 `NetworkSettings` 分开看）、Windows 监听进程与端口排除范围、容器网络互通、后端内部与宿主机健康、用户端与管理端访问、前端产物内嵌的 API 端口，以及后端最近日志中的关键错误。输出末尾给出固定摘要，并自动复制到剪贴板（回读校验）：
+
+```text
+CHEN_STACK_DOCTOR=PASS/FAIL
+BACKEND_INTERNAL_HEALTH=UP/DOWN
+BACKEND_HOST_ACCESS=PASS/FAIL
+PORT_5000_PUBLISHED=YES/NO
+FRONTEND_USER=PASS/FAIL
+FRONTEND_ADMIN=PASS/FAIL
+ROOT_CAUSE=...
+RECOMMENDED_ACTION=...
+```
+
+诊断失败时 `doctor` 以非 0 退出，`ROOT_CAUSE` 会区分：容器未启动、Java 后端启动失败、Docker 端口发布失败、Windows 端口冲突、API HTTP 请求失败、前端 Nginx 不可访问、前端请求目标与发布端口不一致。诊断只读，不会修改正式环境。
+
+端口发布异常的安全恢复：
+
+```powershell
+# 默认只诊断，打印将要执行的命令
+pwsh -NoProfile -File ./script/deploy/ChenStack.ps1 -Action repair-ports
+
+# 人工确认后执行：只对同一个后端容器执行 docker restart --timeout 30（旧别名 --time）
+pwsh -NoProfile -File ./script/deploy/ChenStack.ps1 -Action repair-ports -Apply
+```
+
+`repair-ports` 只在“后端容器运行、容器内健康 `UP`、`HostConfig` 有本机端口绑定、`NetworkSettings` 没有实际发布、宿主机 HTTP 不可达、端口没有被其他进程占用”时才会重启后端，且最多重启 2 次（`-MaxAttempts 1..3`）。重启后重新核对镜像身份、挂载、容器状态、端口发布与宿主机 HTTP 健康；镜像身份变化或多次失败会立即停止并保留现场。它**不会**执行 `docker compose down -v`、`docker system prune`、数据库或卷操作，也不会重建容器、更换镜像或改写受控发布清单。
+
+受控发布实例（带 `chen.release` 标签、挂载 `/release` 或启用 RAG 恢复开关，例如正式 G3）默认拒绝执行恢复。确认现场后需要显式追加 `-AllowReleaseRestart`；它仍然只重启同一个容器，不重建、不更换镜像，因此发布清单绑定的运行制品不变。
+
+| `ROOT_CAUSE` | 含义与首选处理 |
+|---|---|
+| `DOCKER_ENGINE_UNAVAILABLE` | Docker Desktop 未启动或 Engine 不可用。启动 Docker Desktop 后重试。 |
+| `CONTAINERS_NOT_CREATED` | 实例尚未初始化。确认是全新环境后再 `init`。 |
+| `BACKEND_NOT_RUNNING` / `INFRASTRUCTURE_NOT_RUNNING` | 容器未运行。执行 `up`，仍失败时看 `docker ps -a`。 |
+| `BACKEND_INTERNAL_HEALTH_DOWN` | Java 后端或依赖启动失败。先看后端日志与 MySQL/Redis 状态，重启容器不能修复这类问题。 |
+| `DOCKER_PORT_PUBLISH_MISSING` | 容器健康但 Docker 未完成端口发布。用 `repair-ports`。 |
+| `WINDOWS_PORT_CONFLICT` | 端口被其他进程占用。先释放端口，再重新诊断。 |
+| `PORT_CONFIG_MISMATCH` | 容器内的端口配置与当前 env 不一致，需要按部署手册重建应用容器（受控实例按发布流程）。 |
+| `BACKEND_HOST_HTTP_FAILED` | 端口已发布但宿主机仍请求失败，按提示重启后端并复核。 |
+| `FRONTEND_NGINX_UNREACHABLE` | 前端容器或 Nginx 异常，查看前端容器日志后重启应用容器。 |
+| `FRONTEND_REQUEST_TARGET_MISMATCH` | 前端产物内嵌的 API 端口与实际发布端口不一致，需要重新构建前端。 |
 
 ## 6. 配置与凭据
 
@@ -250,6 +316,14 @@ npm --prefix ./chen-stack-frontend/chen-stack-user run dev
 
 Vite 开发端口为 8000 和 7000。自定义端口时需要同步配置后端的 `chen-stack.allow-origins`。直接运行后端 JVM 时，要显式注入依赖地址和凭据，Spring 不会自动加载仓库里的 `.env`。
 
+部署脚本本身有独立的隔离验收，不需要 Docker 或正式实例参与：
+
+```powershell
+pwsh -NoProfile -File ./script/deploy/tests/Run-DeployTests.ps1
+```
+
+它依次运行静态安全检查、诊断/恢复的故障注入单元测试，以及用临时实例和 Docker 替身跑的命令行级端到端测试，覆盖端口未发布、端口被占用、Engine 未启动、前端不可访问、历史容器、受控发布边界、重试上限与幂等。仅使用只读检查和临时 `dsh-test-*` 实例，不会启动或重启任何正式容器。
+
 ## 9. 安全与常见问题
 
 一键部署的 Docker 端口只绑定本机。保护 `.runtime/` 下的 env、初始管理员文件、Redis ACL、账本和发布授权。它们受 Git 忽略。旧普通部署的 env 兼容路径见[部署手册](script/deploy/README.md)，受控实例应保留完整 Compose、凭据和挂载。查看配置时使用 `docker compose config --quiet`，避免展开秘密。
@@ -257,15 +331,47 @@ Vite 开发端口为 8000 和 7000。自定义端口时需要同步配置后端�
 | 现象 | 检查与处理 |
 |---|---|
 | `init` 报已有容器、卷或网络 | 已初始化的实例用 `up`。另起一套时指定新实例名与空闲端口。部分初始化失败时先保留资源并排查。 |
+| **容器 `Running` 但页面打不开、API 或验证码请求失败** | 不是普通“服务没起”。先运行 `-Action doctor`，看 `PORT_5000_PUBLISHED`、`BACKEND_HOST_ACCESS` 和 `ROOT_CAUSE`；若为 `DOCKER_PORT_PUBLISH_MISSING`，按[5.5 节](#55-部署健康检查与安全恢复)用 `repair-ports` 处理。不要靠反复 `docker compose up -d` 或删除容器“修复”。 |
+| 数据库未就绪或后端启动失败 | 后端内部健康 `DOWN` 时看 `docker logs --tail 200 chen-stack-backend` 与 MySQL 日志，确认基础服务容器状态；`up` 会等待 MySQL/Redis/MinIO/RabbitMQ 就绪，超时会明确报错。 |
+| 端口被占用 | `doctor` 会给出占用进程。用 `Get-NetTCPConnection -State Listen -LocalPort 5000 \| Select-Object LocalAddress,LocalPort,OwningProcess` 复核，释放端口后再诊断；不要为此修改业务端口。 |
+| 前端能打开但请求全部失败 | 多在端口发布或前端产物内嵌的 API 地址。看 `FRONTEND_REQUEST_TARGET` 与 `BACKEND_HOST_ACCESS`，必要时重新构建前端。 |
+| Docker Desktop 未启动 | `docker version` 失败。启动 Docker Desktop 并等待 Engine 就绪，再执行 `up` 或 `doctor`；脚本不会自行拉起 Desktop。 |
 | 浏览器提示请求或跨域失败 | 确认访问脚本输出的地址、API 端口和后端来源白名单。前端构建后更改 API 地址需要重新打包。 |
 | Redis 不健康 | 检查实例 `redis/` 下的配置、LF 格式 ACL 和健康检查密码文件，确认命名用户与应用 env 一致。 |
 | 小辰提示模型服务不可用 | 核对 Key、API 地址、模型权限与 Provider 额度，并确认 backend 使用了新环境。 |
 | 知识未命中或索引未就绪 | 检查在线生效模式、Wiki 来源和发布状态，或 RAG 的 Qdrant、Embedding、目录及发布回执。 |
 | `upgrade` 被拒绝或启动出现 `PUBLICATION_*` | 核对受控实例的运行 JAR、清单和发布回执，按[发布手册](script/release/README.md)处理。 |
 
+### 9.1 5000 端口映射异常的处理步骤
+
+适用于：容器在运行、容器内 `/actuator/health` 是 `UP`，但 Windows 打不开 `http://127.0.0.1:5000`（登录验证码、用户端 API、管理端 API 同时失败）。
+
+1. 运行诊断并保留输出（摘要会自动进剪贴板）：
+   ```powershell
+   pwsh -NoProfile -File ./script/deploy/ChenStack.ps1 -Action doctor
+   ```
+   关键行：`PORT_5000_PUBLISHED=NO`、`BACKEND_HOST_ACCESS=FAIL`、`ROOT_CAUSE=DOCKER_PORT_PUBLISH_MISSING`。诊断只读，可以先在正式环境执行。
+2. 区分“Docker 没发布”和“端口被别人占用”：`ROOT_CAUSE=WINDOWS_PORT_CONFLICT` 说明宿主机端口被其他进程占用，先处理占用进程：
+   ```powershell
+   Get-NetTCPConnection -State Listen -LocalPort 5000 | Select-Object LocalAddress,LocalPort,OwningProcess
+   netsh int ipv4 show excludedportrange protocol=tcp
+   ```
+3. 确认是 `DOCKER_PORT_PUBLISH_MISSING` 后，先只诊断、不动作：
+   ```powershell
+   pwsh -NoProfile -File ./script/deploy/ChenStack.ps1 -Action repair-ports
+   ```
+4. 人工确认后执行受控重启（脚本内部等价于 `docker restart --timeout 30 chen-stack-backend`，但会先核对镜像、挂载与重试上限，并在重启后重新验证端口发布与宿主机 HTTP）：
+   ```powershell
+   pwsh -NoProfile -File ./script/deploy/ChenStack.ps1 -Action repair-ports -Apply
+   ```
+5. 复核结果：`CHEN_STACK_REPAIR=SUCCESS` 后再跑一次 `doctor`，确认 `CHEN_STACK_DOCTOR=PASS`、`PORT_5000_PUBLISHED=YES`、`BACKEND_HOST_ACCESS=PASS`、`FRONTEND_USER=PASS`、`FRONTEND_ADMIN=PASS`。
+
+如果 `repair-ports` 判定为 `REFUSED` 或 `FAILED`，不要继续反复重启：按输出里的 `NEXT_STEP` 处理，保留现场并核对容器日志、端口占用与 Windows 排除端口范围。直接原因可能是 Docker 端口代理、Windows 端口保留或宿主网络栈状态，但具体触发点需要现场证据确认，脚本不会替你下结论。
+
 ## 10. 文档索引
 
 - [本地部署和日常运维](script/deploy/README.md)
+- [部署诊断与安全恢复测试](script/deploy/tests/Run-DeployTests.ps1)
 - [受控 RAG 发布与恢复](script/release/README.md)
 - [AI 持续使用与计量](script/prod/README-AI-USAGE.md)
 - [仓库协作规则](AGENTS.md)

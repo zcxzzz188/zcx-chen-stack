@@ -14,15 +14,20 @@
       rollback  回滚到上一次 upgrade 之前的应用镜像
       migrate   只执行增量 SQL 迁移（幂等）
       status    查看实例容器、健康与版本
+      doctor    只读诊断：Docker、容器、实际端口映射、Windows 监听、内外健康、前端访问与日志
+      repair-ports
+                端口发布异常的安全恢复：默认只诊断，-Apply 才重启同一个后端容器
 
     安全边界：
       * 从不执行 docker compose down -v，不删除数据卷。
       * upgrade 会检测“受控发布实例”（带 chen.release 标签、挂载 /release 或启用 RECOVERY），
         这类实例由 script/release 的发布流程管理，脚本直接拒绝，避免运行制品与发布清单不一致。
+      * doctor 全程只读；repair-ports 只做 docker restart，不重建容器、不换镜像、不删数据。
+      * 只有容器 Running 且容器内健康 UP、宿主端口映射存在、宿主机 HTTP 可访问，才算启动成功。
       * 支持 -Instance 创建隔离实例（不同项目名/容器名/卷名/端口），用于并行验证。
 
 .PARAMETER Action
-    init | up | stop | restart | upgrade | rollback | migrate | status
+    init | up | stop | restart | upgrade | rollback | migrate | status | doctor | repair-ports
 
 .PARAMETER Instance
     实例名，默认 dev。非默认值会生成独立的 env/override 文件，并隔离容器、镜像、卷及网络。
@@ -37,6 +42,19 @@
 .PARAMETER PortBase
     隔离实例首次初始化时使用的起始端口，预留连续 11 个 loopback 端口。
 
+.PARAMETER Apply
+    仅用于 repair-ports：真正执行受控重启。缺省只诊断并打印将执行的命令。
+
+.PARAMETER AllowReleaseRestart
+    仅用于 repair-ports：允许对受控发布实例重启同一个容器。
+    不重建容器、不更换镜像、不改挂载，因此不会改变发布清单绑定的运行制品。
+
+.PARAMETER MaxAttempts
+    repair-ports 的最大重启次数，取值 1..3，默认 2。
+
+.PARAMETER NoClipboard
+    不自动把摘要写入剪贴板（默认会复制并回读校验）。
+
 .EXAMPLE
     pwsh -File script/deploy/ChenStack.ps1 -Action init
 
@@ -45,17 +63,28 @@
 
 .EXAMPLE
     pwsh -File script/deploy/ChenStack.ps1 -Action status
+
+.EXAMPLE
+    pwsh -File script/deploy/ChenStack.ps1 -Action doctor
+
+.EXAMPLE
+    pwsh -File script/deploy/ChenStack.ps1 -Action repair-ports -Apply
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('init', 'up', 'stop', 'restart', 'upgrade', 'rollback', 'migrate', 'status')]
+    [ValidateSet('init', 'up', 'stop', 'restart', 'upgrade', 'rollback', 'migrate', 'status', 'doctor', 'repair-ports')]
     [string]$Action = 'status',
     [ValidatePattern('^[a-z][a-z0-9-]{0,47}$')]
     [string]$Instance = 'dev',
     [switch]$WithRag,
     [switch]$SkipBuild,
     [ValidateRange(1024, 65525)]
-    [int]$PortBase
+    [int]$PortBase,
+    [switch]$Apply,
+    [switch]$AllowReleaseRestart,
+    [ValidateRange(1, 3)]
+    [int]$MaxAttempts = 2,
+    [switch]$NoClipboard
 )
 
 Set-StrictMode -Version Latest
@@ -95,6 +124,11 @@ $Migrations = @(
     @{ File = 'g3_ai_knowledge_management.sql'; Kind = 'menu'; Marker = '9300' }
     @{ File = 'g3_ai_knowledge_configuration.sql'; Kind = 'table'; Marker = 'ai_runtime_config' }
 )
+
+# 诊断与安全恢复引擎（只读 doctor + 受控 repair-ports）。统一入口仍是本脚本。
+$DoctorScript = Join-Path $PSScriptRoot 'ChenStackDoctor.ps1'
+if (-not (Test-Path -LiteralPath $DoctorScript)) { throw "缺少诊断引擎 $DoctorScript" }
+. $DoctorScript
 
 function Write-Title([string]$Text) {
     Write-Host ''
@@ -659,6 +693,7 @@ function Show-Access([string]$EnvPath) {
 }
 
 function Show-Status {
+    param([switch]$WithDoctor)
     Write-Title "辰栈实例状态（$Instance）"
     $rows = @()
     foreach ($service in ($InfraServices + @('qdrant') + $AppServices)) {
@@ -681,6 +716,96 @@ function Show-Status {
         $mode = if ($map.Contains('AI_KNOWLEDGE_MODE')) { [string]$map['AI_KNOWLEDGE_MODE'] } else { '未设置' }
         Write-Host ('  部署默认知识模式(AI_KNOWLEDGE_MODE)：' + $mode + '（实际生效以数据库配置为准）')
     }
+    if (-not $WithDoctor) { return }
+
+    # 容器状态不等于部署可用：status 也展示端口发布与宿主机访问结果。
+    $doctor = Invoke-ChenStackDoctor -Context (New-InstanceDoctorContext)
+    Write-Host ''
+    Write-Host '  宿主机连通性摘要' -ForegroundColor Cyan
+    foreach ($line in $doctor.Summary) { Write-Host "    $line" }
+    Write-Host ''
+    Write-Host '  完整诊断：pwsh -NoProfile -File ./script/deploy/ChenStack.ps1 -Action doctor' -ForegroundColor DarkGray
+}
+
+# ---------------------------------------------------------------- 宿主机连通性
+
+function New-InstanceDoctorContext {
+    $envPath = Get-EnvPath
+    $map = Read-DotEnv $envPath
+    return New-ChenStackDoctorContext -RepoRoot $RepoRoot -Instance $Instance -EnvMap $map -EnvPath $envPath
+}
+
+function Assert-HostReachability {
+    <#
+    .SYNOPSIS
+        启动/升级/重启后的硬性验收：容器运行、端口实际发布、宿主机 HTTP 可达。
+    .DESCRIPTION
+        Docker Running 或容器内健康 UP 都不足以判定部署成功。任何一项失败都会打印完整诊断
+        并终止当前操作，避免把“容器在跑但 API 不通”当成成功。
+    #>
+    param([string]$Stage = '部署')
+
+    $context = New-InstanceDoctorContext
+    $result = Invoke-ChenStackDoctor -Context $context
+    if ($result.Ok) {
+        Write-Ok "宿主机连通性检查通过：端口发布存在，后端与两个前端均可从 127.0.0.1 访问"
+        return $result
+    }
+
+    Format-ChenStackDoctorReport -Result $result
+    Write-Host '  摘要' -ForegroundColor Cyan
+    foreach ($line in $result.Summary) { Write-Host "    $line" }
+    Write-Host ''
+    throw "$Stage 校验未通过：ROOT_CAUSE=$($result.RootCause)。修复建议：$($result.RecommendedAction)"
+}
+
+function Invoke-DoctorAction {
+    $context = New-InstanceDoctorContext
+    $result = Invoke-ChenStackDoctor -Context $context
+    Format-ChenStackDoctorReport -Result $result
+
+    $clipboard = $null
+    if (-not $NoClipboard) { $clipboard = Set-ChenStackDoctorClipboard -Lines $result.Summary }
+    if ($NoClipboard) {
+        Write-Host '  摘要（未复制到剪贴板）' -ForegroundColor Cyan
+    } elseif ($clipboard.Status -eq 'COPIED_VERIFIED') {
+        Write-Host '  摘要（已复制到剪贴板）' -ForegroundColor Cyan
+    } else {
+        Write-Host '  摘要（已生成，剪贴板复制未确认）' -ForegroundColor Cyan
+    }
+    foreach ($line in $result.Summary) { Write-Host "    $line" }
+    Write-Host ''
+    if ($NoClipboard) {
+        Write-Host '  CLIPBOARD=SKIPPED（-NoClipboard）' -ForegroundColor DarkGray
+    } else {
+        Write-Host "  CLIPBOARD=$($clipboard.Status) $($clipboard.Detail)" -ForegroundColor DarkGray
+    }
+    if (-not $result.Ok) {
+        Write-Host ''
+        Write-Fail "诊断未通过：ROOT_CAUSE=$($result.RootCause)"
+    }
+    return $result
+}
+
+function Invoke-RepairPortsAction {
+    $context = New-InstanceDoctorContext
+    $repair = Invoke-ChenStackPortRepair -Context $context -Apply:$Apply `
+        -AllowReleaseRestart:$AllowReleaseRestart -MaxAttempts $MaxAttempts
+
+    Format-ChenStackRepairReport -Repair $repair
+    $doctorForReport = if ($null -ne $repair.Post) { $repair.Post } else { $repair.Doctor }
+    if ($null -ne $doctorForReport) { Format-ChenStackDoctorReport -Result $doctorForReport }
+
+    Write-Host '  摘要' -ForegroundColor Cyan
+    foreach ($line in $repair.Summary) { Write-Host "    $line" }
+    Write-Host ''
+    if ($NoClipboard) {
+        Write-Host '  CLIPBOARD=SKIPPED（-NoClipboard）' -ForegroundColor DarkGray
+    } else {
+        $clipboard = Set-ChenStackDoctorClipboard -Lines $repair.Summary
+        Write-Host "  CLIPBOARD=$($clipboard.Status) $($clipboard.Detail)" -ForegroundColor DarkGray
+    }
+    return $repair
 }
 
 # ---------------------------------------------------------------- 动作
@@ -718,6 +843,7 @@ function Invoke-Init {
     Write-Step '启动应用服务'
     [void](Invoke-Compose (@('up', '-d', '--no-build', '--pull', 'never') + $AppServices))
     Wait-Applications
+    [void](Assert-HostReachability -Stage '首次部署')
     Show-Access (Get-EnvPath)
     Write-Host ''
     Write-Host '  首次登录后请修改管理端密码并删除初始凭据文件。' -ForegroundColor Yellow
@@ -746,6 +872,7 @@ function Invoke-Up {
     }
     Wait-Infrastructure
     Wait-Applications
+    [void](Assert-HostReachability -Stage '日常启动')
     Show-Status
 }
 
@@ -770,6 +897,7 @@ function Invoke-Restart {
         Write-Step "已重启 $name"
     }
     Wait-Applications
+    [void](Assert-HostReachability -Stage '应用重启')
     Show-Status
 }
 
@@ -798,6 +926,7 @@ function Invoke-Upgrade {
     Write-Step '重建应用容器（基础服务与数据卷不变）'
     [void](Invoke-Compose (@('up', '-d', '--no-deps', '--no-build', '--pull', 'never') + $AppServices))
     Wait-Applications
+    [void](Assert-HostReachability -Stage '升级')
     Write-Ok '升级完成；如需回滚执行 -Action rollback'
 }
 
@@ -819,11 +948,13 @@ function Invoke-Rollback {
     }
     [void](Invoke-Compose (@('up', '-d', '--no-deps', '--no-build', '--pull', 'never') + $AppServices))
     Wait-Applications
+    [void](Assert-HostReachability -Stage '回滚')
     Write-Ok '回滚完成'
 }
 
 # ---------------------------------------------------------------- 入口
 
+$failed = $false
 try {
     switch ($Action) {
         'init' { Invoke-Init }
@@ -836,10 +967,21 @@ try {
             Write-Title '执行增量 SQL 迁移'
             Invoke-Migrations
         }
-        'status' { Show-Status }
+        'status' { Show-Status -WithDoctor }
+        'doctor' {
+            $doctorResult = Invoke-DoctorAction
+            if (-not $doctorResult.Ok) { $failed = $true }
+        }
+        'repair-ports' {
+            $repairResult = Invoke-RepairPortsAction
+            if ($repairResult.Outcome -in @('FAILED', 'REFUSED')) { $failed = $true }
+        }
     }
-    Write-Host ''
-    Write-Ok "操作完成：$Action"
+    if ($failed) { exit 1 }
+    if ($Action -notin @('doctor', 'repair-ports', 'status')) {
+        Write-Host ''
+        Write-Ok "操作完成：$Action"
+    }
 } catch {
     Write-Host ''
     Write-Fail $_.Exception.Message
