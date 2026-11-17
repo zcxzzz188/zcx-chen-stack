@@ -36,6 +36,7 @@ import com.zcx.chenstack.utils.IpUtils;
 import com.zcx.chenstack.utils.SecurityUtils;
 import com.zcx.chenstack.utils.EmailUtils;
 import com.zcx.chenstack.utils.PageUtils;
+import com.zcx.chenstack.utils.TagNames;
 import com.zcx.chenstack.utils.TextAuditUtils;
 import com.zcx.chenstack.utils.UserUtils;
 import com.zcx.chenstack.utils.XssUtils;
@@ -575,62 +576,68 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
 
     @Override
     public PageVo<List<ArticleVo>> searchArticleByTitle(String title, Integer pageNum, Integer pageSize) {
-        Page<Article> page = PageUtils.buildPage(pageNum, pageSize);
-        LambdaQueryWrapper<Article> qw = new LambdaQueryWrapper<Article>()
-                .select(Article.class, info -> !info.getColumn().equals("content")) // 排除 content 字段
-                .like(Article::getTitle, title)
-                .eq(Article::getExamineStatus, ExamineStatusEnum.PASS.getCode())
-                .eq(Article::getEditStatus, EditStatusEnum.PUBLISHED.getCode())
-                .eq(Article::getVisibleRange, VisibleRangeEnum.ALL.getCode())
-                .orderByDesc(Article::getUpdateTime);
+        LambdaQueryWrapper<Article> query = publicArticleSearch();
+        matchTitle(query, title);
+        return searchArticlePage(query, pageNum, pageSize);
+    }
 
-        List<Article> articles = articleMapper.selectPage(page, qw).getRecords();
-
-        // 转换为 ArticleVo 并填充用户信息
-        List<ArticleVo> articleVos = articles.stream()
-                .map(article -> {
-                    ArticleVo articleVo = BeanUtil.copyProperties(article, ArticleVo.class);
-                    // 查询作者信息
-                    SysUser author = sysUserMapper.selectById(article.getUserId());
-                    if (ObjectUtil.isNotEmpty(author)) {
-                        articleVo.setNickname(author.getNickname());
-                        articleVo.setAvatar(author.getAvatar());
-                    }
-                    return articleVo;
-                })
-                .collect(Collectors.toList());
-
-        return PageUtils.<ArticleVo>buildPageVo(page, articleVos);
+    @Override
+    public PageVo<List<ArticleVo>> searchArticleByTitleOrTag(String keyword, Integer pageNum, Integer pageSize) {
+        LambdaQueryWrapper<Article> query = publicArticleSearch().and(matches -> {
+            matchTitle(matches, keyword);
+            matchTag(matches.or(), keyword);
+        });
+        return searchArticlePage(query, pageNum, pageSize);
     }
 
     @Override
     public PageVo<List<ArticleVo>> searchArticleByTag(String tag, Integer pageNum, Integer pageSize) {
-        Page<Article> page = PageUtils.buildPage(pageNum, pageSize);
-        LambdaQueryWrapper<Article> qw = new LambdaQueryWrapper<Article>()
-                .select(Article.class, info -> !info.getColumn().equals("content")) // 排除 content 字段
-                .like(Article::getTag, tag)
+        LambdaQueryWrapper<Article> query = publicArticleSearch();
+        matchTag(query, tag);
+        return searchArticlePage(query, pageNum, pageSize);
+    }
+
+    private LambdaQueryWrapper<Article> publicArticleSearch() {
+        return new LambdaQueryWrapper<Article>()
                 .eq(Article::getExamineStatus, ExamineStatusEnum.PASS.getCode())
                 .eq(Article::getEditStatus, EditStatusEnum.PUBLISHED.getCode())
-                .eq(Article::getVisibleRange, VisibleRangeEnum.ALL.getCode())
-                .orderByDesc(Article::getUpdateTime);
+                .eq(Article::getVisibleRange, VisibleRangeEnum.ALL.getCode());
+    }
 
-        List<Article> articles = articleMapper.selectPage(page, qw).getRecords();
+    private void matchTitle(LambdaQueryWrapper<Article> query, String keyword) {
+        if (TagNames.SPRING_BOOT.equals(TagNames.normalize(keyword))) {
+            query.apply("REGEXP_LIKE(title, {0}, 'i')", "spring[[:space:]]*boot");
+        } else {
+            query.like(Article::getTitle, keyword);
+        }
+    }
 
-        // 转换为 ArticleVo 并填充用户信息
+    private void matchTag(LambdaQueryWrapper<Article> query, String keyword) {
+        String normalized = TagNames.normalize(keyword).strip().toLowerCase(Locale.ROOT);
+        String springTagPattern = switch (normalized) {
+            case TagNames.SPRING_BOOT -> "spring[[:space:]]*boot";
+            case "spring", "spring cloud" -> normalized;
+            default -> null;
+        };
+        if (springTagPattern != null) {
+            query.apply("REGEXP_LIKE(tag, {0}, 'i')",
+                    "(^|,)[[:space:]]*" + springTagPattern + "[[:space:]]*(,|$)");
+        } else {
+            query.like(Article::getTag, keyword);
+        }
+    }
+
+    private PageVo<List<ArticleVo>> searchArticlePage(LambdaQueryWrapper<Article> query, Integer pageNum,
+            Integer pageSize) {
+        Page<Article> page = PageUtils.buildPage(pageNum, pageSize);
+        query.select(Article.class, info -> !info.getColumn().equals("content"))
+                .orderByDesc(Article::getUpdateTime, Article::getId);
+        List<Article> articles = articleMapper.selectPage(page, query).getRecords();
         List<ArticleVo> articleVos = articles.stream()
-                .map(article -> {
-                    ArticleVo articleVo = BeanUtil.copyProperties(article, ArticleVo.class);
-                    // 查询作者信息
-                    SysUser author = sysUserMapper.selectById(article.getUserId());
-                    if (ObjectUtil.isNotEmpty(author)) {
-                        articleVo.setNickname(author.getNickname());
-                        articleVo.setAvatar(author.getAvatar());
-                    }
-                    return articleVo;
-                })
-                .collect(Collectors.toList());
-
-        return PageUtils.<ArticleVo>buildPageVo(page, articleVos);
+                .map(article -> BeanUtil.copyProperties(article, ArticleVo.class))
+                .toList();
+        fillArticleUserInfo(articleVos);
+        return PageUtils.buildPageVo(page, articleVos);
     }
 
     @Override
@@ -676,14 +683,11 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
     @Override
     public List<String> getTitleSuggestions(String keyword) {
         // 查询标题包含关键字的文章，只返回标题，最多10条
-        LambdaQueryWrapper<Article> qw = new LambdaQueryWrapper<Article>()
+        LambdaQueryWrapper<Article> qw = publicArticleSearch()
                 .select(Article::getTitle)
-                .like(Article::getTitle, keyword)
-                .eq(Article::getExamineStatus, ExamineStatusEnum.PASS.getCode())
-                .eq(Article::getEditStatus, EditStatusEnum.PUBLISHED.getCode())
-                .eq(Article::getVisibleRange, VisibleRangeEnum.ALL.getCode())
                 .orderByDesc(Article::getUpdateTime)
                 .last("LIMIT 10");
+        matchTitle(qw, keyword);
 
         List<Article> articles = articleMapper.selectList(qw);
 
@@ -697,15 +701,14 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
     @Override
     public List<String> getTagSuggestions(String keyword) {
         // 查询标签包含关键字的文章，只返回标签，最多返回相关标签
-        LambdaQueryWrapper<Article> qw = new LambdaQueryWrapper<Article>()
+        LambdaQueryWrapper<Article> qw = publicArticleSearch()
                 .select(Article::getTag)
-                .like(Article::getTag, keyword)
-                .eq(Article::getExamineStatus, ExamineStatusEnum.PASS.getCode())
-                .eq(Article::getEditStatus, EditStatusEnum.PUBLISHED.getCode())
-                .eq(Article::getVisibleRange, VisibleRangeEnum.ALL.getCode())
                 .isNotNull(Article::getTag)
                 .ne(Article::getTag, "")
                 .last("LIMIT 50");
+        matchTag(qw, keyword);
+        String normalized = TagNames.normalize(keyword).strip().toLowerCase(Locale.ROOT);
+        boolean exactMatch = Set.of(TagNames.SPRING_BOOT, "spring", "spring cloud").contains(normalized);
 
         List<Article> articles = articleMapper.selectList(qw);
 
@@ -719,7 +722,8 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
                     return java.util.Arrays.stream(tags);
                 })
                 .map(String::trim)
-                .filter(tag -> tag.contains(keyword))
+                .map(TagNames::normalize)
+                .filter(tag -> exactMatch ? tag.equalsIgnoreCase(normalized) : tag.contains(keyword))
                 .distinct()
                 .limit(10)
                 .collect(Collectors.toList());
@@ -760,7 +764,7 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
         return new Article().setTitle(XssUtils.cleanPlainText(dto.getTitle()))
                 .setContent(XssUtils.cleanRichText(dto.getContent()))
                 .setDescription(XssUtils.cleanPlainText(dto.getDescription()))
-                .setTag(dto.getTag()).setCoverUrl(dto.getCoverUrl())
+                .setTag(TagNames.normalizeArticleTags(dto.getTag())).setCoverUrl(dto.getCoverUrl())
                 .setEditStatus(dto.getEditStatus()).setVisibleRange(dto.getVisibleRange())
                 .setReprintType(dto.getReprintType()).setReprintUrl(dto.getReprintUrl());
     }
@@ -808,7 +812,6 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
                         if (photoAuditResult.getStatus().equals(ExamineStatusEnum.PASS.getCode())) {
                             // 文字和图片审核都通过，更新审核状态为通过
                             updateArticle.setExamineStatus(ExamineStatusEnum.PASS.getCode());
-                            updateArticle.setTag(articleDto.getTag());
                             articleMapper.updateById(updateArticle);
                             syncColumnArticleCountByStatusChange(currentArticle, ExamineStatusEnum.PASS.getCode());
                         } else if (photoAuditResult.getStatus().equals(ExamineStatusEnum.NO_PASS.getCode())) {
@@ -1041,7 +1044,8 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
                 existingArticle.getCoverUrl())) {
             return true;
         }
-        if (!Objects.equals(resolveUpdatedValue(articleDto.getTag(), existingArticle.getTag()), existingArticle.getTag())) {
+        if (!Objects.equals(TagNames.normalizeArticleTags(resolveUpdatedValue(articleDto.getTag(), existingArticle.getTag())),
+                TagNames.normalizeArticleTags(existingArticle.getTag()))) {
             return true;
         }
         if (!Objects.equals(resolveUpdatedValue(articleDto.getReprintType(), existingArticle.getReprintType()),

@@ -16,8 +16,10 @@ import com.zcx.chenstack.exception.BlogException;
 import com.zcx.chenstack.mapper.ArticleMapper;
 import com.zcx.chenstack.mapper.TagMapper;
 import com.zcx.chenstack.service.TagService;
+import com.zcx.chenstack.utils.TagNames;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -53,7 +55,13 @@ public class TagServiceImpl extends ServiceImpl<TagMapper, Tag> implements TagSe
     @Override
     public void addTag(TagDto tagDto) {
         Tag tag = BeanUtil.copyProperties(tagDto, Tag.class);
-        int insert = tagMapper.insert(tag);
+        tag.setName(TagNames.normalize(tag.getName()));
+        int insert;
+        try {
+            insert = tagMapper.insert(tag);
+        } catch (DuplicateKeyException e) {
+            throw new BlogException("标签已存在");
+        }
         if (insert <= 0) {
             throw new BlogException(BlogConstants.AddTagError);
         }
@@ -225,6 +233,7 @@ public class TagServiceImpl extends ServiceImpl<TagMapper, Tag> implements TagSe
 
         return Arrays.stream(tagString.split(","))
                 .map(String::trim)
+                .map(TagNames::normalize)
                 .filter(ObjectUtil::isNotEmpty)
                 .collect(Collectors.toCollection(LinkedHashSet::new));
     }

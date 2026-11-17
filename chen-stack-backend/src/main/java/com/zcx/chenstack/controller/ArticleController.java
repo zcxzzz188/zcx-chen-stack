@@ -20,6 +20,7 @@ import com.zcx.chenstack.service.ArticleService;
 import com.zcx.chenstack.service.FavoriteService;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.zcx.chenstack.utils.SecurityUtils;
+import com.zcx.chenstack.utils.TagNames;
 import jakarta.annotation.Resource;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotNull;
@@ -151,9 +152,10 @@ public class ArticleController {
     }
 
     /**
-     * 根据标题搜索文章
+     * 搜索公开文章，默认匹配标题
      *
      * @param title    搜索关键字
+     * @param type     搜索范围
      * @param pageNum  页码
      * @param pageSize 页大小
      * @return 搜索结果列表
@@ -161,11 +163,17 @@ public class ArticleController {
     @RateLimit(20)
     @GetMapping("/search")
     public Result searchArticleByTitle(@RequestParam @NotNull(message = "搜索关键字不能为空") String title,
+            @RequestParam(defaultValue = "title") String type,
             @RequestParam(defaultValue = "1") @NotNull(message = "页码不能为空") Integer pageNum,
             @RequestParam(defaultValue = "10") @NotNull(message = "每页大小不能为空") Integer pageSize) {
-        PageVo<List<ArticleVo>> articleVoList = articleService.searchArticleByTitle(title, pageNum, pageSize);
-        // 记录搜索关键词到 Redis
-        redisComponent.recordSearchKeyword(title);
+        PageVo<List<ArticleVo>> articleVoList = switch (type) {
+            case "all" -> articleService.searchArticleByTitleOrTag(title, pageNum, pageSize);
+            case "tag" -> articleService.searchArticleByTag(title, pageNum, pageSize);
+            default -> articleService.searchArticleByTitle(title, pageNum, pageSize);
+        };
+        if (pageNum == 1) {
+            redisComponent.recordSearchKeyword(TagNames.normalize(title));
+        }
         return Result.success(articleVoList);
     }
 
@@ -183,8 +191,9 @@ public class ArticleController {
             @RequestParam(defaultValue = "1") @NotNull(message = "页码不能为空") Integer pageNum,
             @RequestParam(defaultValue = "10") @NotNull(message = "每页大小不能为空") Integer pageSize) {
         PageVo<List<ArticleVo>> articleVoList = articleService.searchArticleByTag(tag, pageNum, pageSize);
-        // 记录搜索关键词到 Redis
-        redisComponent.recordSearchKeyword(tag);
+        if (pageNum == 1) {
+            redisComponent.recordSearchKeyword(TagNames.normalize(tag));
+        }
         return Result.success(articleVoList);
     }
 
@@ -202,8 +211,9 @@ public class ArticleController {
             @RequestParam(defaultValue = "1") @NotNull(message = "页码不能为空") Integer pageNum,
             @RequestParam(defaultValue = "10") @NotNull(message = "每页大小不能为空") Integer pageSize) {
         PageVo<List<ArticleVo>> articleVoList = articleService.searchArticleByAuthor(author, pageNum, pageSize);
-        // 记录搜索关键词到 Redis
-        redisComponent.recordSearchKeyword(author);
+        if (pageNum == 1) {
+            redisComponent.recordSearchKeyword(author);
+        }
         return Result.success(articleVoList);
     }
 

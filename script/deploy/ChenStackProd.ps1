@@ -1,11 +1,17 @@
 [CmdletBinding()]
 param(
-    [ValidateSet('check', 'status', 'up', 'stop', 'restart', 'replace-backend')]
+    [ValidateSet('check', 'status', 'up', 'stop', 'restart', 'replace-backend', 'replace-user')]
     [string]$Action = 'status',
     [ValidatePattern('^sha256:[a-f0-9]{64}$')]
     [string]$BackendImage,
     [ValidatePattern('^sha256:[a-f0-9]{64}$')]
-    [string]$ExpectedBackendImage
+    [string]$ExpectedBackendImage,
+    [ValidatePattern('^sha256:[a-f0-9]{64}$')]
+    [string]$UserImage,
+    [ValidatePattern('^sha256:[a-f0-9]{64}$')]
+    [string]$ExpectedUserImage,
+    [ValidatePattern('^sha256:[a-f0-9]{64}$')]
+    [string]$UserRollbackImage
 )
 
 Set-StrictMode -Version Latest
@@ -79,14 +85,27 @@ function Wait-BackendReadiness {
     throw '正式后端未在 120 秒内就绪'
 }
 
-function Confirm-BackendReadiness([string]$Image) {
-    Wait-BackendReadiness
-    $actual = Invoke-CheckedDocker @('inspect', '--format', '{{.Image}}', $apps.backend) '核对运行后端镜像'
-    if ($actual -cne $Image) { throw '运行后端镜像与请求镜像不一致' }
+function Confirm-AppReadiness([string]$Service, [string]$Image) {
+    if ($Service -eq 'backend') {
+        Wait-BackendReadiness
+    } else {
+        $deadline = (Get-Date).AddSeconds(30)
+        $response = $null
+        do {
+            try {
+                $response = Invoke-WebRequest 'http://127.0.0.1:7000/' -TimeoutSec 3
+                if ($response.StatusCode -eq 200) { break }
+            } catch { }
+            Start-Sleep -Seconds 1
+        } while ((Get-Date) -lt $deadline)
+        if ($null -eq $response -or $response.StatusCode -ne 200) { throw '用户端未通过 HTTP 检查' }
+    }
+    $actual = Invoke-CheckedDocker @('inspect', '--format', '{{.Image}}', $apps[$Service]) "核对运行镜像 $Service"
+    if ($actual -cne $Image) { throw "运行镜像与请求镜像不一致：$Service" }
 }
 
-function Set-BackendCompose([byte[]]$Content, [string]$ExpectedHash, [switch]$Validate) {
-    $stage = Join-Path $runtime "compose-backend-$([guid]::NewGuid().ToString('N')).json"
+function Set-AppCompose([byte[]]$Content, [string]$ExpectedHash, [switch]$Validate) {
+    $stage = Join-Path $runtime "compose-app-$([guid]::NewGuid().ToString('N')).json"
     try {
         [IO.File]::WriteAllBytes($stage, $Content)
         if ($Validate) {
@@ -104,15 +123,25 @@ function Set-BackendCompose([byte[]]$Content, [string]$ExpectedHash, [switch]$Va
 $deployLock = $null
 $deployLockHeld = $false
 try {
-    if ($Action -eq 'replace-backend') {
-        if (!$BackendImage -or !$ExpectedBackendImage -or $BackendImage -ceq $ExpectedBackendImage) {
-            throw '请提供不同的 -BackendImage 和 -ExpectedBackendImage 镜像 SHA256'
+    if (($Action -ne 'replace-backend' -and ($BackendImage -or $ExpectedBackendImage)) -or
+        ($Action -ne 'replace-user' -and ($UserImage -or $ExpectedUserImage -or $UserRollbackImage))) {
+        throw '镜像参数仅用于对应的替换操作'
+    }
+    $replaceService = switch ($Action) {
+        'replace-backend' { 'backend' }
+        'replace-user' { 'user' }
+    }
+    if ($replaceService) {
+        $nextImage = if ($replaceService -eq 'backend') { $BackendImage } else { $UserImage }
+        $expectedImage = if ($replaceService -eq 'backend') { $ExpectedBackendImage } else { $ExpectedUserImage }
+        if (!$nextImage -or !$expectedImage -or $nextImage -ceq $expectedImage) {
+            throw "请提供 $replaceService 不同的候选和当前镜像 SHA256"
         }
+        $rollbackImage = if ($UserRollbackImage) { $UserRollbackImage } else { $expectedImage }
+        if ($rollbackImage -ceq $nextImage) { throw '回滚镜像必须与候选镜像不同' }
         $deployLock = [Threading.Mutex]::new($false, 'ChenStackProdBackendReplace')
         $deployLockHeld = $deployLock.WaitOne(0)
-        if (!$deployLockHeld) { throw '已有后端镜像替换正在执行' }
-    } elseif ($BackendImage -or $ExpectedBackendImage) {
-        throw '镜像参数仅支持 replace-backend'
+        if (!$deployLockHeld) { throw '已有正式应用镜像替换正在执行' }
     }
     Assert-LocalPath $composeFile
     Assert-LocalPath $backup
@@ -166,7 +195,8 @@ try {
             $service.networks.Count -ne 1 -or -not $service.networks.Contains('prod')) {
             throw "正式服务配置不符：$key"
         }
-        $null = Invoke-CheckedDocker @('image', 'inspect', $service.image) "正式镜像 $key 检查"
+        $imageToCheck = if ($key -eq 'user' -and $UserRollbackImage) { $UserRollbackImage } else { $service.image }
+        $null = Invoke-CheckedDocker @('image', 'inspect', $imageToCheck) "正式镜像 $key 检查"
         $expectedBinds = $binds[$key]
         $expectedMountCount = if ($expectedBinds) { $expectedBinds.Count } else { 0 }
         if ($volumeTargets.ContainsKey($key)) { $expectedMountCount++ }
@@ -245,34 +275,43 @@ try {
         $containers[$key] = $container
     }
 
-    if ($Action -eq 'replace-backend') {
-        if (!$libraryEnabled -or !$containers.ContainsKey('backend') -or !$containers.backend.State.Running -or
-            $containers.backend.Config.Labels['com.docker.compose.project'] -cne 'chen-stack-prod' -or
-            $containers.backend.Config.Labels['com.docker.compose.service'] -cne 'backend' -or
-            $containers.backend.Image -cne $ExpectedBackendImage -or
-            ($containers.backend.Mounts | Where-Object Destination -CEQ '/release') -or
-            ($containers.backend.Config.Env -ccontains 'CHEN_RAG_RELEASE_RECOVERY_ENABLED=true') -or
-            ($containers.backend.Config.Labels.Keys -like 'chen.release*')) {
-            throw '运行后端身份、预期镜像或发布模式不符，禁止替换'
+    if ($replaceService) {
+        $running = $containers[$replaceService]
+        if (!$running -or !$running.State.Running -or
+            $running.Config.Labels['com.docker.compose.project'] -cne 'chen-stack-prod' -or
+            $running.Config.Labels['com.docker.compose.service'] -cne $replaceService -or
+            $running.Image -cne $expectedImage) {
+            throw "运行容器身份或预期镜像不符，禁止替换：$replaceService"
         }
-        $candidateId = Invoke-CheckedDocker @('image', 'inspect', '--format', '{{.Id}}', $BackendImage) '核对本机构建候选镜像'
-        if ($candidateId -cne $BackendImage) { throw '候选镜像身份不一致' }
-        Confirm-BackendReadiness $ExpectedBackendImage
-        $definition.services.backend.image = $BackendImage
+        if ($replaceService -eq 'backend' -and (!$libraryEnabled -or
+            ($running.Mounts | Where-Object Destination -CEQ '/release') -or
+            ($running.Config.Env -ccontains 'CHEN_RAG_RELEASE_RECOVERY_ENABLED=true') -or
+            ($running.Config.Labels.Keys -like 'chen.release*'))) {
+            throw '运行后端发布模式不符，禁止替换'
+        }
+        $candidateId = Invoke-CheckedDocker @('image', 'inspect', '--format', '{{.Id}}', $nextImage) '核对本机构建候选镜像'
+        if ($candidateId -cne $nextImage) { throw '候选镜像身份不一致' }
+        Confirm-AppReadiness $replaceService $expectedImage
+        $rollbackConfig = $original
+        if ($UserRollbackImage -and $UserRollbackImage -cne $expectedImage) {
+            $definition.services.user.image = $UserRollbackImage
+            $rollbackConfig = [Text.Encoding]::UTF8.GetBytes(($definition | ConvertTo-Json -Depth 50))
+        }
+        $definition.services[$replaceService].image = $nextImage
         $candidate = [Text.Encoding]::UTF8.GetBytes(($definition | ConvertTo-Json -Depth 50))
         $candidateHash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($candidate))
-        $replace = $compose + @('up', '-d', '--no-deps', '--no-build', '--pull', 'never', 'backend')
-        Set-BackendCompose $candidate $originalHash -Validate
+        $replace = $compose + @('up', '-d', '--no-deps', '--no-build', '--pull', 'never', $replaceService)
+        Set-AppCompose $candidate $originalHash -Validate
         try {
-            $null = Invoke-CheckedDocker $replace '替换正式后端'
-            Confirm-BackendReadiness $BackendImage
-            Write-Host "正式后端已就绪：$BackendImage；回滚镜像：$ExpectedBackendImage"
+            $null = Invoke-CheckedDocker $replace "替换正式服务 $replaceService"
+            Confirm-AppReadiness $replaceService $nextImage
+            Write-Host "正式服务 $replaceService 已就绪：$nextImage；回滚镜像：$rollbackImage"
         } catch {
             $failure = $_.Exception.Message
-            Set-BackendCompose $original $candidateHash
-            $null = Invoke-CheckedDocker $replace '恢复原后端'
-            Confirm-BackendReadiness $ExpectedBackendImage
-            throw "$failure；已恢复原后端 $ExpectedBackendImage"
+            Set-AppCompose $rollbackConfig $candidateHash
+            $null = Invoke-CheckedDocker $replace "恢复原服务 $replaceService"
+            Confirm-AppReadiness $replaceService $rollbackImage
+            throw "$failure；已恢复 $replaceService 回滚镜像 $rollbackImage"
         }
     } elseif ($Action -eq 'status') {
         foreach ($key in $names.Keys) {

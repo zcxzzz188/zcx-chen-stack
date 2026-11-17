@@ -95,7 +95,7 @@
                 >
                   <span class="hot-rank" :class="{ 'top-3': index < 3 }">{{ index + 1 }}</span>
                   <span class="hot-text">{{ item.keyword }}</span>
-                  <span class="hot-count">{{ formatCount(item.count) }}</span>
+                  <span class="hot-count">{{ formatCount(item.count) }} 次</span>
                 </div>
               </div>
             </div>
@@ -484,43 +484,15 @@ const performSearch = async (reset = false) => {
     hasSearched.value = true
 
     let allArticles = []
-    let totalTitle = 0
-    let totalTag = 0
 
     // 根据搜索类型调用不同接口
-    if (searchType.value === 'all') {
-      // 综合搜索：同时搜索标题和标签，合并结果
-      const [titleRes, tagRes] = await Promise.all([
-        searchArticleByTitle(searchKeyword.value, currentPage.value, pageSize.value),
-        searchArticleByTag(searchKeyword.value, currentPage.value, pageSize.value),
-      ])
-
-      // 解析标题搜索结果：PageVo { data: [...], total }
-      const titlePageVo = titleRes?.data || {}
-      const titleArticles = titlePageVo.data || titlePageVo.records || []
-      totalTitle = titlePageVo.total || titleArticles.length
-
-      // 解析标签搜索结果：PageVo { data: [...], total }
-      const tagPageVo = tagRes?.data || {}
-      const tagArticles = tagPageVo.data || tagPageVo.records || []
-      totalTag = tagPageVo.total || tagArticles.length
-
-      // 合并结果（按文章 ID 去重）
-      const articleMap = new Map()
-      titleArticles.forEach((article) => {
-        articleMap.set(article.id, article)
-      })
-      tagArticles.forEach((article) => {
-        if (!articleMap.has(article.id)) {
-          articleMap.set(article.id, article)
-        }
-      })
-      allArticles = Array.from(articleMap.values())
-      // 综合搜索时，total 设置为两者之和（可能包含重复，但用于 hasMore 判断是保守安全的）
-      total.value = totalTitle + totalTag
-    } else if (searchType.value === 'title') {
-      // 标题搜索
-      const res = await searchArticleByTitle(searchKeyword.value, currentPage.value, pageSize.value)
+    if (searchType.value === 'all' || searchType.value === 'title') {
+      const res = await searchArticleByTitle(
+        searchKeyword.value.trim(),
+        currentPage.value,
+        pageSize.value,
+        searchType.value,
+      )
       const pageVo = res?.data || {}
       allArticles = pageVo.data || pageVo.records || []
       total.value = pageVo.total || allArticles.length
@@ -651,19 +623,17 @@ onMounted(async () => {
     searchHistory.value = JSON.parse(savedHistory)
   }
 
-  // 并行加载所有数据
-  await Promise.all([loadHotTags(), loadRecommendedAuthors(), loadHotSearches()])
-
-  // 检查 URL 参数
+  const initialRequests = [loadHotTags(), loadRecommendedAuthors(), loadHotSearches()]
   const keyword = route.query.keyword
   const type = route.query.type || 'all'
 
   if (keyword) {
     searchKeyword.value = keyword
     searchType.value = type
-    await performSearch(true)
+    initialRequests.push(performSearch(true))
   }
 
+  await Promise.all(initialRequests)
   await nextTick()
   window.addEventListener('scroll', handleScroll, { passive: true })
 })

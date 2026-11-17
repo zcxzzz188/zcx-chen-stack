@@ -125,12 +125,39 @@ const stackList = [
 
 <style lang="scss" scoped>
 .about-page {
+  --about-page-gradient: linear-gradient(180deg, #f8fbff 0%, #f4f7fb 48%, #eef3f8 100%);
+  --about-card-bg: rgba(255, 255, 255, 0.86);
+  --about-feature-bg: linear-gradient(180deg, rgba(248, 250, 252, 0.96), rgba(241, 245, 249, 0.92));
+  --about-icon-bg: rgba(255, 255, 255, 0.92);
+  --about-pill-bg: rgba(226, 232, 240, 0.55);
+  --about-card-border: rgba(148, 163, 184, 0.16);
+  --about-feature-border: rgba(226, 232, 240, 0.9);
+  --about-pill-border: rgba(203, 213, 225, 0.8);
+  --about-heading: #0f172a;
+  --about-body-text: #475569;
+  --about-secondary-text: #64748b;
+  --about-kicker: #0369a1;
   min-height: 100vh;
   padding: 56px 24px 88px;
   background:
     radial-gradient(circle at top left, rgba(14, 165, 233, 0.14), transparent 32%),
     radial-gradient(circle at top right, rgba(16, 185, 129, 0.12), transparent 28%),
-    linear-gradient(180deg, #f8fbff 0%, #f4f7fb 48%, #eef3f8 100%);
+    var(--about-page-gradient);
+}
+
+html.dark .about-page {
+  --about-page-gradient: linear-gradient(180deg, var(--el-bg-color) 0%, var(--el-bg-color-page) 100%);
+  --about-card-bg: var(--el-bg-color-overlay);
+  --about-feature-bg: var(--el-fill-color-light);
+  --about-icon-bg: var(--el-fill-color);
+  --about-pill-bg: var(--el-fill-color);
+  --about-card-border: var(--el-border-color-light);
+  --about-feature-border: var(--el-border-color-lighter);
+  --about-pill-border: var(--el-border-color);
+  --about-heading: var(--el-text-color-primary);
+  --about-body-text: var(--el-text-color-regular);
+  --about-secondary-text: var(--el-text-color-regular);
+  --about-kicker: var(--el-color-primary);
 }
 
 .container {
@@ -140,8 +167,8 @@ const stackList = [
 
 .hero-card,
 .info-card {
-  background: rgba(255, 255, 255, 0.86);
-  border: 1px solid rgba(148, 163, 184, 0.16);
+  background: var(--about-card-bg);
+  border: 1px solid var(--about-card-border);
   box-shadow: 0 18px 48px rgba(15, 23, 42, 0.08);
   backdrop-filter: blur(12px);
 }
@@ -161,7 +188,7 @@ const stackList = [
     padding: 6px 12px;
     border-radius: 999px;
     background: rgba(14, 165, 233, 0.1);
-    color: #0369a1;
+    color: var(--about-kicker);
     font-size: 0.78rem;
     font-weight: 600;
     letter-spacing: 0.08em;
@@ -171,7 +198,7 @@ const stackList = [
   h1 {
     margin: 18px 0 14px;
     font-size: clamp(2rem, 3vw, 3rem);
-    color: #0f172a;
+    color: var(--about-heading);
     letter-spacing: -0.03em;
   }
 
@@ -179,7 +206,7 @@ const stackList = [
     margin: 0;
     font-size: 1rem;
     line-height: 1.85;
-    color: #475569;
+    color: var(--about-body-text);
   }
 }
 
@@ -204,13 +231,13 @@ const stackList = [
     font-weight: 700;
     letter-spacing: 0.08em;
     text-transform: uppercase;
-    color: #64748b;
+    color: var(--about-secondary-text);
   }
 
   h2 {
     margin: 0;
     font-size: 1.5rem;
-    color: #0f172a;
+    color: var(--about-heading);
   }
 }
 
@@ -225,8 +252,8 @@ const stackList = [
   gap: 14px;
   padding: 16px;
   border-radius: 18px;
-  background: linear-gradient(180deg, rgba(248, 250, 252, 0.96), rgba(241, 245, 249, 0.92));
-  border: 1px solid rgba(226, 232, 240, 0.9);
+  background: var(--about-feature-bg);
+  border: 1px solid var(--about-feature-border);
 }
 
 .feature-icon {
@@ -237,22 +264,22 @@ const stackList = [
   align-items: center;
   justify-content: center;
   font-size: 1.35rem;
-  background: rgba(255, 255, 255, 0.92);
-  box-shadow: inset 0 0 0 1px rgba(226, 232, 240, 0.9);
+  background: var(--about-icon-bg);
+  box-shadow: inset 0 0 0 1px var(--about-feature-border);
 }
 
 .feature-copy {
   h3 {
     margin: 0 0 6px;
     font-size: 1rem;
-    color: #0f172a;
+    color: var(--about-heading);
   }
 
   p {
     margin: 0;
     font-size: 0.92rem;
     line-height: 1.7;
-    color: #64748b;
+    color: var(--about-secondary-text);
   }
 }
 
@@ -271,9 +298,9 @@ const stackList = [
   padding: 9px 14px;
   border-radius: 999px;
   font-size: 0.92rem;
-  color: #0f172a;
-  background: rgba(226, 232, 240, 0.55);
-  border: 1px solid rgba(203, 213, 225, 0.8);
+  color: var(--about-heading);
+  background: var(--about-pill-bg);
+  border: 1px solid var(--about-pill-border);
 }
 
 .repo-panel {
@@ -283,13 +310,13 @@ const stackList = [
   h3 {
     margin: 0 0 8px;
     font-size: 1.1rem;
-    color: #0f172a;
+    color: var(--about-heading);
   }
 
   p {
     margin: 0 0 16px;
     line-height: 1.7;
-    color: #64748b;
+    color: var(--about-secondary-text);
   }
 }
 

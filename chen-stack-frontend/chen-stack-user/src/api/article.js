@@ -101,19 +101,21 @@ export function getCreationStatistics() {
   })
 }
 
-// 根据标题搜索文章
-export function searchArticleByTitle(title, pageNum, pageSize) {
+// 根据标题搜索文章，可同时匹配标签
+export function searchArticleByTitle(title, pageNum, pageSize, type = 'title') {
   return request({
-    url: `/article/search?title=${title}&pageNum=${pageNum}&pageSize=${pageSize}`,
+    url: '/article/search',
     method: 'get',
+    params: { title, pageNum, pageSize, type },
   })
 }
 
 // 根据标签搜索文章
 export function searchArticleByTag(tag, pageNum, pageSize) {
   return request({
-    url: `/article/search/tag?tag=${tag}&pageNum=${pageNum}&pageSize=${pageSize}`,
+    url: '/article/search',
     method: 'get',
+    params: { title: tag, pageNum, pageSize, type: 'tag' },
   })
 }
 
