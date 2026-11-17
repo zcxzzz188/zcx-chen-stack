@@ -4,10 +4,14 @@ import { createCustomerServiceDecoder, navigationTarget, validateCustomerService
 const frame = event => `data: ${JSON.stringify(event)}\r\n\r\n`
 
 describe('客服协议与动作边界', () => {
-  it('只接受由服务端返回的站内文章来源地址', () => {
+  it('只接受服务端白名单内的文章、Wiki 和产品页面来源', () => {
     const source = { type: 'KNOWLEDGE_SOURCES', sources: [{ title: '公开文章', url: '/user/7/article/1', version: 'v1' }] }
     expect(validateCustomerServiceEvent(source)).toEqual(source)
-    for (const url of ['https://example.com', '//example.com', '/admin/wiki', 'javascript:alert(1)', '/user/0/article/1']) {
+    for (const url of ['/wiki/7', '/editor', '/creation/articlemanage']) {
+      expect(validateCustomerServiceEvent({ ...source, sources: [{ ...source.sources[0], url }] }).sources[0].url).toBe(url)
+    }
+    for (const url of ['https://example.com', '//example.com', '/admin/wiki', 'javascript:alert(1)', '/user/0/article/1',
+      '/editor?articleId=2', '/editor/../admin', '/editor#fragment']) {
       expect(() => validateCustomerServiceEvent({ ...source, sources: [{ ...source.sources[0], url }] })).toThrow()
     }
   })

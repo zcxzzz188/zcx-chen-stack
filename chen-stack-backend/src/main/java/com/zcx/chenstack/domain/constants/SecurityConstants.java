@@ -32,7 +32,6 @@ public class SecurityConstants {
             "/article/get/{articleId:\\d+}",
             "/article/incrReadCount/{articleId:\\d+}",
             "/article/hot",
-            "/article/creation/statistics",
             "/article/search",
 
             // 评论相关

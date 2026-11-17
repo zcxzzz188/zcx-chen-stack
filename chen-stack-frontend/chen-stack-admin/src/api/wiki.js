@@ -15,6 +15,8 @@ export const wikiApi = {
   affected: (params) => request({ url: `${base}/affected`, method: 'get', params }),
   pages: (params) => request({ url: `${base}/pages`, method: 'get', params, timeout: 60000 }),
   pageDetail: (pageId) => request({ url: `${base}/pages/${id(pageId)}`, method: 'get', timeout: 60000 }),
+  // 兼容保留：G4 起管理端不再提供「新增 Wiki 知识」入口，新内容统一由
+  // 知识库 → 知识来源授权 → 智能整理 → 编译草稿 产生。该方法不再被页面调用。
   createManualPage: (data) => request({ url: `${base}/pages`, method: 'post', data, timeout: 60000 }),
   editPage: (pageId, data) => request({ url: `${base}/pages/${id(pageId)}/revisions`, method: 'post', data, timeout: 60000 }),
   versions: (pageId) => request({ url: `${base}/pages/${id(pageId)}/versions`, method: 'get' }),

@@ -53,6 +53,11 @@ final class CustomerServiceScope {
     }
 
     Mono<Decision> classify(String question, List<Message> history) {
+        return classify(question, history, com.zcx.chenstack.service.CustomerServiceTiming.disabled());
+    }
+
+    Mono<Decision> classify(String question, List<Message> history, com.zcx.chenstack.service.CustomerServiceTiming timing) {
+        long started = System.nanoTime();
         List<Message> input = new ArrayList<>();
         input.add(new SystemMessage(POLICY + (wiki ? "\nPLATFORM_KNOWLEDGE 还包括公开 Wiki 技术知识问答；BACK_OFFICE 边界保持不变。" : "")));
         List<Message> users = history.stream().filter(UserMessage.class::isInstance).toList();
@@ -60,12 +65,17 @@ final class CustomerServiceScope {
             input.add(new UserMessage("历史用户请求（仅供指代理解）：" + users.get(i).getText()));
         }
         input.add(new UserMessage("当前请求：" + question));
+        timing.stage("PROMPT_BUILD", started);
+        var modelRequest = timing.modelRequest();
         AtomicReference<ChatResponse> complete = new AtomicReference<>();
         var stream = client.prompt().messages(input).templateRenderer(new NoOpTemplateRenderer())
                 .options(OpenAiChatOptions.builder().maxTokens(16).temperature(0.0).streamUsage(true)
                         .toolCallbacks(List.of()))
                 .advisors(AdvisorParams.toolCallingAdvisorAutoRegister(false))
-                .stream().chatResponse();
+                .stream().chatResponse().doOnNext(frame -> {
+                    modelRequest.usage(frame.getMetadata().getUsage());
+                    if (frame.getResult() != null) modelRequest.text(frame.getResult().getOutput().getText());
+                }).doOnComplete(modelRequest::finish).doOnError(error -> modelRequest.finish()).doOnCancel(modelRequest::finish);
         return new MessageAggregator().aggregate(stream, complete::set).then(Mono.fromCallable(() -> {
         var reply = complete.get();
         if (reply != null) {
@@ -84,7 +94,7 @@ final class CustomerServiceScope {
             throw CustomerServiceError.SSE_INCOMPLETE.exception();
         }
         return Decision.valueOf(decision.strip());
-        }));
+        })).doFinally(ignored -> timing.stage("INTENT_CLASSIFICATION", started));
     }
 
     static boolean permitsSource(Object sourceId) {

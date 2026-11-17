@@ -37,6 +37,9 @@ public class AiUsageServiceImpl implements AiUsageService {
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     private com.zcx.chenstack.service.AiRuntimeConfigurationService runtimeConfiguration;
 
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.zcx.chenstack.knowledge.KnowledgeSettings knowledgeSettings;
+
     @Value("${chen-stack.ai.daily-limit:100}")
     void configureDailyLimit(int dailyLimit) {
         if (dailyLimit < 1) {
@@ -184,6 +187,9 @@ public class AiUsageServiceImpl implements AiUsageService {
 
     @Override
     public int getDailyLimit() {
+        if (knowledgeSettings != null) {
+            return knowledgeSettings.get().dailyLimit();
+        }
         return runtimeConfiguration == null ? dailyLimit : runtimeConfiguration.dailyLimit();
     }
 

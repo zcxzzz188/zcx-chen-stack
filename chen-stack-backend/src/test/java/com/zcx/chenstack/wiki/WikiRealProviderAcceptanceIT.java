@@ -41,7 +41,7 @@ class WikiRealProviderAcceptanceIT {
     private static final boolean R2R3 = Boolean.getBoolean("chen.wiki.r2.r3");
     private static final boolean REVALIDATION = FINAL || R2R3 || Boolean.getBoolean("chen.wiki.r2.revalidation");
     private static final String RUN = FINAL ? "final" : R2R3 ? "r2r3" : REVALIDATION ? "r2r2" : "r2";
-    private static final Path OUT = ROOT.resolve(FINAL ? ".work/G3_FINAL_ENGINEERING_ACCEPTANCE" + (FINAL_BATCH.isEmpty() ? "" : "/batch-" + FINAL_BATCH) : ".work/G3_P4_FINAL_ACCEPTANCE/" + (R2R3 ? "R2R3_REAL_VALIDATION" : REVALIDATION ? "R2R2_REAL_VALIDATION" : "R2_REAL_PROVIDER"));
+    private static final Path OUT = ROOT.resolve(FINAL ? "target/g3-final-engineering-acceptance" + (FINAL_BATCH.isEmpty() ? "" : "/batch-" + FINAL_BATCH) : "target/g3-p4-final-acceptance/" + (R2R3 ? "R2R3_REAL_VALIDATION" : REVALIDATION ? "R2R2_REAL_VALIDATION" : "R2_REAL_PROVIDER"));
     private static final URI ENDPOINT = URI.create("https://api.deepseek.com/chat/completions");
     private static final String MODEL = "deepseek-flash";
     private static final WikiCompilationService.Options OPTIONS = new WikiCompilationService.Options(3, 100_000, 2048, Duration.ofSeconds(60), Set.of("redis"));
@@ -274,7 +274,7 @@ class WikiRealProviderAcceptanceIT {
             try (var model = model(http, scope)) {
                 Draft draft = service(REVALIDATION ? capture(model, "rehearsal", scope.budget()) : model).compile(scope.job().requestId(), snapshots, OPTIONS);
                 write(OUT.resolve("rehearsal-http.json"), http.requests); Files.writeString(OUT.resolve("rehearsal-draft.md"), draft.markdown());
-                write(OUT.resolve("rehearsal-history.json"), jdbc.queryForList("SELECT request_id,markdown,body_hash FROM wiki_draft ORDER BY request_id"));
+                write(OUT.resolve("rehearsal-history.json"), jdbc.queryForList("SELECT request_id,draft_markdown AS markdown,draft_body_hash AS body_hash FROM wiki_compile_job WHERE draft_markdown IS NOT NULL ORDER BY request_id"));
                 assertEquals(draft, foundation.readDraft(scope.job().requestId())); assertEquals(3, http.requests.size());
                 assertEquals(3L, scope.budget().snapshot().get("chat"));
                 assertEquals(List.of("MAP", "MAP", "REDUCE"), jdbc.queryForList("SELECT phase FROM wiki_compile_attempt WHERE request_id=? ORDER BY call_no", String.class, scope.job().requestId()));
@@ -379,7 +379,7 @@ class WikiRealProviderAcceptanceIT {
                 write(OUT.resolve("real-attempts.json"), jdbc.queryForList("SELECT call_no,phase,state,usage_tokens FROM wiki_compile_attempt WHERE request_id=? ORDER BY call_no", request));
                 write(OUT.resolve("real-budget.json"), paidBudget().snapshot());
                 write(OUT.resolve("real-job.json"), foundation.status(request));
-                write(OUT.resolve("real-sql-budget.json"), jdbc.queryForMap("SELECT model,max_calls,max_units,output_tokens,first_stop FROM wiki_compile_budget WHERE request_id=?", request));
+                write(OUT.resolve("real-sql-budget.json"), jdbc.queryForMap("SELECT model,max_calls,max_units,output_tokens,first_stop FROM wiki_compile_job WHERE request_id=?", request));
             }
         }
     }

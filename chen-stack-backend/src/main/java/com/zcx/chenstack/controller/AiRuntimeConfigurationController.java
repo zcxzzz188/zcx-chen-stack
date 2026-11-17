@@ -14,6 +14,7 @@ import org.springframework.web.bind.annotation.*;
 /** 管理员可视化配置小辰工作模式与每日额度；所有写入回源权限并持久化。 */
 @RestController
 @RequestMapping("/admin/ai-config")
+@org.springframework.boot.autoconfigure.condition.ConditionalOnProperty(prefix = "chen.knowledge.simple", name = "enabled", havingValue = "false", matchIfMissing = true)
 public class AiRuntimeConfigurationController {
     /** chat 不再接受为新的工作模式；历史值仍由运行配置读取并展示。 */
     public record ModeRequest(@NotBlank @Pattern(regexp = "rag|wiki|hybrid") String mode) { }

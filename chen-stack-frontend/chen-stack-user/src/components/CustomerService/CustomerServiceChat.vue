@@ -40,19 +40,8 @@
           </div>
         </div>
         <div class="header-actions">
-          <el-button text class="clear-btn" @click="clearChat" title="清空对话">
-            <svg
-              width="20"
-              height="20"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-            >
-              <path
-                d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2M10 11v6M14 11v6"
-              />
-            </svg>
+          <el-button text class="clear-btn" @click="clearChat" title="清空聊天记录" aria-label="清空聊天记录">
+            <Delete width="20" height="20" aria-hidden="true" />
           </el-button>
           <el-button text class="close-btn" @click="dialogVisible = false" title="关闭">
             <svg
@@ -70,9 +59,11 @@
       </div>
     </template>
 
-    <div class="chat-container">
+    <div v-loading="loadingHistory" class="chat-container">
+      <el-alert v-if="historyError" title="暂时无法恢复当前对话，请关闭客服后重新打开重试。"
+        type="warning" :closable="false" show-icon />
       <!-- 欢迎消息 -->
-      <div v-if="messageList.length === 0" class="welcome-message">
+      <div v-if="!loadingHistory && !historyError && messageList.length === 0" class="welcome-message">
         <div class="welcome-avatar">
           <div class="avatar-icon">
             <!-- 机器人图标 -->
@@ -137,7 +128,12 @@
               <div v-if="msg.role === 'ai'" class="bubble-text markdown-text" v-html="markdown.render(msg.content)"></div>
               <span v-else class="bubble-text">{{ msg.content }}</span>
             </div>
-            <CustomerServiceCards v-for="(event, eventIndex) in msg.events || []" :key="eventIndex" :event="event" @navigate="dialogVisible = false" />
+            <template v-for="(event, eventIndex) in msg.events || []" :key="eventIndex">
+              <div v-if="event.type === 'KNOWLEDGE_SOURCES'" class="knowledge-links">
+                <a v-for="link in knowledgeLinks(event.sources)" :key="link.path" :href="link.path" @click.exact.prevent="openSource(link.path)">{{ link.label }}</a>
+              </div>
+              <CustomerServiceCards v-else :event="event" @navigate="hideForNavigation" />
+            </template>
             <div v-if="msg.knowledgeWarning" role="status" class="message-time knowledge-warning" style="color: var(--el-color-warning)">{{ msg.knowledgeWarning }}</div>
             <div v-if="msg.incomplete" :data-error-code="msg.errorCode" class="message-time incomplete-indicator">回答未完成<span v-if="msg.errorReason && msg.content !== msg.errorReason">：{{ msg.errorReason }}</span></div>
             <div class="message-time">{{ msg.time }}</div>
@@ -194,7 +190,7 @@
             class="send-button"
             @click="sendMessage"
             :loading="isSending"
-            :disabled="!inputMessage.trim()"
+            :disabled="loadingHistory || historyError || !inputMessage.trim()"
           >
             <svg
               width="20"
@@ -224,7 +220,7 @@
       </div>
 
       <!-- 快捷问题 -->
-      <div v-if="messageList.length === 0" class="quick-questions">
+      <div v-if="!loadingHistory && !historyError && messageList.length === 0" class="quick-questions">
         <div class="quick-question-title">
           <svg
             width="16"
@@ -256,15 +252,19 @@
 
 <script setup>
 import { ref, nextTick, watch, computed, onMounted, onUnmounted } from 'vue'
-import { customerServiceEvents, CUSTOMER_SERVICE_TIMEOUT_MS } from '@/api/ai'
+import { Delete } from '@element-plus/icons-vue'
+import { ElMessageBox } from 'element-plus'
+import { customerServiceEvents, customerServiceMessages, CUSTOMER_SERVICE_TIMEOUT_MS } from '@/api/ai'
+import { useRouter } from 'vue-router'
 import { useUserStore } from '@/stores/userStore'
 import CustomerServiceCards from './CustomerServiceCards.vue'
-import { createCustomerServiceDecoder, customerServiceError } from './customerServiceProtocol'
+import { createCustomerServiceDecoder, customerServiceError, knowledgeLinks, safeKnowledgeLink, validateCustomerServiceEvent } from './customerServiceProtocol'
 import { GetJwt } from '@/utils/Auth'
 import { sameJwtAccount } from '@/utils/JwtSession'
 import MarkdownIt from 'markdown-it'
 
 const userStore = useUserStore()
+const router = useRouter()
 const markdown = new MarkdownIt({ html: false, breaks: true })
 markdown.disable(['link', 'image', 'autolink'])
 let requestGeneration = 0
@@ -291,10 +291,14 @@ const handleResize = () => {
 
 onMounted(() => {
   window.addEventListener('resize', handleResize)
+  window.addEventListener('pagehide', rememberView)
+  if (router) void router.isReady().then(restoreView)
 })
 
 onUnmounted(() => {
   window.removeEventListener('resize', handleResize)
+  window.removeEventListener('pagehide', rememberView)
+  stopAfterRoute?.()
   requestGeneration += 1
   chatAbortController.value?.abort()
 })
@@ -325,6 +329,69 @@ const isAiTyping = ref(false)
 
 // 消息列表引用
 const messageListRef = ref(null)
+const loadingHistory = ref(false)
+const historyError = ref(false)
+let historyLoaded = false
+const returnPath = ref(null)
+let scrollPosition = null
+const viewKey = 'chen-stack-customer-service-view'
+const currentPath = () => router?.currentRoute.value.fullPath || location.pathname
+let view = {}
+try { view = JSON.parse(sessionStorage.getItem(viewKey)) || {} } catch {}
+if (view.userId === userStore.user?.id && typeof view.returnPath === 'string' &&
+    /^\/(?![\/\\])/.test(view.returnPath) && !view.returnPath.includes('\\')) {
+  returnPath.value = view.returnPath
+}
+
+const restoreView = () => {
+  if (!GetJwt() || !userStore.user?.id || view.userId !== userStore.user.id) return
+  if (typeof view.draft === 'string' && !inputMessage.value) inputMessage.value = view.draft.slice(0, 500)
+  if (returnPath.value === currentPath()) {
+    returnPath.value = null
+    open()
+    return
+  }
+  if (view.open && view.path === currentPath()) open()
+}
+
+const rememberView = () => {
+  try {
+    if (!GetJwt() || !userStore.user?.id) return
+    const saved = view.userId === userStore.user.id ? view : null
+    const hasContext = historyLoaded || messageList.value.length > 0
+    view = {
+      open: dialogVisible.value, path: currentPath(),
+      scroll: hasContext ? messageListRef.value?.scrollTop ?? scrollPosition : saved?.scroll,
+      chatId: hasContext ? chatId.value : saved?.chatId, userId: userStore.user.id,
+      returnPath: returnPath.value, draft: inputMessage.value,
+    }
+    sessionStorage.setItem(viewKey, JSON.stringify(view))
+  } catch {}
+}
+
+const hideForNavigation = (origin) => {
+  if (!origin || origin === currentPath()) return
+  returnPath.value = origin
+  dialogVisible.value = false
+  rememberView()
+}
+const openSource = async (url) => {
+  if (!safeKnowledgeLink(url)) return
+  const origin = currentPath()
+  const token = GetJwt()
+  try {
+    const failure = await router.push(url)
+    if (!failure && currentPath() === url && sameJwtAccount(token, GetJwt())) hideForNavigation(origin)
+  } catch {
+    ElMessage.error('暂时无法打开来源页面')
+  }
+}
+const stopAfterRoute = router?.afterEach((to, _from, failure) => {
+  if (!failure && to.fullPath === returnPath.value && GetJwt() && view.userId === userStore.user?.id) {
+    returnPath.value = null
+    dialogVisible.value = true
+  }
+})
 
 const resetChatContext = () => {
   requestGeneration += 1
@@ -332,6 +399,9 @@ const resetChatContext = () => {
   chatAbortController.value = null
   chatId.value = generateUniqueId()
   messageList.value = []
+  loadingHistory.value = false
+  historyError.value = false
+  scrollPosition = null
   inputMessage.value = ''
   isSending.value = false
   isAiTyping.value = false
@@ -340,9 +410,64 @@ const resetChatContext = () => {
 watch(
   () => userStore.user?.id ?? null,
   (userId, previousUserId) => {
-    if (userId !== previousUserId) resetChatContext()
+    if (userId !== previousUserId) {
+      resetChatContext()
+      returnPath.value = null
+      historyLoaded = false
+      if (userId && dialogVisible.value) void restoreRecent()
+    }
   },
+  { flush: 'sync' },
 )
+
+const fromHistory = (message) => {
+  const events = (message.events || []).flatMap(event => {
+    try { return [validateCustomerServiceEvent(event)] } catch { return [] }
+  })
+  const failure = events.find(event => event.type === 'ERROR_STATE' || event.type === 'USAGE_LIMIT')
+  const status = events.find(event => event.type === 'KNOWLEDGE_STATUS')
+  return {
+    role: message.role === 'USER' ? 'user' : 'ai',
+    content: message.content || failure?.text || '',
+    events: events.filter(event => event.type !== 'KNOWLEDGE_STATUS' && event.type !== 'USAGE_LIMIT'),
+    time: message.createdAt?.slice(11, 16) || '',
+    incomplete: failure?.type === 'ERROR_STATE',
+    errorReason: failure?.text,
+    errorCode: failure?.errorCode,
+    knowledgeWarning: status?.errorCode === 'KNOWLEDGE_UNAVAILABLE' ? status.text : null,
+  }
+}
+
+const restoreRecent = async () => {
+  if (historyLoaded || loadingHistory.value || isSending.value || !GetJwt()) return
+  const saved = view.userId === userStore.user?.id ? view.chatId : null
+  if (!saved) return
+  const generation = requestGeneration
+  const token = GetJwt()
+  const pages = []
+  let before = null
+  loadingHistory.value = true
+  historyError.value = false
+  try {
+    do {
+      const { data } = await customerServiceMessages(saved, before)
+      if (requestGeneration !== generation || !sameJwtAccount(token, GetJwt())) return
+      if (data.before != null && (!Number.isSafeInteger(data.before) || data.before <= 0 ||
+          (before != null && data.before >= before))) throw new Error('Invalid customer service cursor')
+      pages.unshift(data.messages)
+      before = data.before
+    } while (before != null)
+    chatId.value = saved
+    messageList.value = pages.flatMap(page => page.map(fromHistory))
+    scrollPosition = view.scroll
+    historyLoaded = true
+    await restoreScroll()
+  } catch {
+    if (requestGeneration === generation) historyError.value = true
+  } finally {
+    if (requestGeneration === generation) loadingHistory.value = false
+  }
+}
 
 // 快捷问题 - 常见问题列表
 const quickQuestions = ref([
@@ -388,6 +513,12 @@ const scrollToBottom = () => {
   })
 }
 
+const restoreScroll = async () => {
+  await nextTick()
+  const container = messageListRef.value
+  if (container) container.scrollTop = scrollPosition ?? container.scrollHeight
+}
+
 const markIncomplete = (message, reason, errorCode) => {
   message.events = []
   message.incomplete = true
@@ -401,7 +532,7 @@ const markIncomplete = (message, reason, errorCode) => {
 // 发送消息
 const sendMessage = async () => {
   const message = inputMessage.value.trim()
-  if (!message || isSending.value) return
+  if (!message || isSending.value || loadingHistory.value || historyError.value) return
 
   if (!GetJwt()) {
     messageList.value.push({ role: 'user', content: message, time: formatTime() })
@@ -413,6 +544,7 @@ const sendMessage = async () => {
   }
 
   // 添加用户消息到列表
+  historyLoaded = true
   messageList.value.push({
     role: 'user',
     content: message,
@@ -444,7 +576,9 @@ const sendMessage = async () => {
 
   try {
     // 调用流式 API
-    const response = await customerServiceEvents(message, chatId.value, controller.signal)
+    const response = await customerServiceEvents(message, chatId.value, controller.signal, {
+      requestId: generateUniqueId(), originPath: router?.currentRoute.value.path || location.pathname,
+    })
     if (!isCurrentRequest()) return
 
     if (!response.ok) {
@@ -573,17 +707,24 @@ const selectQuickQuestion = (question) => {
 }
 
 // 清空对话
-const clearChat = () => {
-  ElMessageBox.confirm('确定要清空对话记录吗？', '提示', {
-    confirmButtonText: '确定',
-    cancelButtonText: '取消',
-    type: 'warning',
-  })
-    .then(() => {
-      resetChatContext()
-      ElMessage.success('对话已清空')
+const clearChat = async () => {
+  const userId = userStore.user?.id
+  try {
+    await ElMessageBox.confirm('确定清空当前聊天记录吗？清空后当前对话内容将无法恢复。', '清空聊天记录？', {
+      type: 'warning',
+      cancelButtonText: '取消',
+      confirmButtonText: '确认清空',
     })
-    .catch(() => {})
+  } catch {
+    return
+  }
+  if (userId !== userStore.user?.id) return
+  resetChatContext()
+  historyLoaded = false
+  returnPath.value = null
+  view = {}
+  if (messageListRef.value) messageListRef.value.scrollTop = 0
+  rememberView()
 }
 
 // 打开对话框
@@ -605,12 +746,21 @@ defineExpose({
 // 监听对话框关闭
 watch(dialogVisible, (newVal) => {
   if (newVal) {
-    scrollToBottom()
+    void restoreScroll()
+    void restoreRecent()
+  } else {
+    scrollPosition = messageListRef.value?.scrollTop ?? scrollPosition
+    rememberView()
   }
 })
 </script>
 
 <style lang="scss" scoped>
+.knowledge-links a {
+  display: inline-block;
+  margin: 4px 10px 4px 0;
+  color: var(--el-color-primary);
+}
 // 对话头部样式
 .dialog-header {
   display: flex;

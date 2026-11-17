@@ -11,7 +11,10 @@ import java.util.concurrent.Semaphore;
 import static com.zcx.chenstack.wiki.WikiFoundation.*;
 import static com.zcx.chenstack.wiki.WikiViews.*;
 
+import lombok.extern.slf4j.Slf4j;
+
 /** Admin-only product adapter. Model identity, tools and budgets are never request parameters. */
+@Slf4j
 public final class WikiManagementService {
     private final JdbcTemplate jdbc;
     private final WikiFoundation foundation;
@@ -37,6 +40,7 @@ public final class WikiManagementService {
                 com.zcx.chenstack.domain.enums.VisibleRangeEnum.ALL.getCode(), q, q));
         keys.addAll(jdbc.query("SELECT source_id FROM rag_source_state WHERE tombstone=FALSE AND deleted=FALSE ORDER BY source_id LIMIT 201",
                 (rs, n) -> new SourceKey(SourceType.PLATFORM_HELP, rs.getString(1))));
+        keys.addAll(knowledgeDocKeys());
         if (keys.size() > 200) throw new WikiProductException(503, "请缩小来源查询范围（首版最多200项）");
         List<Source> admitted = new ArrayList<>();
         for (SourceKey key : keys) {
@@ -48,8 +52,24 @@ public final class WikiManagementService {
         return new Page<>(admitted.stream().skip((long) (page - 1) * size).limit(size).toList(), admitted.size(), page, size, List.of());
     }
 
-    public Source inspect(SourceKey key) {
-        publication.operator(); Candidate current = foundation.inspect(key);
+    /**
+     * 统一知识文档来源。仅在 G4 迁移已应用时返回数据；旧库未迁移时静默跳过，
+     * 避免 Wiki 因可选迁移缺失而无法启动。
+     */
+    private List<SourceKey> knowledgeDocKeys() {
+        try {
+            return jdbc.query("""
+                    SELECT source_key FROM knowledge_document
+                    WHERE mirror_mode='AUTHORITATIVE' AND review_status='APPROVED'
+                      AND publish_status='PUBLISHED' AND deleted=FALSE
+                    ORDER BY source_key LIMIT 201
+                    """, (rs, n) -> new SourceKey(SourceType.KNOWLEDGE_DOC, rs.getString(1)));
+        } catch (org.springframework.dao.DataAccessException unavailable) {
+            return List.of();
+        }
+    }
+
+    public Source inspect(SourceKey key) {        publication.operator(); Candidate current = foundation.inspect(key);
         List<Source> rows = jdbc.query("""
                 SELECT s.id,o.generation,o.active,o.allowed_hash FROM wiki_source o
                 LEFT JOIN wiki_source_snapshot s ON s.source_id=o.id AND s.generation=o.generation
@@ -89,6 +109,8 @@ public final class WikiManagementService {
                 SecurityContextHolder.setContext(context);
                 try { service.compile(requestId, snapshots, options); }
                 catch (RuntimeException failure) {
+                    log.warn("WIKI_COMPILE_FAILED requestId={} type={} message={}", requestId,
+                            failure.getClass().getSimpleName(), failure.getMessage());
                     // P2 handles failures after claim; a source can also fail the queued worker's first check.
                     jdbc.update("UPDATE wiki_compile_job SET state=? WHERE request_id=? AND state='QUEUED'",
                             failure instanceof SecurityException ? "INVALIDATED" : "FAILED", requestId);
@@ -116,9 +138,10 @@ public final class WikiManagementService {
         publication.operator();
         return foundation.withValidDraft(requestId, (draft, snapshots) -> new WikiViews.Draft(requestId, draft.markdown(), draft.bodyHash(),
                 jdbc.queryForObject("SELECT manifest_hash FROM wiki_compile_job WHERE request_id=?", String.class, requestId), WikiDraftCompiler.VERSION,
-                jdbc.queryForObject("SELECT created_at FROM wiki_draft WHERE request_id=?", String.class, requestId),
+                jdbc.queryForObject("SELECT draft_created_at FROM wiki_compile_job WHERE request_id=?", String.class, requestId),
                 snapshots.stream().map(s -> source(s.material(), s.id(), s.generation(), true)).toList(), publication.topics(requestId),
-                draft.markdown().lines().filter(line -> line.contains("CONFLICT") || line.contains("UNSUPPORTED")).limit(128).toList()));
+                draft.markdown().lines().filter(line -> line.contains("CONFLICT") || line.contains("UNSUPPORTED")).limit(128).toList(),
+                WikiDraftSummary.title(draft.markdown()), WikiDraftSummary.extract(WikiPublicationService.publicMarkdown(draft.markdown()))));
     }
 
     private WikiViews.Job job(String id) {
@@ -134,10 +157,10 @@ public final class WikiManagementService {
     }
 
     private static final String JOB_SELECT = """
-            SELECT j.request_id,j.state,j.created_at,b.model,b.max_calls,b.max_units,b.first_stop,
+            SELECT j.request_id,j.state,j.created_at,j.model,j.max_calls,j.max_units,j.first_stop,
             (SELECT COUNT(*) FROM wiki_compile_attempt a WHERE a.request_id=j.request_id) used_calls,
             (SELECT COALESCE(SUM(a.reserved_units),0) FROM wiki_compile_attempt a WHERE a.request_id=j.request_id) used_units
-            FROM wiki_compile_job j LEFT JOIN wiki_compile_budget b ON b.request_id=j.request_id
+            FROM wiki_compile_job j
             """;
     private WikiCompilationService requiredCompiler() {
         WikiCompilationService service = compiler.getIfAvailable();

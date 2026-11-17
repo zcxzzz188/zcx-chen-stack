@@ -13,6 +13,7 @@ import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
 
 /** 无自动重试；Embedding 成本计数独立于用户聊天额度。 */
+@lombok.extern.slf4j.Slf4j
 public final class GuardedEmbeddingModel extends AbstractEmbeddingModel {
     private final EmbeddingModel delegate;
     private final RagProperties properties;
@@ -53,6 +54,8 @@ public final class GuardedEmbeddingModel extends AbstractEmbeddingModel {
         publicationReservation.run();
         requests.incrementAndGet();
         inputChars.addAndGet(request.getInstructions().stream().mapToLong(String::length).sum());
+        long started = System.nanoTime();
+        boolean success = false;
         try {
             EmbeddingResponse response = delegate.call(new EmbeddingRequest(request.getInstructions(), null));
             var usage = response.getMetadata().getUsage();
@@ -71,9 +74,15 @@ public final class GuardedEmbeddingModel extends AbstractEmbeddingModel {
                 }
                 if (norm == 0) throw new RagFailure(RagFailure.Code.DIMENSION_MISMATCH);
             }
+            success = true;
             return response;
         } catch (RagFailure failure) { failures.incrementAndGet(); throw failure; }
         catch (Exception failure) { failures.incrementAndGet(); throw new RagFailure(RagFailure.Code.EMBEDDING_UNAVAILABLE); }
+        finally {
+            com.zcx.chenstack.service.CustomerServiceTiming.current().stage("EMBEDDING", started);
+            log.info("knowledge stage=embedding inputs={} ok={} millis={}", request.getInstructions().size(), success,
+                    java.time.Duration.ofNanos(System.nanoTime() - started).toMillis());
+        }
     }
 
     public Map<String, Long> counters() {

@@ -5,6 +5,12 @@ const pagePaths = new Map([
   ['OPEN_ARTICLE_MANAGE', '/creation/articlemanage'], ['OPEN_COMMENT_MANAGE', '/creation/commentmanage'],
 ])
 const actions = new Set([...pagePaths.keys(), 'OPEN_MY_PROFILE'])
+const knowledgePages = new Map([
+  ['/', '打开首页'], ['/article', '打开文章广场'], ['/search', '打开搜索'], ['/editor', '打开文章编辑器'],
+  ['/creation/articlemanage', '打开文章管理'], ['/creation/columnmanage', '打开专栏管理'],
+  ['/creation/commentmanage', '打开评论管理'], ['/setting', '打开个人设置'],
+  ['/login', '打开登录页'], ['/reset', '打开密码重置页'], ['/register', '打开注册页'],
+])
 const errorMessages = Object.freeze({
   DAILY_LIMIT_REACHED: '今日可用次数已用完，请明天再来。',
   LOCAL_BUDGET_EXHAUSTED: '智能客服当前模型调用额度已用尽，请联系管理员增加额度后再试。',
@@ -35,6 +41,25 @@ export function navigationTarget(action, authorizedArticle, currentUserId) {
   throw new Error('不支持的客服动作')
 }
 
+export function safeKnowledgeLink(url) {
+  return typeof url === 'string' && (knowledgePages.has(url) ||
+    /^\/(?:user\/[1-9]\d*\/article\/[1-9]\d*|wiki\/[1-9]\d*)$/.test(url))
+}
+
+export function knowledgeLinks(sources) {
+  const links = new Map()
+  for (const { title, url } of sources) {
+    if (!safeKnowledgeLink(url)) continue
+
+    // 早期会话保留了原始来源事件，展示时纠正已知的旧入口。
+    let path = url
+    if (url === '/' && title === '管理发出的和收到的评论') path = pagePaths.get('OPEN_COMMENT_MANAGE')
+    if (url === '/editor' && title === '把文章加入专栏或从专栏移除') path = pagePaths.get('OPEN_COLUMN_MANAGE')
+    if (!links.has(path)) links.set(path, { path, label: knowledgePages.get(path) ?? title })
+  }
+  return Array.from(links.values())
+}
+
 export function validateCustomerServiceEvent(event) {
   if (!event || typeof event !== 'object') throw new Error('客服事件无效')
   if (!['TEXT', 'DONE', 'USAGE_LIMIT', 'NAVIGATION_ACTION', 'ARTICLE_SELECTION', 'EMPTY_RESULT', 'ERROR_STATE', 'KNOWLEDGE_STATUS', 'KNOWLEDGE_SOURCES'].includes(event.type)) {
@@ -49,7 +74,7 @@ export function validateCustomerServiceEvent(event) {
     for (const source of event.sources) {
       if (!source || typeof source.title !== 'string' || !source.title.trim() || source.title.length > 300 ||
           (source.version != null && (typeof source.version !== 'string' || source.version.length > 200)) ||
-          (source.url != null && (typeof source.url !== 'string' || !/^\/user\/[1-9]\d*\/article\/[1-9]\d*$/.test(source.url)))) throw new Error('知识来源无效')
+          (source.url != null && !safeKnowledgeLink(source.url))) throw new Error('知识来源无效')
     }
   }
   if (event.type === 'ARTICLE_SELECTION' || event.type === 'EMPTY_RESULT') {

@@ -65,14 +65,48 @@ public final class CustomerServiceTools {
         Destination(String text, String... pageNames) { this.text = text; this.pageNames = pageNames; }
     }
 
+    private static final Pattern EXPLICIT_NAVIGATION = Pattern.compile(
+            "^(?:请)?(?:帮我)?(?:打开|进入|前往|带我去|去|跳转到)\\s*(.+?)[。！？?!]*$");
+
+    public static Destination explicitNavigation(String question) {
+        if (question == null) return null;
+        var command = EXPLICIT_NAVIGATION.matcher(question.strip());
+        if (!command.matches()) return null;
+        String target = command.group(1).strip();
+        for (Destination destination : Destination.values()) {
+            String pageTarget = switch (destination) {
+                case ARTICLE_MANAGE, COMMENT_MANAGE, COLUMN_MANAGE -> target.startsWith("我的") ? target.substring(2) : target;
+                default -> target;
+            };
+            for (String pageName : destination.pageNames) {
+                if (pageName.equals(pageTarget) || (pageName + "页").equals(pageTarget) || (pageName + "页面").equals(pageTarget)) {
+                    return destination;
+                }
+            }
+        }
+        return null;
+    }
+
+    public String directNavigation(Destination destination) {
+        if (destination == null) return "请明确要打开的页面。";
+        queueNavigationAction(destination);
+        String page = destination == Destination.MY_PROFILE ? "你的个人主页" : destination.pageNames[0];
+        directReply = "点击下方“" + destination.text + "”按钮即可打开" + page + "。该按钮只负责页面导航，不会修改任何数据。";
+        return directReply;
+    }
+
+    private void queueNavigationAction(Destination destination) {
+        String action = "OPEN_" + destination.name();
+        if (pending.stream().noneMatch(event -> action.equals(event.action()))) {
+            pending.add(CustomerServiceEvent.state("NAVIGATION_ACTION", destination.text, action, "SUPPORTED"));
+        }
+    }
+
     @Tool(description = "展示用户端真实页面导航按钮，由用户点击。仅提供入口，不保存、不发布、不删除，不操作后台或代替管理员授权。用户目标有对应入口时直接展示，并按已核验正文说明后续步骤。")
     public String showNavigation(@ToolParam(description = "LOGIN登录，CREATE_ARTICLE新建文章，COLUMN_MANAGE本人专栏管理，SETTINGS个人资料/安全/邮件设置，SEARCH搜索，ARTICLES文章广场，MESSAGES站内私信，NOTIFICATIONS消息中心，ARTICLE_MANAGE本人文章管理，COMMENT_MANAGE本人评论管理，MY_PROFILE本人主页（历史、收藏和关注从主页标签进入）") Destination destination) {
         if (destination == null) return "请明确要打开的页面。";
-        String action = "OPEN_" + destination.name();
         String text = destination.text;
-        if (pending.stream().noneMatch(event -> action.equals(event.action()))) {
-            pending.add(CustomerServiceEvent.state("NAVIGATION_ACTION", text, action, "SUPPORTED"));
-        }
+        queueNavigationAction(destination);
         return "已准备“" + text + "”按钮，将随完整回答展示，尚未修改任何业务数据。按钮仅提供入口，请仍依据帮助资料说明用户所问的操作步骤、必要字段、前提和审核限制；目标已明确时直接结束，不追加代办或查询提议。";
     }
     public void knowledgeStatus(String status) {

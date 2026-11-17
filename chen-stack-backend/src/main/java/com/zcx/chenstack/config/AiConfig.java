@@ -47,11 +47,19 @@ public class AiConfig {
         if (maxTokens == null || maxTokens < 1 || maxTokens > 393216) {
             throw new IllegalArgumentException("spring.ai.openai.chat.options.max-tokens 必须为 1 到 393216 的整数");
         }
+        return chatModel(budget, maxTokens);
+    }
+
+    public OpenAiChatModel customerServiceChatModel(ReleaseProviderBudget budget) {
+        return chatModel(budget, null);
+    }
+
+    private OpenAiChatModel chatModel(ReleaseProviderBudget budget, Integer outputLimit) {
         var clientOptions = com.openai.core.ClientOptions.builder().baseUrl(baseUrl).apiKey(apiKey).maxRetries(0)
                 .httpClient(budget.httpClient(ReleaseProviderBudget.Kind.CHAT, java.time.Duration.ofSeconds(60),
                         baseUrl.replaceAll("/+$", "") + completionsPath)).build();
         OpenAiChatOptions options = OpenAiChatOptions.builder().model(model).temperature(temperature)
-                .maxTokens(maxTokens).maxRetries(0).extraBody(Map.of("thinking", Map.of("type", "disabled"))).build();
+                .maxTokens(outputLimit).maxRetries(0).extraBody(Map.of("thinking", Map.of("type", "disabled"))).build();
         return OpenAiChatModel.builder()
                 .openAiClient(new com.openai.client.OpenAIClientImpl(clientOptions))
                 .openAiClientAsync(new com.openai.client.OpenAIClientAsyncImpl(clientOptions))

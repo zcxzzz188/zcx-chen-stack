@@ -9,12 +9,20 @@ import com.zcx.chenstack.exception.BlogException;
 import com.zcx.chenstack.service.AiService;
 import com.zcx.chenstack.service.AiUsageService;
 import com.zcx.chenstack.service.CustomerServiceOrchestrator;
+import com.zcx.chenstack.service.CustomerServiceHistory;
+import com.zcx.chenstack.service.CustomerServiceTiming;
 import com.zcx.chenstack.service.EditableArticleService;
 import com.zcx.chenstack.domain.vo.CustomerServiceEvent;
 import com.zcx.chenstack.utils.SecurityUtils;
 import jakarta.annotation.Resource;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.Pattern;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.context.request.RequestContextHolder;
+import org.springframework.web.context.request.RequestAttributes;
 import org.springframework.http.codec.ServerSentEvent;
 import reactor.core.publisher.Flux;
 
@@ -34,6 +42,9 @@ public class AiController {
     @Resource
     private CustomerServiceOrchestrator customerServiceOrchestrator;
 
+    @Autowired(required = false)
+    private CustomerServiceHistory history;
+
     @Resource
     private EditableArticleService editableArticleService;
 
@@ -41,8 +52,36 @@ public class AiController {
     @PostMapping(value = "/customer-service/events", produces = "text/event-stream;charset=UTF-8")
     public Flux<ServerSentEvent<CustomerServiceEvent>> customerServiceEvents(@Valid @RequestBody AiChatRequestDto request) {
         Integer userId = requireCustomerServiceUser();
-        return customerServiceOrchestrator.chat(request.getMessage(), request.getChatId(), userId)
-                .map(event -> ServerSentEvent.builder(event).event("customer-service").build());
+        var answer = history == null
+                ? customerServiceOrchestrator.chat(request.getMessage(), request.getChatId(), userId)
+                : history.record(userId, request.getChatId(), request.getRequestId(), request.getOriginPath(), request.getMessage(),
+                    () -> customerServiceOrchestrator.chat(request.getMessage(), request.getChatId(), userId));
+        RequestAttributes attributes = RequestContextHolder.getRequestAttributes();
+        Object value = attributes == null ? null : attributes.getAttribute(CustomerServiceTiming.ATTRIBUTE, RequestAttributes.SCOPE_REQUEST);
+        var timing = value instanceof CustomerServiceTiming trace ? trace : CustomerServiceTiming.disabled();
+        var terminal = new java.util.concurrent.atomic.AtomicReference<>("INCOMPLETE");
+        return answer.map(event -> {
+            if ("TEXT".equals(event.type()) && event.text() != null && !event.text().isBlank()) timing.firstSseText();
+            if (event.errorCode() != null || "USAGE_LIMIT".equals(event.type())) terminal.set("FAILED");
+            if ("DONE".equals(event.type())) terminal.compareAndSet("INCOMPLETE", "DONE");
+            return ServerSentEvent.builder(event).event("customer-service").build();
+        }).doFinally(signal -> timing.finish(signal == reactor.core.publisher.SignalType.ON_COMPLETE ? terminal.get() : signal.name()))
+                .contextWrite(context -> context.put(CustomerServiceTiming.class, timing));
+    }
+
+    @RateLimit
+    @GetMapping("/customer-service/sessions")
+    public Result<List<CustomerServiceHistory.Session>> sessions(@RequestParam(defaultValue = "0") @Min(0) @Max(10000) int offset) {
+        int userId = requireCustomerServiceUser();
+        return Result.success(history == null ? List.of() : history.sessions(userId, offset));
+    }
+
+    @RateLimit
+    @GetMapping("/customer-service/sessions/{chatId}")
+    public Result<CustomerServiceHistory.Page> messages(@PathVariable @Pattern(regexp = "[A-Za-z0-9_-]{1,128}") String chatId,
+                @RequestParam(defaultValue = "9223372036854775807") @Min(1) long before) {
+        int userId = requireCustomerServiceUser();
+        return Result.success(history == null ? new CustomerServiceHistory.Page(List.of(), null) : history.messages(userId, chatId, before));
     }
 
     @RateLimit

@@ -11,7 +11,6 @@
       <template v-if="section === 'pages'">
         <KeywordSearch v-model="pageQuery" label="知识名称" placeholder="搜索知识名称或正文" width="260px" @search="searchPages" />
         <SearchButtons @search="searchPages" @reset="resetPages" />
-        <el-button v-if="capabilities.wikiEdit" type="primary" plain @click="openCreatePage">新增知识</el-button>
       </template>
       <el-button :icon="Refresh" :loading="busy" @click="refresh">刷新</el-button>
     </template>
@@ -58,8 +57,8 @@
         </DataTable>
       </section>
       <section v-if="section === 'pages'">
-        <p class="hint">可以阅读每篇知识的完整正文；人工编写或更新仍需选择已授权来源，并在审核通过后发布。</p>
-        <DataTable :loading="pagesLoading" :data="visiblePages" :show-id="false" :show-create-time="false" :show-actions="false" :empty-text="error ? '知识页面暂未加载，请刷新重试' : '暂无 Wiki 页面，请先整理来源并创建待审版本'">
+        <p class="hint">Wiki 新内容只能由「智能整理」选择已授权来源后编译生成草稿；此处负责阅读、编辑正文、提交审核、发布、撤回与历史版本恢复。</p>
+        <DataTable :loading="pagesLoading" :data="visiblePages" :show-id="false" :show-create-time="false" :show-actions="false" :empty-text="error ? '知识页面暂未加载，请刷新重试' : '暂无 Wiki 页面，请先到「智能整理」选择来源并生成草稿'">
           <el-table-column prop="title" label="知识名称" min-width="240" show-overflow-tooltip />
           <el-table-column label="更新时间" min-width="180"><template #default="{ row }">{{ formatKnowledgeTime(row.updatedAt) }}</template></el-table-column>
           <el-table-column label="状态" width="180"><template #default="{ row }"><div><StatusBadge :text="row.currentVersion == null ? '草稿' : row.withdrawn ? '已撤回' : row.publicEligible ? '已发布' : '待更新'" :custom-class="row.currentVersion == null ? 'status-default' : row.withdrawn || !row.publicEligible ? 'status-rejected' : 'status-audited'" /><p v-if="row.statusReason && row.statusReason !== 'PUBLISHED'" class="hint">{{ reasonText(row.statusReason) }}</p></div></template></el-table-column>
@@ -90,10 +89,13 @@
         <el-divider />
         <el-form label-position="top" @submit.prevent="createRevision">
           <div class="form-grid"><el-form-item label="Wiki 标题（必填）"><el-input v-model="edit.title" maxlength="160" /></el-form-item><el-form-item label="更新已有页面（留空新建）"><el-select v-model="edit.pageId" clearable placeholder="创建新页面"><el-option v-for="page in pages" :key="page.id" :label="page.title" :value="page.id" /></el-select></el-form-item></div>
-          <el-form-item label="页面摘要（必填）"><el-input v-model="edit.summary" type="textarea" maxlength="500" :rows="2" /></el-form-item>
+          <el-form-item label="页面摘要（自动生成，可修改）" :error="draftSummaryError"><el-input v-model="edit.summary" type="textarea" maxlength="500" show-word-limit :rows="2" /></el-form-item>
           <el-checkbox v-model="edit.changeMarkdown">人工修改正文（修改后创建全新版本，必须重新审核）</el-checkbox>
           <el-form-item v-if="edit.changeMarkdown" label="Markdown 正文"><el-input v-model="edit.markdown" type="textarea" :rows="14" /></el-form-item>
-          <el-button native-type="submit" type="primary" :loading="busy" :disabled="!capabilities.wikiEdit || !edit.title.trim() || !edit.summary.trim()">创建待审版本</el-button>
+          <div v-if="draftBodyChanged">
+            <el-checkbox :model-value="draftSummaryConfirmed" @update:model-value="confirmDraftSummary">我已检查摘要，确认它与修改后的正文一致</el-checkbox>
+          </div>
+          <el-button native-type="submit" type="primary" :loading="busy" :disabled="!canCreateRevision">创建待审版本</el-button>
         </el-form>
       </template>
     </el-dialog>
@@ -146,17 +148,9 @@
       <template #footer><el-button @click="detailVisible = false">关闭</el-button></template>
     </el-dialog>
 
-    <el-dialog v-model="editorVisible" class="ai-management-dialog" :title="editor.pageId ? '编辑正文并新建版本' : '新增知识'" width="min(1100px, 96vw)" :close-on-click-modal="!busy">
-      <el-alert v-if="editor.pageId" title="保存后创建待审版本，不会立即替换已发布正文；审核通过并发布后才生效。" type="info" :closable="false" show-icon />
-      <el-alert v-else title="请选择已核验并授权的来源，再人工编写正文；创建后进入待审版本，不会立即公开。" type="info" :closable="false" show-icon />
+    <el-dialog v-model="editorVisible" class="ai-management-dialog" title="编辑正文并新建版本" width="min(1100px, 96vw)" :close-on-click-modal="!busy">
+      <el-alert title="保存后创建待审版本，不会立即替换已发布正文；审核通过并发布后才生效。" type="info" :closable="false" show-icon />
       <el-form label-position="top">
-        <el-form-item v-if="!editor.pageId" label="引用来源（至少一份已授权来源）">
-          <el-select v-model="editor.snapshotIds" multiple placeholder="选择已授权来源" class="source-picker">
-            <el-option v-for="source in manualSources" :key="source.snapshotId" :label="source.title" :value="source.snapshotId" />
-          </el-select>
-          <p v-if="manualSourcesLoading" class="hint">正在读取已授权来源…</p>
-          <p v-else-if="!manualSources.length" class="hint">暂无已授权来源，请先到“知识来源”检查并授权。</p>
-        </el-form-item>
         <div class="form-grid">
           <el-form-item label="知识标题"><el-input v-model="editor.title" maxlength="160" show-word-limit /></el-form-item>
           <el-form-item label="摘要"><el-input v-model="editor.summary" maxlength="500" show-word-limit /></el-form-item>
@@ -196,7 +190,7 @@ import { useRouter, useRoute } from 'vue-router'
 const props = defineProps({ section: { type: String, default: 'sources' } })
 const router = useRouter()
 const route = useRoute()
-const sectionInfo = computed(() => ({ sources: { title: '知识来源' }, jobs: { title: '智能整理' }, pages: { title: '整理知识' } }[props.section]))
+const sectionInfo = computed(() => ({ sources: { title: '知识来源' }, jobs: { title: '智能整理' }, pages: { title: 'Wiki页面' } }[props.section]))
 const capabilities = ref({})
 const pageQuery = ref('')
 const pageNumber = ref(1)
@@ -226,7 +220,17 @@ const sourceVisible = ref(false)
 const sourceConsent = ref(false)
 const draft = ref(null)
 const draftVisible = ref(false)
-const edit = reactive({ title: '', summary: '', pageId: undefined, markdown: '', changeMarkdown: false })
+const edit = reactive({ title: '', summary: '', pageId: undefined, markdown: '', changeMarkdown: false, confirmed: null })
+const draftEdits = new Map()
+const draftBodyChanged = computed(() => edit.changeMarkdown && edit.markdown !== draft.value?.markdown)
+const draftSummaryConfirmed = computed(() => edit.confirmed?.markdown === edit.markdown && edit.confirmed?.summary === edit.summary)
+const draftSummaryError = computed(() => {
+  if (edit.summary.length > 500) return '页面摘要不能超过 500 字'
+  if (!/[\p{L}\p{N}]/u.test(edit.summary)) return '请根据有效正文填写页面摘要'
+  return ''
+})
+const canCreateRevision = computed(() => capabilities.value.wikiEdit && !busy.value && !!edit.title.trim()
+  && !draftSummaryError.value && (!draftBodyChanged.value || (!!edit.markdown.trim() && draftSummaryConfirmed.value)))
 const selectedPage = ref(null)
 const versionsVisible = ref(false)
 const versions = ref([])
@@ -239,15 +243,13 @@ const conflictConsent = ref(false)
 const detail = ref(null)
 const detailVisible = ref(false)
 const detailStatusText = computed(() => ({ PUBLISHED: '已发布', WITHDRAWN: '已撤回', UNPUBLISHED: '未发布', SOURCE_CHANGED: '待更新', DRAFT_INVALID: '待更新' }[detail.value?.statusReason] || '待更新'))
-const manualSources = ref([])
-const manualSourcesLoading = ref(false)
 const editorVisible = ref(false)
-const editor = reactive({ pageId: null, title: '', summary: '', markdown: '', snapshotIds: [], preview: false, requestId: '' })
-const validEditor = computed(() => Boolean(editor.title.trim() && editor.summary.trim() && editor.markdown.trim() && (editor.pageId || editor.snapshotIds.length)))
+const editor = reactive({ pageId: null, title: '', summary: '', markdown: '', preview: false })
+const validEditor = computed(() => Boolean(editor.pageId && editor.title.trim() && editor.summary.trim() && editor.markdown.trim()))
 let poll
 let disposed = false
 
-function sourceType(type) { return { ARTICLE: '文章', PLATFORM_HELP: '平台帮助', PRODUCT_CAPABILITY: '产品说明', KNOWLEDGE: '知识文档' }[type] || '知识材料' }
+function sourceType(type) { return { ARTICLE: '文章', PLATFORM_HELP: '平台帮助', KNOWLEDGE_DOC: '知识文档', PRODUCT_CAPABILITY: '产品说明', KNOWLEDGE: '知识文档' }[type] || '知识材料' }
 function goToTasks() { return router.push({ path: '/ai/tasks', query: { sources: selectedSources.value.map((source) => source.snapshotId).join(','), ...(topicInput.value ? { topic: topicInput.value } : {}) }, state: { knowledgeSources: selectedSources.value.map(({ snapshotId, title, active }) => ({ snapshotId, title, active })) } }) }
 function jobStatus(state) {
   return { QUEUED: '等待整理', RUNNING: '整理中', DRAFT_READY: '草稿已生成', FAILED: '整理未完成', CANCELLED: '已取消', INVALIDATED: '来源已失效' }[state] || '状态未知'
@@ -320,25 +322,10 @@ function openVersionsFromDetail() {
 function editFromDetail() {
   Object.assign(editor, {
     pageId: detail.value.id, title: detail.value.title, summary: detail.value.summary,
-    markdown: detail.value.markdown, snapshotIds: [], preview: false, requestId: '',
+    markdown: detail.value.markdown, preview: false,
   })
   detailVisible.value = false
   editorVisible.value = true
-}
-async function loadManualSources() {
-  if (manualSources.value.length || manualSourcesLoading.value) return
-  manualSourcesLoading.value = true
-  try {
-    const page = (await wikiApi.sources({ q: '', page: 1, size: 50 })).data
-    manualSources.value = (page.items || []).filter((source) => source.active && source.snapshotId)
-  } catch (failure) {
-    manualSources.value = []
-  } finally { manualSourcesLoading.value = false }
-}
-function openCreatePage() {
-  Object.assign(editor, { pageId: null, title: '', summary: '', markdown: '', snapshotIds: [], preview: false, requestId: `manual-${crypto.randomUUID()}` })
-  editorVisible.value = true
-  return loadManualSources()
 }
 async function savePage() {
   if (busy.value || !validEditor.value) return
@@ -346,9 +333,7 @@ async function savePage() {
   error.value = ''
   try {
     const body = { title: editor.title.trim(), summary: editor.summary.trim(), markdown: editor.markdown }
-    let result
-    if (editor.pageId) result = (await wikiApi.editPage(editor.pageId, body)).data
-    else result = (await wikiApi.createManualPage({ requestId: editor.requestId, ...body, snapshotIds: editor.snapshotIds })).data
+    const result = (await wikiApi.editPage(editor.pageId, body)).data
     editorVisible.value = false
     ElMessage.success('已创建待审版本，请检查并提交审核')
     await loadPages()
@@ -399,15 +384,27 @@ function compile() {
 function cancel(job) { return perform(async () => { await wikiApi.cancel(job.requestId); await loadJobs() }, '已处理取消请求；终态任务保持原状态') }
 function previewDraft(id) {
   return perform(async () => {
-    draft.value = null
-    draft.value = (await wikiApi.draft(id)).data
-    Object.assign(edit, { title: draft.value.topics?.[0] || '', summary: '', pageId: undefined, markdown: draft.value.markdown, changeMarkdown: false })
+    const result = (await wikiApi.draft(id)).data
+    if (result.requestId !== id) throw new Error('编译任务已变化，请重新打开草稿')
+    if (draft.value) draftEdits.set(draft.value.requestId, { bodyHash: draft.value.bodyHash, form: { ...edit } })
+    const saved = draftEdits.get(id)
+    draft.value = result
+    Object.assign(edit, saved && saved.bodyHash === result.bodyHash ? saved.form : {
+      title: result.title || result.topics?.[0] || '', summary: result.summary || '', pageId: undefined,
+      markdown: result.markdown, changeMarkdown: false, confirmed: null,
+    })
     draftVisible.value = true
   })
 }
+function confirmDraftSummary(confirmed) {
+  edit.confirmed = confirmed ? { markdown: edit.markdown, summary: edit.summary } : null
+}
 function createRevision() {
+  if (!canCreateRevision.value) return
   return perform(async () => {
     const result = (await wikiApi.revision({ requestId: draft.value.requestId, title: edit.title.trim(), summary: edit.summary, pageId: edit.pageId || undefined, markdown: edit.changeMarkdown ? edit.markdown : undefined })).data
+    draftEdits.delete(draft.value.requestId)
+    draft.value = null
     draftVisible.value = false
     await loadPages()
     const page = pages.value.find((item) => item.id === result.pageId)

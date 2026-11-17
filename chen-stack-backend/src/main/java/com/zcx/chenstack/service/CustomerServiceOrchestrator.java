@@ -24,6 +24,7 @@ public class CustomerServiceOrchestrator {
             var subscription = Flux.defer(() -> answers.answer(message, chatId, authenticatedUserId,
                             () -> usage.tryReserveUsage(authenticatedUserId), tools))
                     .subscribeOn(Schedulers.boundedElastic())
+                    .contextWrite(sink.contextView())
                     .subscribe(part -> sink.next(CustomerServiceEvent.text(part)), error -> {
                         CustomerServiceError failure = CustomerServiceError.classify(error);
                         sink.next(failure == CustomerServiceError.DAILY_LIMIT_REACHED

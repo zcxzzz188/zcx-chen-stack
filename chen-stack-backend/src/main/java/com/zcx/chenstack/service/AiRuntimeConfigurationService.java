@@ -35,6 +35,8 @@ import java.util.concurrent.TimeUnit;
  * 管理员保存后当前实例立即应用。模式只改变知识依据，不扩大身份、业务工具或后台权限。</p>
  */
 @Service
+@org.springframework.boot.autoconfigure.condition.ConditionalOnProperty(
+        prefix = "chen.knowledge.simple", name = "enabled", havingValue = "false", matchIfMissing = true)
 @Slf4j
 public class AiRuntimeConfigurationService implements KnowledgeModeSource {
     public static final String MODE_KEY = "assistant.knowledge-mode";
@@ -190,9 +192,10 @@ public class AiRuntimeConfigurationService implements KnowledgeModeSource {
                     throw new IllegalStateException("AI_RUNTIME_CONFIG_CONFLICT");
                 }
             }
+            // G4 把 ai_runtime_config_event 合并进 knowledge_audit_log 时残留了第二条 VALUES 子句，
+            // 会让 MySQL 直接报语法错误（BadSqlGrammarException → 503）。此处保持单条 VALUES。
             jdbc.update("""
-                    INSERT INTO ai_runtime_config_event(config_key,old_value,new_value,actor_id,config_version)
-                    VALUES(?,?,?,?,?)
+                    INSERT INTO knowledge_audit_log(config_key,old_value,new_value,actor_id,actor_kind,action,target_kind,config_version) VALUES(?,?,?,?,'USER','CONFIG_CHANGE','CONFIG',?)
                     """, key, previous, value, actorId, version);
         });
     }
@@ -368,9 +371,11 @@ public class AiRuntimeConfigurationService implements KnowledgeModeSource {
 
     private List<Change> recentChanges() {
         try {
+            // 同上：合并后残留了重复 WHERE，语句必然语法错误，导致"最近修改"被静默吞掉。
             return jdbc.query("""
-                    SELECT config_key,old_value,new_value,actor_id,created_at FROM ai_runtime_config_event
-                    WHERE config_key IN (?,?) ORDER BY id DESC LIMIT 6
+                    SELECT config_key,old_value,new_value,actor_id,created_at FROM knowledge_audit_log
+                    WHERE target_kind='CONFIG' AND config_key IN (?,?)
+                    ORDER BY id DESC LIMIT 6
                     """, (rs, index) -> new Change(auditLabel(rs.getString(1), modeKey()),
                     rs.getString(2), rs.getString(3), nickname(rs.getInt(4)),
                     TIME.format(rs.getTimestamp(5).toInstant())), modeKey(), QUOTA_KEY);

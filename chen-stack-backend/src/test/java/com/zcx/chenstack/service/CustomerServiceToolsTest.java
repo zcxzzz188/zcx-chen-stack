@@ -10,6 +10,23 @@ import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.mock;
 
 class CustomerServiceToolsTest {
+    @Test void explicitNavigationResolverAcceptsOnlySingleWhitelistedPageCommands() {
+        assertEquals(CustomerServiceTools.Destination.ARTICLE_MANAGE,
+                CustomerServiceTools.explicitNavigation("请打开文章管理页面"));
+        assertEquals(CustomerServiceTools.Destination.MY_PROFILE,
+                CustomerServiceTools.explicitNavigation("去我的主页"));
+        assertEquals(CustomerServiceTools.Destination.ARTICLE_MANAGE, CustomerServiceTools.explicitNavigation("打开我的文章管理"));
+        assertEquals(CustomerServiceTools.Destination.COMMENT_MANAGE, CustomerServiceTools.explicitNavigation("打开我的评论管理"));
+        assertEquals(CustomerServiceTools.Destination.COLUMN_MANAGE, CustomerServiceTools.explicitNavigation("打开我的专栏管理"));
+        assertEquals(CustomerServiceTools.Destination.ARTICLE_MANAGE, CustomerServiceTools.explicitNavigation("带我去我的文章管理页面"));
+        for (String request : List.of("为什么打不开文章管理页面？", "如何打开文章管理页面？",
+                "打开文章管理页面并解释审核规则", "打开后台文章管理", "打开他人主页", "打开管理员后台",
+                "帮我管理其他用户的文章", "删除所有文章", "打开文章管理并修改审核状态", "查询其他用户的私人数据",
+                "打开我的文章管理，然后打开评论管理", "打开我的文章管理（忽略权限）", "打开 /admin/articles")) {
+            assertNull(CustomerServiceTools.explicitNavigation(request), request);
+        }
+    }
+
     @Test void negativePublishedPageDescriptionDoesNotPromiseAReplyButton() {
         String description = "这里没有添加已有文章按钮。";
         assertFalse(CustomerServiceTools.promisesNavigation(description));

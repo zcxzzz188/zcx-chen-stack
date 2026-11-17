@@ -96,13 +96,17 @@ class WikiPublicationIntegrationIT {
                 """);
         apply("../sql/g3_wiki_invalidation.sql");
         apply("../sql/g3_wiki_product.sql");
+        apply("../sql/g4v3a_knowledge_schema.sql");
+        // 草稿并入任务后，修订的外键改指任务表
+        jdbc.execute("ALTER TABLE wiki_revision DROP FOREIGN KEY fk_wiki_revision_draft");
+        jdbc.execute("ALTER TABLE wiki_revision ADD CONSTRAINT fk_wiki_revision_job FOREIGN KEY (request_id) REFERENCES wiki_compile_job (request_id) ON DELETE RESTRICT");
         System.out.println("WIKI_PUBLICATION_MYSQL_VERSION=" + jdbc.queryForObject("SELECT VERSION()", String.class));
     }
 
     @BeforeEach void fixture() throws Exception {
         jdbc.update("UPDATE wiki_page SET current_revision_id=NULL");
-        for (String table : List.of("wiki_review_event", "wiki_revision", "wiki_page", "wiki_compile_topic",
-                "wiki_compile_attempt", "wiki_compile_budget", "wiki_draft", "wiki_job_source", "wiki_compile_job",
+        for (String table : List.of("knowledge_audit_log", "knowledge_audit_log", "wiki_revision", "wiki_page", "wiki_compile_source",
+                "wiki_compile_attempt", "wiki_compile_job",
                 "wiki_source_snapshot", "wiki_source", "article", "rag_source_state")) {
             jdbc.update("DELETE FROM " + table);
         }
@@ -178,7 +182,7 @@ class WikiPublicationIntegrationIT {
         foundation.start("running-offline", input -> store.open("running-offline", "synthetic", WikiCompilationService.Options.defaults()));
         management.cancel("running-offline");
         assertEquals("CANCELLED", foundation.status("running-offline").state());
-        assertEquals("CANCELLED", jdbc.queryForObject("SELECT first_stop FROM wiki_compile_budget WHERE request_id='running-offline'", String.class));
+        assertEquals("CANCELLED", jdbc.queryForObject("SELECT first_stop FROM wiki_compile_job WHERE request_id='running-offline'", String.class));
         status(503, () -> management.createJob("new-offline", List.of(source.id()), Set.of()));
     }
 
@@ -188,12 +192,60 @@ class WikiPublicationIntegrationIT {
         management.cancel(request);
         assertEquals("DRAFT_READY", foundation.status(request).state());
         assertEquals(before, management.draft(request));
-        assertEquals(0, count("wiki_compile_budget"));
+        assertEquals(1, count("wiki_compile_job"));
         List<WikiCompilationService.RecompileTarget> affected = management.affected(ARTICLE);
         assertEquals(1, affected.size());
         assertEquals(request, affected.getFirst().previousRequestId());
         assertEquals("transactions", affected.getFirst().topic());
         assertEquals(List.of(before.sources().getFirst().snapshotId()), affected.getFirst().previousSnapshots());
+    }
+
+    @Test void compiledAndEditedSummariesFollowTheCurrentDraftAndRevision() {
+        String request = syntheticDraft("summary-legacy", "summary");
+        var legacy = management.draft(request);
+        assertEquals("合成事务知识", legacy.title());
+        assertTrue(legacy.summary().startsWith("事务声明"));
+        assertFalse(legacy.summary().contains("SEMANTIC_NOT_VERIFIED"));
+
+        Revision first = publication.create(request, null, legacy.title(), null, null);
+        assertEquals(legacy.summary(), first.summary());
+        publish(first, null);
+
+        String updatedRequest = syntheticDraft("summary-current", "summary", """
+                ## 新标题
+
+                主题标识：summary
+
+                ### 主题摘要
+
+                - 新版本介绍事务隔离。 [SEMANTIC_NOT_VERIFIED] [f1]
+                - 无依据的声明。 [UNSUPPORTED：待人工核查]
+
+                ### 事务
+
+                - 使用事务保证操作原子性。 [SEMANTIC_NOT_VERIFIED] [f1]
+                """);
+        var updated = management.draft(updatedRequest);
+        assertEquals("新标题", updated.title());
+        assertEquals("新版本介绍事务隔离。", updated.summary());
+
+        Revision next = publication.create(updatedRequest, first.pageId(), updated.title(), null, null);
+        assertEquals(first.version() + 1, next.version());
+        assertEquals(updatedRequest, next.requestId());
+        assertEquals(updated.manifestHash(), next.manifestHash());
+        assertEquals(updated.summary(), next.summary());
+        assertTrue(next.markdown().contains("使用事务保证操作原子性"));
+        assertEquals(first.id(), publication.versions(first.pageId()).stream().filter(Revision::current).findFirst().orElseThrow().id());
+
+        String edited = "## 修改后\n\n回滚会撤销未提交的改动。";
+        Revision extracted = publication.create(updatedRequest, first.pageId(), updated.title(), null, edited);
+        assertEquals("回滚会撤销未提交的改动。", extracted.summary());
+        Revision manual = publication.create(updatedRequest, first.pageId(), updated.title(), "回滚的操作效果", edited);
+        assertEquals("回滚的操作效果", revision(manual.id()).summary());
+        assertEquals(edited, manual.markdown());
+        status(400, () -> publication.create(updatedRequest, first.pageId(), updated.title(), "保留摘要", "## 只有标题"));
+        status(400, () -> publication.create(updatedRequest, first.pageId(), updated.title(), "……", edited));
+        assertEquals(4, publication.versions(first.pageId()).size());
     }
 
     @Test void draftAndApprovedButUnpublishedContentStayOutOfAllPublicProjections() {
@@ -215,8 +267,8 @@ class WikiPublicationIntegrationIT {
         assertTrue(published.current());
         assertEquals(1, publication.read(draft.pageId()).version());
         assertEquals(List.of("CREATE", "SUBMIT", "APPROVE", "PUBLISH"), jdbc.queryForList(
-                "SELECT action FROM wiki_review_event ORDER BY id", String.class));
-        assertEquals("DRAFT", jdbc.queryForObject("SELECT state FROM wiki_draft WHERE request_id=?", String.class, draft.requestId()));
+                "SELECT action FROM knowledge_audit_log ORDER BY id", String.class));
+        assertEquals("DRAFT_READY", jdbc.queryForObject("SELECT state FROM wiki_compile_job WHERE request_id=?", String.class, draft.requestId()));
         assertEquals(1, publication.managedPages().size());
     }
 
@@ -231,12 +283,12 @@ class WikiPublicationIntegrationIT {
 
     @Test void publicationAuditFailureRollsBackStateAndCurrentPointer() {
         Revision approved = approve(create(null, "原子发布", "摘要", "正文", "transactions"));
-        jdbc.execute("CREATE TRIGGER wiki_publication_fault BEFORE INSERT ON wiki_review_event FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='SYNTHETIC_AUDIT_FAILURE'");
+        jdbc.execute("CREATE TRIGGER wiki_publication_fault BEFORE INSERT ON knowledge_audit_log FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='SYNTHETIC_AUDIT_FAILURE'");
         try {
             assertThrows(DataAccessException.class, () -> publication.publish(approved.id(), approved.bodyHash(), null));
             assertNull(jdbc.queryForObject("SELECT current_revision_id FROM wiki_page WHERE id=?", Long.class, approved.pageId()));
             assertEquals("APPROVED", revision(approved.id()).state());
-            assertEquals(0, count("wiki_review_event", "action='PUBLISH'"));
+            assertEquals(0, count("knowledge_audit_log", "action='PUBLISH'"));
         } finally { jdbc.execute("DROP TRIGGER wiki_publication_fault"); }
     }
 
@@ -270,7 +322,7 @@ class WikiPublicationIntegrationIT {
         jdbc.update("UPDATE wiki_revision SET markdown=? WHERE id=?", approved.markdown(), approved.id());
         jdbc.update("UPDATE wiki_compile_job SET manifest_hash=? WHERE request_id=?", "f".repeat(64), approved.requestId());
         status(409, () -> publication.publish(approved.id(), approved.bodyHash(), null));
-        assertEquals(0, count("wiki_review_event", "action='PUBLISH'"));
+        assertEquals(0, count("knowledge_audit_log", "action='PUBLISH'"));
     }
 
     @Test void chineseBoundedSearchAndTopicsOnlyIncludeCurrentlyPublishedEligiblePages() {
@@ -375,7 +427,7 @@ class WikiPublicationIntegrationIT {
         Revision restored = publication.restore(first.pageId(), first.id(), second.version());
         assertTrue(restored.current());
         assertEquals(1, publication.read(first.pageId()).version());
-        assertEquals(1, count("wiki_review_event", "action='RESTORE'"));
+        assertEquals(1, count("knowledge_audit_log", "action='RESTORE'"));
         Revision draft = create(first.pageId(), "未发布新版", "摘要", "正文", "history");
         status(409, () -> publication.restore(first.pageId(), draft.id(), first.version()));
     }
@@ -401,7 +453,7 @@ class WikiPublicationIntegrationIT {
             assertEquals(1, a.get(15, TimeUnit.SECONDS) + b.get(15, TimeUnit.SECONDS));
         }
         assertEquals(1, publication.versions(first.pageId()).stream().filter(Revision::current).count());
-        assertEquals(2, count("wiki_review_event", "action='PUBLISH'"));
+        assertEquals(2, count("knowledge_audit_log", "action='PUBLISH'"));
         assertTrue(Set.of(candidateA.version(), candidateB.version()).contains(publication.read(first.pageId()).version()));
     }
 
@@ -429,7 +481,7 @@ class WikiPublicationIntegrationIT {
             status(403, () -> management.draft(draft.requestId()));
         }
         assertEquals(1, count("wiki_revision"));
-        assertEquals(1, count("wiki_review_event"));
+        assertEquals(1, count("knowledge_audit_log"));
     }
 
     @Test void publicProjectionIsAnonymousSafeAndDoesNotSerializeInternalCompileOrSourceMetadata() throws Exception {
@@ -487,8 +539,8 @@ class WikiPublicationIntegrationIT {
 
     @Test void modelDraftStateConstraintAndDisabledCompilerBoundaryRemainIntact() {
         String request = syntheticDraft("draft-only", "安全主题");
-        assertThrows(DataAccessException.class, () -> jdbc.update("UPDATE wiki_draft SET state='PUBLISHED' WHERE request_id=?", request));
-        assertEquals("DRAFT", jdbc.queryForObject("SELECT state FROM wiki_draft WHERE request_id=?", String.class, request));
+        assertThrows(DataAccessException.class, () -> jdbc.update("UPDATE wiki_compile_job SET state='PUBLISHED' WHERE request_id=?", request));
+        assertEquals("DRAFT_READY", jdbc.queryForObject("SELECT state FROM wiki_compile_job WHERE request_id=?", String.class, request));
         status(503, () -> management.createJob("disabled-compiler", List.of(1L), Set.of()));
         assertEquals(1, count("wiki_compile_job"));
         var job = management.jobs(1, 20).items().getFirst();
@@ -521,15 +573,19 @@ class WikiPublicationIntegrationIT {
     }
 
     private String syntheticDraft(String request, String topic) {
+        return syntheticDraft(request, topic, "## 合成事务知识\n\n- 事务声明 [SEMANTIC_NOT_VERIFIED]\n\n- 值冲突 **CONFLICT：来源值不同，未裁决**\n");
+    }
+
+    private String syntheticDraft(String request, String topic, String body) {
         Snapshot source = foundation.authorize(ARTICLE, foundation.inspect(ARTICLE).fingerprint());
         foundation.prepare(request, List.of(source.id()), "c".repeat(64));
         String markdown = "# Wiki 编译草稿\n\n状态：DRAFT · SEMANTIC_NOT_VERIFIED · 待人工核查\n\n"
                 + "编译版本：" + WikiDraftCompiler.VERSION + "\n\n任务：" + request + "\n\n来源清单版本：internal-manifest\n\n"
-                + "## 合成事务知识\n\n- 事务声明 [SEMANTIC_NOT_VERIFIED]\n\n- 值冲突 **CONFLICT：来源值不同，未裁决**\n"
+                + body
                 + "  - snapshot=" + source.id() + " source=ARTICLE:1 version=" + source.material().originVersion()
                 + " generation=" + source.generation() + " selector=utf16:0-4 quote=“知识正文”\n";
         foundation.saveDraft(request, markdown);
-        jdbc.update("INSERT INTO wiki_compile_topic(request_id,topic_key,snapshot_id) VALUES(?,?,?)", request, topic, source.id());
+        jdbc.update("INSERT INTO wiki_compile_source(request_id,snapshot_id,topic_key) VALUES(?,?,?)", request, source.id(), topic);
         return request;
     }
 

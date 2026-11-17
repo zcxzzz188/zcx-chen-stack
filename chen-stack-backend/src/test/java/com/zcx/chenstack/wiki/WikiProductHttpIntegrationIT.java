@@ -75,7 +75,7 @@ class WikiProductHttpIntegrationIT {
 
     static Path finalOutput(String batch) {
         if (!batch.matches("(?:[0-9]{2})?")) throw new IllegalArgumentException("FINAL_BATCH_INVALID");
-        Path root = Path.of("../.work/G3_FINAL_ENGINEERING_ACCEPTANCE").toAbsolutePath().normalize();
+        Path root = Path.of("../target/g3-final-engineering-acceptance").toAbsolutePath().normalize();
         return batch.isEmpty() ? root : root.resolve("batch-" + batch);
     }
 
@@ -112,6 +112,9 @@ class WikiProductHttpIntegrationIT {
                 visible_range TINYINT,is_deleted TINYINT) ENGINE=InnoDB
                 """);
         apply("../sql/g3_wiki_invalidation.sql"); apply("../sql/g3_wiki_product.sql");
+        apply("../sql/g4v3a_knowledge_schema.sql");
+        jdbc.execute("ALTER TABLE wiki_revision DROP FOREIGN KEY fk_wiki_revision_draft");
+        jdbc.execute("ALTER TABLE wiki_revision ADD CONSTRAINT fk_wiki_revision_job FOREIGN KEY (request_id) REFERENCES wiki_compile_job (request_id) ON DELETE RESTRICT");
         }
 
         tomcat = new Tomcat(); tomcat.setBaseDir(temporary.resolve("tomcat").toString()); tomcat.setHostname("127.0.0.1"); tomcat.setPort(0);
@@ -138,8 +141,8 @@ class WikiProductHttpIntegrationIT {
     @BeforeEach void reset() {
         if (FINAL_HTTP) return;
         jdbc.update("UPDATE wiki_page SET current_revision_id=NULL");
-        for (String table : List.of("wiki_review_event", "wiki_revision", "wiki_page", "wiki_compile_topic", "wiki_compile_attempt", "wiki_compile_budget",
-                "wiki_draft", "wiki_job_source", "wiki_compile_job", "wiki_source_snapshot", "wiki_source", "article")) jdbc.update("DELETE FROM " + table);
+        for (String table : List.of("knowledge_audit_log", "knowledge_audit_log", "wiki_revision", "wiki_page", "wiki_compile_source", "wiki_compile_attempt", "wiki_compile_job",
+                "wiki_compile_job", "wiki_source_snapshot", "wiki_source", "article")) jdbc.update("DELETE FROM " + table);
         jdbc.update("""
                 INSERT INTO article(id,user_id,title,description,content,tag,reprint_type,reprint_url,edit_status,examine_status,visible_range,is_deleted)
                 VALUES(1,1,?,'隔离测试来源','<p>Redis 缓存采用明确的过期时间。</p>','redis',0,NULL,0,1,0,0)
@@ -292,8 +295,11 @@ class WikiProductHttpIntegrationIT {
         }
         if (jdbc.queryForObject("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name='wiki_page'", Integer.class) == 0) {
             apply("../sql/g3_wiki_product.sql");
+        apply("../sql/g4v3a_knowledge_schema.sql");
+        jdbc.execute("ALTER TABLE wiki_revision DROP FOREIGN KEY fk_wiki_revision_draft");
+        jdbc.execute("ALTER TABLE wiki_revision ADD CONSTRAINT fk_wiki_revision_job FOREIGN KEY (request_id) REFERENCES wiki_compile_job (request_id) ON DELETE RESTRICT");
         }
-        assertEquals(3, jdbc.queryForObject("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name IN ('wiki_page','wiki_revision','wiki_review_event')", Integer.class));
+        assertEquals(3, jdbc.queryForObject("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name IN ('wiki_page','wiki_revision','knowledge_audit_log')", Integer.class));
         assertEquals(4, jdbc.queryForObject("SELECT COUNT(*) FROM information_schema.triggers WHERE trigger_schema=DATABASE() AND trigger_name IN ('wiki_article_changed','wiki_article_deleted','wiki_help_changed','wiki_help_deleted')", Integer.class));
         assertTrue(finalState.path("requestId").asText().matches("g3-p4-final-real-[a-f0-9]{12}"));
         String currentState = jdbc.queryForObject("SELECT state FROM wiki_compile_job WHERE request_id=?", String.class, finalState.path("requestId").asText());
@@ -341,7 +347,7 @@ class WikiProductHttpIntegrationIT {
             if (browser != null && baseUrl != null) {
                 reset(); Path directory = Path.of(browser).toAbsolutePath().normalize();
                 Path workspace = Path.of("..").toAbsolutePath().normalize();
-                assertTrue(directory.startsWith(workspace.resolve(".work/G3_P3_LLM_WIKI_PRODUCT")));
+                assertTrue(directory.startsWith(workspace.resolve("target/g3-p3-llm-wiki-product")));
                 Files.createDirectories(directory);
                 Map<String,Object> runtime = Map.of("apiUrl", baseUrl, "adminToken", adminToken, "userToken", userToken,
                         "articleId", 1, "sourceTitle", SOURCE_TITLE, "topic", "redis", "withdrawSourceUrl", "/fixture/source/withdraw");

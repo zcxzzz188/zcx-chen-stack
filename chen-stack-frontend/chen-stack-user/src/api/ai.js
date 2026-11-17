@@ -87,7 +87,7 @@ export function getAiQuota() {
 }
 
 // 智能客服聊天（流式返回）
-export function customerServiceChat(message, chatId, signal, mode = 'chat', structured = false) {
+export function customerServiceChat(message, chatId, signal, mode = 'chat', structured = false, turn = {}) {
   const mockResponse = localCustomerServiceMock(message, signal)
   if (mockResponse) return Promise.resolve(mockResponse)
 
@@ -100,7 +100,7 @@ export function customerServiceChat(message, chatId, signal, mode = 'chat', stru
       Authorization: token,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ message, chatId, mode }),
+    body: JSON.stringify({ message, chatId, mode, ...turn }),
     signal,
   }).then(async (response) => {
     const refreshedToken = response.headers.get('X-Refresh-Token')
@@ -121,8 +121,13 @@ export function customerServiceChat(message, chatId, signal, mode = 'chat', stru
   })
 }
 
-export function customerServiceEvents(message, chatId, signal) {
-  return customerServiceChat(message, chatId, signal, 'chat', true)
+export function customerServiceEvents(message, chatId, signal, turn) {
+  return customerServiceChat(message, chatId, signal, 'chat', true, turn)
+}
+
+export function customerServiceMessages(chatId, before) {
+  const cursor = before ? '?before=' + encodeURIComponent(before) : ''
+  return customerServiceGet('/sessions/' + encodeURIComponent(chatId) + cursor)
 }
 
 export function listEditableArticles(page = 1, pageSize = 5) {

@@ -14,7 +14,7 @@ services:
       - "127.0.0.1:${MYSQL_PORT:-3306}:3306"
     volumes:
       - mysql_data:/var/lib/mysql
-      - ../../sql/chen_stack.sql:/docker-entrypoint-initdb.d/init.sql
+      - ../../sql/bootstrap/chen_stack_baseline.sql:/docker-entrypoint-initdb.d/init.sql:ro
     networks:
       - chen-stack-network
     healthcheck:
@@ -185,6 +185,7 @@ services:
       NORMAL_AI_USAGE: ${NORMAL_AI_USAGE:-true}
       AI_USAGE_LEDGER_PATH: /ai-usage/events.jsonl
       CHEN_STACK_AI_DAILY_LIMIT: ${CHEN_STACK_AI_DAILY_LIMIT:-100}
+      CHEN_AI_CHAT_HISTORY_ENABLED: "true"
       CHEN_WIKI_ENABLED: ${CHEN_WIKI_ENABLED:-true}
       CHEN_WIKI_PRODUCT_ENABLED: ${CHEN_WIKI_PRODUCT_ENABLED:-true}
       CHEN_WIKI_COMPILER_ENABLED: ${CHEN_WIKI_COMPILER_ENABLED:-false}

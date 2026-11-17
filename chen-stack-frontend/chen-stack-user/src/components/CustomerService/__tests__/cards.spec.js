@@ -46,6 +46,15 @@ it('文章标题按纯文本显示，点击前复核授权并导航准确文章'
   expect(api.push).toHaveBeenCalledWith({ path: '/editor', query: { articleId: 42 } })
 })
 
+it('路由拒绝或重复导航时保持客服对话', async () => {
+  api.push.mockResolvedValueOnce(new Error('navigation duplicated'))
+  wrapper = mount(Cards, { props: { event: { type: 'NAVIGATION_ACTION', action: 'OPEN_MESSAGES', text: '去私信' } },
+    global: { stubs: { ElButton: { template: '<button><slot /></button>' } } } })
+  await wrapper.get('button').trigger('click')
+  await flushPromises()
+  expect(wrapper.emitted('navigate')).toBeUndefined()
+})
+
 it('权限已撤回时不导航，并允许认证接口重新分页查询', async () => {
   api.getEditableArticle.mockRejectedValue(new Error('forbidden'))
   api.listEditableArticles.mockResolvedValue({ data: { ...selection(), type: 'EMPTY_RESULT', articles: [], hasMore: false } })

@@ -8,6 +8,14 @@ import java.util.*;
 
 /** 不可变内容快照；授权有效性由所属生命周期管理器决定，向量只用于定位。 */
 public final class KnowledgeCatalog {
+    /**
+     * 平台级通用知识的现有语义锚点。
+     *
+     * <p>G3 目录只接受白名单页面，但种子数据中的“辰栈网页端与站内入口”等平台级知识使用
+     * {@code /} 作为全站入口。新增知识未选择具体页面时沿用该语义，不绕过白名单校验，
+     * 也不把任意 URL 写入目录。</p>
+     */
+    public static final String GENERAL_SOURCE_URL = "/";
     private static final Set<String> HELP_ROUTES = Set.of("/", "/register", "/login", "/reset", "/search", "/editor", "/creation/articlemanage", "/creation/columnmanage", "/article", "/setting");
 
     /** 管理端新增知识只允许关联真实存在的用户端页面，不接受任意URL。 */

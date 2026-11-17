@@ -13,6 +13,7 @@ import { formatKnowledgeTime } from '@/utils/aiPresentation'
 
 vi.mock('vue-router', () => ({ useRouter: () => ({ push: vi.fn() }), useRoute: () => ({ query: {} }) }))
 vi.mock('@/api/knowledge', () => ({ knowledgeApi: Object.fromEntries(['status', 'documents', 'pending', 'usage'].map((name) => [name, vi.fn()])) }))
+vi.mock('@/api/knowledgeDoc', () => ({ uploadKnowledgeFile: vi.fn(), analyzeKnowledgeImport: vi.fn(), getKnowledgeImportAnalysis: vi.fn(), listRecentKnowledgeImports: vi.fn().mockResolvedValue({ data: [] }), saveKnowledgeImportDrafts: vi.fn() }))
 vi.mock('@/api/wiki', () => ({ wikiApi: Object.fromEntries(['sources', 'jobs', 'pages'].map((name) => [name, vi.fn()])) }))
 let wrapper
 let count
@@ -31,8 +32,8 @@ beforeEach(() => {
 afterEach(() => { wrapper?.unmount(); document.body.innerHTML = '' })
 
 describe.each([
-  ['原始知识', Rag, {}, knowledgeApi.documents],
-  ['整理知识', Wiki, { section: 'pages' }],
+  ['知识库', Rag, {}, knowledgeApi.documents],
+  ['Wiki页面', Wiki, { section: 'pages' }],
   ['知识来源', Wiki, { section: 'sources' }, wikiApi.sources],
   ['智能整理', Wiki, { section: 'jobs' }, wikiApi.jobs],
   ['检索验证', Search, {}],

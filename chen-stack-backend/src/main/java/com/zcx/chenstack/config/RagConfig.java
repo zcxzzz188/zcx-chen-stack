@@ -19,21 +19,27 @@ import java.util.List;
 public class RagConfig {
     @Bean
     public ProductRagAnswerService productRagAnswerService(RagKnowledgeService knowledge,
-            org.springframework.ai.openai.OpenAiChatModel model, org.springframework.ai.chat.memory.ChatMemory memory,
+            AiConfig aiConfig, org.springframework.ai.chat.memory.ChatMemory memory,
             ReleaseProviderBudget budget, AiKnowledgeProperties properties, NormalAiUsage usage,
-            com.zcx.chenstack.service.AiRuntimeConfigurationService runtime,
+            org.springframework.beans.factory.ObjectProvider<com.zcx.chenstack.service.AiRuntimeConfigurationService> runtime,
             org.springframework.beans.factory.ObjectProvider<com.zcx.chenstack.wiki.WikiPublicationService> wiki,
             @Value("${chen.rag.max-model-rounds:6}") int maxModelRounds) {
         // 模式由管理员运行配置按每轮读取；Wiki服务只要可用就注入，切换时无需重启。
-        return new ProductRagAnswerService(knowledge, org.springframework.ai.chat.client.ChatClient.create(model), memory,
-                budget, runtime, wiki.getIfAvailable(), maxModelRounds, usage);
+        KnowledgeModeSource modeSource = runtime.getIfAvailable();
+        return new ProductRagAnswerService(knowledge, org.springframework.ai.chat.client.ChatClient.create(
+                aiConfig.customerServiceChatModel(budget)), memory,
+                budget, modeSource == null ? properties::knowledgeMode : modeSource, wiki.getIfAvailable(), maxModelRounds, usage);
     }
 
     @Bean
     public KnowledgeCatalog knowledgeCatalog(ObjectMapper mapper, RagProperties properties,
             javax.sql.DataSource dataSource,
             AiKnowledgeProperties knowledge,
-            org.springframework.beans.factory.ObjectProvider<RagPublicationConfiguration.Prepared> publication) throws java.io.IOException {
+            org.springframework.beans.factory.ObjectProvider<RagPublicationConfiguration.Prepared> publication,
+            @Value("${chen.knowledge.simple.enabled:false}") boolean canonicalKnowledge) throws java.io.IOException {
+        if (canonicalKnowledge) {
+            return new KnowledgeCatalog(List.of());
+        }
         var approved = publication.getIfAvailable();
         if (approved != null) {
             try (var input = new ClassPathResource("knowledge/platform-help.json").getInputStream()) {
@@ -74,7 +80,7 @@ public class RagConfig {
         properties.validate();
         Duration timeout = Duration.ofSeconds(properties.getEmbeddingTimeoutSeconds());
         var clientOptions = com.openai.core.ClientOptions.builder().baseUrl(properties.getEmbeddingBaseUrl())
-                .apiKey(properties.getEmbeddingApiKey()).maxRetries(0)
+                .apiKey(properties.getEmbeddingApiKey()).maxRetries(0).timeout(timeout)
                 .httpClient(budget.httpClient(ReleaseProviderBudget.Kind.EMBEDDING, timeout,
                         properties.getEmbeddingBaseUrl().replaceAll("/+$", "") + "/embeddings")).build();
         var options = OpenAiEmbeddingOptions.builder().model(properties.getEmbeddingModel()).dimensions(1024)

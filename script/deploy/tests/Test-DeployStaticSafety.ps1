@@ -97,6 +97,39 @@ foreach ($key in @('CHEN_STACK_DOCTOR', 'BACKEND_INTERNAL_HEALTH', 'BACKEND_HOST
 Test-Invariant '不使用 ConvertFrom-Json 处理整份 inspect 输出' (-not ($doctor -match 'inspect[^\r\n]*-f\s' ))
 Test-Invariant '所有 inspect 均带模板标记' (-not ($doctor -match "@\('inspect',\s*\\\$Name\)\s*$"))
 
+# 9. 正式工程路径不得依赖研发材料或外部辰栈源码
+$appRoots = @('chen-stack-backend', 'chen-stack-frontend/chen-stack-admin', 'chen-stack-frontend/chen-stack-user')
+$inputs = @(
+    foreach ($app in $appRoots) {
+        $root = Join-Path $repoRoot $app
+        Get-ChildItem -LiteralPath $root -Force -File |
+            Where-Object Name -Match '^(Dockerfile|pom\.xml|package(-lock)?\.json|vite\.config\..*|\.env(\..*)?|.*\.conf)$'
+        Get-ChildItem -LiteralPath (Join-Path $root 'src') -Recurse -File |
+            Where-Object Extension -In @('.java', '.js', '.ts', '.vue', '.yml', '.yaml', '.properties')
+    }
+    foreach ($directory in @('script/deploy', 'script/prod', 'script/dev', 'script/release', 'sql')) {
+        Get-ChildItem -LiteralPath (Join-Path $repoRoot $directory) -Recurse -Force -File |
+            Where-Object { $_.FullName -notlike "$deployDir\tests\*" -and
+                ($_.Extension -in @('.ps1', '.sh', '.bat', '.yml', '.yaml', '.sql') -or $_.Name -match '^\.env(\.|$)') }
+    }
+    Get-Item -LiteralPath (Join-Path $repoRoot 'Jenkinsfile')
+)
+$backupRoot = "D:\ChenStack-Backups"
+$prodEntry = Join-Path $deployDir 'ChenStackProd.ps1'
+$prodSource = Get-Content -Raw -LiteralPath $prodEntry
+Test-Invariant '正式镜像替换限制为后端且校验前后镜像' (
+    $prodSource.Contains("@('up', '-d', '--no-deps', '--no-build', '--pull', 'never', 'backend')") -and
+    $prodSource.Contains('Confirm-BackendReadiness $BackendImage') -and
+    $prodSource.Contains('Confirm-BackendReadiness $ExpectedBackendImage') -and
+    $prodSource.Contains('Set-BackendCompose $original $candidateHash'))
+$forbiddenPaths = '(?i)(?:\.work[\\/]|[\\/]G[56][\\/]|[A-Z]:[\\/](?![\\/])(?:chenstack|chen-stack|zcx-chen-stack|g[56][\\/]))'
+$violations = foreach ($file in $inputs) {
+    $body = [IO.File]::ReadAllText($file.FullName)
+    if ($file.FullName -eq $prodEntry) { $body = $body.Replace($backupRoot, '') }
+    if ($body -match $forbiddenPaths) { [IO.Path]::GetRelativePath($repoRoot, $file.FullName) }
+}
+Test-Invariant '正式工程不引用 .work、阶段目录或绝对辰栈源码路径' (@($violations).Count -eq 0) ($violations -join ', ')
+
 Write-Output "SUMMARY|total=$total|failed=$failures"
 if ($failures -gt 0) { exit 1 }
 exit 0

@@ -28,6 +28,68 @@ function dialogButton(text) { return [...document.body.querySelectorAll('button'
 function dialogButtonIn(dialog, text) { return [...dialog.querySelectorAll('button')].find((item) => item.textContent.trim() === text) }
 
 describe('Wiki 管理端（合成 API 数据）', () => {
+  it('按任务填充编译标题与摘要，保留手工摘要并要求确认改动后的正文', async () => {
+    const second = { ...job, requestId: 'synthetic-wiki-2' }
+    const markdown = '## AI 编译标题\n\n缓存默认保留 60 秒。'
+    wikiApi.jobs.mockResolvedValue({ data: { items: [job, second], total: 2 } })
+    wikiApi.pages.mockResolvedValue({ data: [{ id: 2, title: '已有页面', summary: '历史摘要' }] })
+    wikiApi.draft.mockImplementation(async (id) => ({ data: {
+      requestId: id, bodyHash: id, markdown, title: 'AI 编译标题',
+      summary: id === job.requestId ? '缓存默认保留 60 秒。' : '另一个任务的摘要。',
+      sources: [], topics: ['缓存'], conflicts: [],
+    } }))
+    wikiApi.revision.mockResolvedValue({ data: { pageId: 2 } })
+    wikiApi.versions.mockResolvedValue({ data: [] })
+    await open()
+    const preview = async (index) => {
+      await wrapper.findAll('button').filter((item) => item.text() === '预览草稿')[index].trigger('click')
+      await flushPromises()
+      return [...document.body.querySelectorAll('[role=dialog]')].find((item) => item.querySelector('textarea'))
+    }
+    const setText = async (input, value) => {
+      input.value = value
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+      await flushPromises()
+    }
+    const close = async (dialog) => {
+      dialog.querySelector('.el-dialog__headerbtn').click()
+      await flushPromises()
+    }
+
+    let dialog = await preview(0)
+    expect(dialog.querySelector('input').value).toBe('AI 编译标题')
+    expect(dialog.querySelector('textarea').value).toBe('缓存默认保留 60 秒。')
+    expect(dialogButtonIn(dialog, '创建待审版本').disabled).toBe(false)
+    await setText(dialog.querySelector('textarea'), '手工审核后的摘要。')
+    await close(dialog)
+    dialog = await preview(1)
+    expect(dialog.querySelector('textarea').value).toBe('另一个任务的摘要。')
+    await close(dialog)
+    dialog = await preview(0)
+    expect(dialog.querySelector('textarea').value).toBe('手工审核后的摘要。')
+
+    dialog.querySelector('.el-select__wrapper').click()
+    await flushPromises()
+    ;[...document.body.querySelectorAll('.el-select-dropdown__item')]
+      .find((item) => item.textContent.trim() === '已有页面').click()
+    await flushPromises()
+    expect(dialog.querySelector('textarea').value).toBe('手工审核后的摘要。')
+    dialog.querySelector('input[type=checkbox]').click()
+    await flushPromises()
+    await setText(dialog.querySelectorAll('textarea')[1], '缓存参数取决于部署配置。')
+    expect(dialogButtonIn(dialog, '创建待审版本').disabled).toBe(true)
+    expect(dialog.querySelector('textarea').value).toBe('手工审核后的摘要。')
+    dialog.querySelectorAll('input[type=checkbox]')[1].click()
+    await flushPromises()
+    expect(dialogButtonIn(dialog, '创建待审版本').disabled).toBe(false)
+    dialog.querySelector('form').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    await flushPromises()
+    expect(wikiApi.revision).toHaveBeenCalledWith({
+      requestId: job.requestId, title: 'AI 编译标题', pageId: 2,
+      summary: '手工审核后的摘要。', markdown: '缓存参数取决于部署配置。',
+    })
+  })
+
   it('读取失败不声称没有发布页，刷新恢复后显示真实发布状态', async () => {
     knowledgeApi.status.mockRejectedValueOnce(new Error('知识或索引状态已变化，请重新读取后重试'))
     wikiApi.pages.mockResolvedValue({ data: [{ id: 2, title: '已有发布知识', currentVersion: 1, publicEligible: true, withdrawn: false }] })
@@ -58,6 +120,18 @@ describe('Wiki 管理端（合成 API 数据）', () => {
     await open('pages')
     expect(wrapper.text()).toContain('暂无 Wiki 页面')
     expect(wikiApi.authorize).not.toHaveBeenCalled()
+  })
+  it('Wiki 页面取消独立新增知识入口，仅保留既有页面的编辑与审核发布', async () => {
+    wikiApi.pages.mockResolvedValue({ data: [{ id: 9, title: '已有知识', currentVersion: 1, publicEligible: true, withdrawn: false }] })
+    await open('pages')
+    expect(wrapper.text()).toContain('Wiki页面')
+    expect(wrapper.text()).not.toContain('新增知识')
+    expect(button('新增知识')).toBeUndefined()
+    // 既有页面仍可阅读、编辑、审核发布与撤回
+    expect(button('阅读正文')).toBeTruthy()
+    expect(button('审核与历史版本')).toBeTruthy()
+    expect(button('停止使用知识')).toBeTruthy()
+    expect(wikiApi.createManualPage).not.toHaveBeenCalled()
   })
   it('已保留发布指针但来源失效时显示重新编译核查', async () => {
     wikiApi.pages.mockResolvedValue({ data: [{ id: 2, title: '失效知识', currentVersion: 1, withdrawn: false, publicEligible: false }] })

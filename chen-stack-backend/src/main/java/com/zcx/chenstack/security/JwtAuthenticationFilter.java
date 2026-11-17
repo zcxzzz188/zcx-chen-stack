@@ -120,7 +120,16 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
         }
 
         // 必须认证接口：认证失败则拦截
+        boolean customerStream = request.getDispatcherType() != DispatcherType.ASYNC
+                && "POST".equals(request.getMethod()) && request.getRequestURI().endsWith("/ai/customer-service/events");
+        var timing = customerStream ? com.zcx.chenstack.service.CustomerServiceTiming.start() : null;
+        long authStarted = System.nanoTime();
         boolean authenticated = authenticateUser(request, response);
+        if (timing != null) {
+            timing.stage("AUTH", authStarted);
+            if (authenticated) request.setAttribute(com.zcx.chenstack.service.CustomerServiceTiming.ATTRIBUTE, timing);
+            else timing.finish("AUTH_REJECTED");
+        }
         if (!authenticated) {
             // 认证失败，已经写入响应，不继续执行过滤器链
             return;

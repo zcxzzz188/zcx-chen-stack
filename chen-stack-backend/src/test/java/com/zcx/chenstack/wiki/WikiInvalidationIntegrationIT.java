@@ -79,6 +79,8 @@ class WikiInvalidationIntegrationIT {
         manager = new DataSourceTransactionManager(dataSource);
         apply("../sql/g2_rag_catalog.sql");
         apply("../sql/g3_wiki_foundation.sql");
+        apply("../sql/g3_wiki_compiler.sql");
+        apply("../sql/g4v3a_knowledge_schema.sql");
         jdbc.execute("""
                 CREATE TABLE article (
                     id INT PRIMARY KEY,user_id INT NOT NULL,title VARCHAR(255) NOT NULL,
@@ -89,13 +91,14 @@ class WikiInvalidationIntegrationIT {
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
                 """);
         apply("../sql/g3_wiki_invalidation.sql");
-        assertEquals(4, jdbc.queryForObject("SELECT COUNT(*) FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=DATABASE()", Integer.class));
+        assertEquals(6, jdbc.queryForObject("SELECT COUNT(*) FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=DATABASE()", Integer.class));
         System.out.println("WIKI_INVALIDATION_MYSQL_VERSION=" + jdbc.queryForObject("SELECT VERSION()", String.class));
     }
 
     @BeforeEach void resetOwnedFixture() throws Exception {
-        for (String table : List.of("wiki_draft", "wiki_job_source", "wiki_compile_job", "wiki_source_snapshot",
-                "wiki_source", "article", "rag_source_state")) {
+        // G4 合并后编译来源直接引用任务，删除顺序必须先子后父
+        for (String table : List.of("wiki_compile_source", "wiki_compile_attempt", "wiki_compile_job",
+                "wiki_source_snapshot", "wiki_source", "article", "rag_source_state")) {
             jdbc.update("DELETE FROM " + table);
         }
         insertArticle();
@@ -233,7 +236,7 @@ class WikiInvalidationIntegrationIT {
         for (String assignment : List.of("version='v2'", "generation=generation+1", "content_sha256=REPEAT('a',64)",
                 "document_json=JSON_SET(document_json,'$.text','更改后的合成帮助正文')")) {
             Snapshot original = draft(HELP, "help-" + UUID.randomUUID());
-            String job = jdbc.queryForObject("SELECT request_id FROM wiki_job_source WHERE snapshot_id=?", String.class, original.id());
+            String job = jdbc.queryForObject("SELECT request_id FROM wiki_compile_source WHERE snapshot_id=? AND topic_key=''", String.class, original.id());
             jdbc.update("UPDATE rag_source_state SET " + assignment + " WHERE source_id='help-1'");
             jdbc.update("UPDATE rag_source_state SET version='v1',generation=0,content_sha256=REPEAT('f',64),document_json=? WHERE source_id='help-1'",
                     JSON.writeValueAsString(catalog.snapshot().source("help-1")));

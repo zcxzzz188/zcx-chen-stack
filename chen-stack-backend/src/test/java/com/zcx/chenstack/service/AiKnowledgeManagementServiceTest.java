@@ -84,4 +84,13 @@ class AiKnowledgeManagementServiceTest {
         assertTrue(result.capabilities().get("ragRead"));
         assertFalse(result.capabilities().get("ragManage"));
     }
+
+    @Test void generalKnowledgeWithoutPagePublishesThroughExistingPlatformAnchor() {
+        assertEquals(KnowledgeCatalog.GENERAL_SOURCE_URL, AiKnowledgeManagementService.publishedSourceUrl(null));
+        assertEquals(KnowledgeCatalog.GENERAL_SOURCE_URL, AiKnowledgeManagementService.publishedSourceUrl(""));
+        assertEquals(KnowledgeCatalog.GENERAL_SOURCE_URL, AiKnowledgeManagementService.publishedSourceUrl("null"));
+        assertEquals("/login", AiKnowledgeManagementService.publishedSourceUrl("/login"));
+        assertTrue(KnowledgeCatalog.validSourceUrl(AiKnowledgeManagementService.publishedSourceUrl(null)));
+        assertFalse(KnowledgeCatalog.validSourceUrl("/not-a-real-page"));
+    }
 }

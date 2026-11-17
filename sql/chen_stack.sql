@@ -725,8 +725,6 @@ CREATE TABLE `sys_user`  (
 -- ----------------------------
 -- Records of sys_user
 -- ----------------------------
-INSERT INTO `sys_user` VALUES (1, 'chenstack', '$2a$10$8qg1JmLqfH0U/pBpxg7Ptuo7k16eDoDTlXDXni3FRAjSRgBtj7rsG', '辰栈', 'chenstack@example.com', 0, NULL, '', 0, 5, 35, 0, '127.0.0.1', '内网地址', 0, '127.0.0.1', '内网地址', '2026-03-31 01:01:37', '2025-06-28 22:30:22', '2025-10-09 16:14:20', 0);
-INSERT INTO `sys_user` VALUES (2, 'test', '$2a$10$uTyUKEl.mc24YCN44QSjOukVgnc1hPGm6OFdZ0oQo6i5G5Yd.gIqS', 'test用户', 'test@qq.com', 0, 'helloworld', '', 0, 0, 1, 0, '127.0.0.1', '内网地址', 0, '127.0.0.1', '内网地址', '2026-03-30 00:27:56', '2025-07-31 17:38:46', '2025-10-09 09:00:07', 0);
 
 -- ----------------------------
 -- Table structure for sys_user_role
@@ -743,8 +741,6 @@ CREATE TABLE `sys_user_role`  (
 -- ----------------------------
 -- Records of sys_user_role
 -- ----------------------------
-INSERT INTO `sys_user_role` VALUES (2, 1, 1);
-INSERT INTO `sys_user_role` VALUES (3, 2, 2);
 
 
 -- ----------------------------
@@ -1677,8 +1673,6 @@ CREATE TABLE `user_settings`  (
 -- ----------------------------
 -- Records of user_settings
 -- ----------------------------
-INSERT INTO `user_settings` VALUES (1, 1, 1, 1, 1);
-INSERT INTO `user_settings` VALUES (2, 2, 1, 1, 1);
 
 -- ----------------------------
 -- Triggers for logic delete time

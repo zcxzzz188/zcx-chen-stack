@@ -74,7 +74,9 @@ class FrameworkApplicationIT {
                     try (var command = connection.createStatement()) {
                         command.executeUpdate("INSERT INTO sys_user(id,username,password,status,create_time,update_time) VALUES(7,'fixture','fixture',0,NOW(),NOW())");
                         command.executeUpdate("INSERT INTO sys_role(id,role,name,status,create_time,update_time) VALUES(2,'user','fixture',0,NOW(),NOW())");
-                        command.executeUpdate("INSERT INTO sys_user_role(user_id,role_id) VALUES(7,2)");
+                        command.executeUpdate("INSERT INTO sys_user(id,username,password,fans_count,status,create_time,update_time) "
+                                + "SELECT 19,'framework-peer',password,8,status,NOW(),NOW() FROM sys_user WHERE id=7");
+                        command.executeUpdate("INSERT INTO sys_user_role(user_id,role_id) VALUES(7,2),(19,2)");
                         if (Boolean.getBoolean("chen.framework.compose-modes")) {
                             command.executeUpdate("INSERT INTO sys_user(id,username,password,status,create_time,update_time) VALUES(8,'fixture-admin','fixture',0,NOW(),NOW())");
                             command.executeUpdate("INSERT INTO sys_role(id,role,name,status,create_time,update_time) VALUES(3,'admin','fixture',0,NOW(),NOW())");
@@ -175,9 +177,30 @@ class FrameworkApplicationIT {
             var anonymous = http.send(HttpRequest.newBuilder(URI.create(base + "/ai/customer-service/status"))
                     .timeout(Duration.ofSeconds(5)).GET().build(), HttpResponse.BodyHandlers.ofString());
             assertEquals(401, anonymous.statusCode());
+            String statisticsUrl = base + "/article/creation/statistics";
+            var anonymousStatistics = http.send(HttpRequest.newBuilder(URI.create(statisticsUrl))
+                    .timeout(Duration.ofSeconds(5)).GET().build(), HttpResponse.BodyHandlers.ofString());
+            assertEquals(401, anonymousStatistics.statusCode());
+            var invalidStatistics = http.send(HttpRequest.newBuilder(URI.create(statisticsUrl))
+                    .header("Authorization", "Bearer malformed").timeout(Duration.ofSeconds(5)).GET().build(),
+                    HttpResponse.BodyHandlers.ofString());
+            assertEquals(401, invalidStatistics.statusCode());
             var jwt = new com.zcx.chenstack.utils.JwtUtils();
             org.springframework.test.util.ReflectionTestUtils.setField(jwt, "secret", "framework-it-synthetic-secret");
             String token = "Bearer " + jwt.createToken(7);
+            var json = new ObjectMapper();
+            for (int userId : List.of(7, 19)) {
+                var statistics = http.send(HttpRequest.newBuilder(
+                        URI.create(statisticsUrl + "?userId=" + (userId == 7 ? 19 : 7)))
+                        .header("Authorization", "Bearer " + jwt.createToken(userId))
+                        .header("Origin", "http://localhost")
+                        .timeout(Duration.ofSeconds(5)).GET().build(), HttpResponse.BodyHandlers.ofString());
+                assertEquals(200, statistics.statusCode());
+                var result = json.readTree(statistics.body());
+                assertEquals(200, result.path("code").asInt());
+                assertEquals(userId == 7 ? 0 : 8, result.path("data").path("fansCount").asInt(-1));
+            }
+            System.out.println("FRAMEWORK_IT_CREATION_STATS=ANONYMOUS_401;INVALID_401;BOTH_USERS_OWN_STATS");
             var success = sse(http, base, token, "success");
             System.out.println("FRAMEWORK_IT_SSE_SUCCESS=" + success);
             assertTrue(success.stream().anyMatch(event -> event.path("type").asText().equals("TEXT")
@@ -186,6 +209,26 @@ class FrameworkApplicationIT {
             assertEquals("DONE", success.getLast().path("type").asText());
             assertEquals(1, success.stream().filter(event -> event.path("type").asText().equals("DONE")).count());
             assertEquals(2, providerCalls.get());
+            String quotaKey = com.zcx.chenstack.domain.constants.RedisConstants.AiUsage + 7;
+            String quota = docker("exec", network + "-redis", "redis-cli", "GET", quotaKey).strip();
+            assertEquals("1", quota);
+            var navigation = Map.of("打开我的文章管理", "OPEN_ARTICLE_MANAGE", "打开我的评论管理", "OPEN_COMMENT_MANAGE",
+                    "打开我的专栏管理", "OPEN_COLUMN_MANAGE", "带我去我的文章管理页面", "OPEN_ARTICLE_MANAGE");
+            int index = 0;
+            for (var entry : navigation.entrySet()) {
+                var events = sse(http, base, token, "direct-" + index++, entry.getKey());
+                assertEquals(List.of("TEXT", "NAVIGATION_ACTION", "DONE"),
+                        events.stream().map(event -> event.path("type").asText()).toList());
+                assertFalse(events.getFirst().path("text").asText().isBlank());
+                assertEquals(entry.getValue(), events.get(1).path("action").asText());
+            }
+            assertEquals(quota, docker("exec", network + "-redis", "redis-cli", "GET", quotaKey).strip());
+            assertEquals(2, providerCalls.get());
+            org.awaitility.Awaitility.await().atMost(Duration.ofSeconds(3)).until(() -> Files.readAllLines(log).stream()
+                    .filter(line -> line.contains("stage=STREAM_COMPLETE") && line.contains("route=direct_navigation")
+                            && line.contains("terminal=DONE") && line.contains("model_calls=0 usage_rounds=0 input_tokens=0 output_tokens=0"))
+                    .count() == 4);
+            System.out.println("FRAMEWORK_IT_DIRECT_NAVIGATION=4/4;PROVIDER_HTTP_DELTA=0;USER_QUOTA_DELTA=0;TIMING=4/4");
             providerStatus.set(503);
             var failure = sse(http, base, token, "failure");
             System.out.println("FRAMEWORK_IT_SSE_FAILURE=" + failure);
@@ -280,10 +323,10 @@ class FrameworkApplicationIT {
                 "--spring.rabbitmq.port=5672", "--spring.rabbitmq.password=" + password,
                 "--minio.endpoint=http://" + containers.get(3) + ":9000", "--minio.secretKey=" + password,
                 "--spring.ai.openai.base-url=http://127.0.0.1:18080", "--chen.wiki.product.enabled=true",
-                "--chen.rag.enabled=true", "--chen.rag.embedding-api-key=fixture-only",
+                "--chen.rag.embedding-api-key=fixture-only",
                 "--chen.rag.embedding-base-url=http://127.0.0.1:18080", "--chen.rag.embedding-model=framework-vector-1024",
                 "--chen.rag.qdrant-grpc-port=6334", "--chen.rag.collection=chen_framework_modes",
-                "--chen.rag.release.recovery-enabled=true", "--chen.rag.release.manifest-path=/evidence/rag-manifest.json",
+                "--chen.rag.release.manifest-path=/evidence/rag-manifest.json",
                 "--chen.rag.release.operator=framework-it", "--chen.rag.release.environment=framework-it",
                 "--chen.rag.release.artifact-path=/app/candidate.jar",
                 "--management.endpoint.health.show-components=always",
@@ -301,6 +344,8 @@ class FrameworkApplicationIT {
                       chen.framework.it: "%s"
                     environment:
                       AI_KNOWLEDGE_MODE: "${AI_KNOWLEDGE_MODE:?Select a fixed test mode}"
+                      CHEN_RAG_ENABLED: "${FRAMEWORK_RAG_OWNER:?Select the catalog role}"
+                      CHEN_RAG_RELEASE_RECOVERY_ENABLED: "${FRAMEWORK_RAG_OWNER:?Select the catalog role}"
                     entrypoint: ["java", "-Dfile.encoding=UTF-8", "-Djava.io.tmpdir=/tmp", "-jar", "/app/candidate.jar"]
                     command: %s
                     tmpfs: ["/tmp"]
@@ -333,7 +378,8 @@ class FrameworkApplicationIT {
         List<Long> before = knowledgeCounts(jdbcUrl, password);
         try {
             for (String mode : List.of("chat", "rag", "wiki")) {
-                Files.writeString(environment, "AI_KNOWLEDGE_MODE=" + mode + "\n");
+                Files.writeString(environment, "AI_KNOWLEDGE_MODE=" + mode + "\n"
+                        + "FRAMEWORK_RAG_OWNER=" + !"wiki".equals(mode) + "\n");
                 compose(composeCommand, "up", "-d", "--no-deps", "--force-recreate", "--no-build", "--pull", "never", "backend");
                 String id = docker("inspect", "--format", "{{.Id}}", backend);
                 assertNotEquals(previousId, id, "Changing .env must replace the backend container");
@@ -407,7 +453,11 @@ class FrameworkApplicationIT {
                     var revoked = sse(http, base, "Bearer " + jwt.createToken(7), "compose-wiki-revoked", "Redis 过期时间是多少？");
                     String refused = revoked.stream().filter(event -> "TEXT".equals(event.path("type").asText()))
                             .map(event -> event.path("text").asText()).collect(java.util.stream.Collectors.joining());
-                    assertTrue(refused.contains("无法依据 Wiki 回答"), revoked.toString());
+                    assertFalse(refused.isBlank(), revoked.toString());
+                    assertTrue(revoked.stream().anyMatch(event -> "KNOWLEDGE_STATUS".equals(event.path("type").asText())
+                            && "UNKNOWN".equals(event.path("supportStatus").asText())), revoked.toString());
+                    assertTrue(revoked.stream().noneMatch(event -> "KNOWLEDGE_SOURCES".equals(event.path("type").asText())),
+                            revoked.toString());
                     assertFalse(refused.contains("FRAMEWORK_PUBLISHED_WIKI_SENTINEL"));
                     assertEquals("DONE", revoked.getLast().path("type").asText());
                     assertEquals(404, http.send(HttpRequest.newBuilder(URI.create(base + "/wiki/pages/" + wikiFixture.path("pageId").asLong()))
@@ -685,7 +735,10 @@ class FrameworkApplicationIT {
     private String docker(String... arguments) throws Exception {
         List<String> command = new ArrayList<>(List.of("docker")); command.addAll(List.of(arguments));
         ProcessBuilder builder = new ProcessBuilder(command).redirectErrorStream(true);
-        if ("compose".equals(arguments[0])) builder.environment().remove("AI_KNOWLEDGE_MODE");
+        if ("compose".equals(arguments[0])) {
+            builder.environment().remove("AI_KNOWLEDGE_MODE");
+            builder.environment().remove("FRAMEWORK_RAG_OWNER");
+        }
         Process process = builder.start();
         var captured = new java.util.concurrent.FutureTask<byte[]>(() -> process.getInputStream().readAllBytes());
         Thread.ofVirtual().start(captured);

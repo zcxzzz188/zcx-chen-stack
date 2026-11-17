@@ -6,11 +6,11 @@
 .DESCRIPTION
     四种场景分开处理，互不混用：
 
-      init      首次全新部署：生成 .env 与 Redis ACL、构建产物与镜像、初始化数据库迁移、启动全部服务
+      init      首次全新部署：准备私有配置与 Qdrant TLS、构建应用、导入当前数据库基线、启动八个服务
       up        日常启动（含电脑重启后）：只启动已存在的容器，不重建、不迁移
       stop      停止容器（保留容器与数据卷）
       restart   只重启应用容器（backend / admin / user）
-      upgrade   已有数据环境升级：备份镜像标签 → 重建产物与镜像 → 幂等迁移 → 重建应用容器
+      upgrade   当前基线升级：核对数据库 → 备份镜像标签 → 构建并更新应用容器
       rollback  回滚到上一次 upgrade 之前的应用镜像
       migrate   只执行增量 SQL 迁移（幂等）
       status    查看实例容器、健康与版本
@@ -33,8 +33,7 @@
     实例名，默认 dev。非默认值会生成独立的 env/override 文件，并隔离容器、镜像、卷及网络。
 
 .PARAMETER WithRag
-    同时启动 compose profile=rag 的本地 Qdrant，并写入 RAG 相关环境变量。
-    仍需独立 Embedding 凭据与一次受控知识发布，RAG 才会有可检索的知识。
+    兼容旧调用。当前 init 默认配备本地 Qdrant 和实例专用 TLS。
 
 .PARAMETER SkipBuild
     跳过宿主机产物和应用镜像构建，要求目标实例已有匹配的本地镜像。
@@ -72,7 +71,7 @@
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('init', 'up', 'stop', 'restart', 'upgrade', 'rollback', 'migrate', 'status', 'doctor', 'repair-ports')]
+    [ValidateSet('init', 'up', 'stop', 'restart', 'upgrade', 'rollback', 'migrate', 'status', 'doctor', 'repair-ports', 'check', 'replace-backend')]
     [string]$Action = 'status',
     [ValidatePattern('^[a-z][a-z0-9-]{0,47}$')]
     [string]$Instance = 'dev',
@@ -84,7 +83,11 @@ param(
     [switch]$AllowReleaseRestart,
     [ValidateRange(1, 3)]
     [int]$MaxAttempts = 2,
-    [switch]$NoClipboard
+    [switch]$NoClipboard,
+    [ValidatePattern('^sha256:[a-f0-9]{64}$')]
+    [string]$BackendImage,
+    [ValidatePattern('^sha256:[a-f0-9]{64}$')]
+    [string]$ExpectedBackendImage
 )
 
 Set-StrictMode -Version Latest
@@ -95,9 +98,11 @@ try { [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false) } catc
 $RepoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
 $ComposeDir = Join-Path $RepoRoot 'script/dev'
 $ComposeFile = Join-Path $ComposeDir 'docker-compose.yml'
+$BaselineFile = Join-Path $RepoRoot 'sql/bootstrap/chen_stack_baseline.sql'
 $DefaultInstance = 'dev'
 $RuntimeRoot = Join-Path $RepoRoot '.runtime'
 $RuntimeDir = Join-Path $RuntimeRoot $Instance
+$QdrantTlsDir = Join-Path $RuntimeDir 'rag/tls'
 $InfraServices = @('mysql', 'redis', 'minio', 'rabbitmq')
 $AppServices = @('backend', 'frontend-admin', 'frontend-user')
 $ImageServices = @{
@@ -118,7 +123,7 @@ $ServiceContainers = @{
 $Migrations = @(
     @{ File = 'g2_rag_catalog.sql'; Kind = 'table'; Marker = 'rag_catalog_state' }
     @{ File = 'g3_wiki_foundation.sql'; Kind = 'table'; Marker = 'wiki_source' }
-    @{ File = 'g3_wiki_compiler.sql'; Kind = 'table'; Marker = 'wiki_compile_budget' }
+    @{ File = 'g3_wiki_compiler.sql'; Kind = 'table'; Marker = 'wiki_compile_attempt' }
     @{ File = 'g3_wiki_invalidation.sql'; Kind = 'trigger'; Marker = 'wiki_article_changed' }
     @{ File = 'g3_wiki_product.sql'; Kind = 'table'; Marker = 'wiki_page' }
     @{ File = 'g3_ai_knowledge_management.sql'; Kind = 'menu'; Marker = '9300' }
@@ -157,7 +162,7 @@ function Get-EnvPath {
 }
 
 function Get-OverridePath {
-    if ($Instance -eq $DefaultInstance) { return $null }
+    if ($Instance -eq $DefaultInstance) { return (Join-Path $RuntimeDir 'bootstrap.override.yml') }
     return (Join-Path (Split-Path -Parent (Get-EnvPath)) 'override.yml')
 }
 
@@ -231,7 +236,8 @@ function Initialize-PrivateRuntime {
         & chmod 700 -- $RuntimeRoot
         if ($LASTEXITCODE -ne 0) { throw '无法限制 .runtime 的权限' }
     }
-    foreach ($path in @($RuntimeDir, (Join-Path $RuntimeDir 'redis'), (Join-Path $RuntimeDir 'ai-usage'),
+    foreach ($path in @($RuntimeDir, (Join-Path $RuntimeDir 'redis'), (Join-Path $RuntimeDir 'ai-usage'), $QdrantTlsDir,
+            (Join-Path $RuntimeDir 'data'),
             (Join-Path $RuntimeDir 'rag'), (Join-Path $RuntimeDir 'rag/control'),
             (Join-Path $RuntimeDir 'rag/budget'), (Join-Path $RuntimeDir 'secrets'))) {
         $existing = Get-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
@@ -362,16 +368,9 @@ function Initialize-Environment {
         $map['FRONTEND_ADMIN_HOST'] = "http://127.0.0.1:$($map['ADMIN_PORT'])/"
         $map['FRONTEND_USER_HOST'] = "http://127.0.0.1:$($map['USER_PORT'])/"
     }
-    if ($WithRag) {
-        if ($map['CHEN_RAG_EMBEDDING_API_KEY']) {
-            $map['SPRING_PROFILES_ACTIVE'] = 'dev,rag'
-            $map['CHEN_RAG_ENABLED'] = 'true'
-        }
-        $map['CHEN_RAG_QDRANT_HOST'] = 'qdrant'
-        $map['CHEN_RAG_QDRANT_TLS'] = 'false'
-        $map['CHEN_RAG_QDRANT_GRPC_PORT'] = '6334'
-        Write-Warn2 '本地 Qdrant 已选用；RAG 需要 Embedding 凭据与一次受控知识发布'
-    }
+    $map['CHEN_RAG_QDRANT_HOST'] = 'qdrant'
+    $map['CHEN_RAG_QDRANT_TLS'] = 'true'
+    $map['CHEN_RAG_QDRANT_GRPC_PORT'] = '6334'
     if ($map.Contains('SPRING_AI_OPENAI_API_KEY') -and [string]::IsNullOrWhiteSpace([string]$map['SPRING_AI_OPENAI_API_KEY'])) {
         Write-Warn2 'SPRING_AI_OPENAI_API_KEY 为空：小辰会返回模型服务错误，请在 .env 中填入 DeepSeek Key'
     }
@@ -424,28 +423,54 @@ function New-InstanceOverride([System.Collections.IDictionary]$EnvMap) {
     if (-not $override) { return }
     $directory = Split-Path -Parent $override
     if (-not (Test-Path -LiteralPath $directory)) { New-Item -ItemType Directory -Path $directory -Force | Out-Null }
+    $tlsMount = $QdrantTlsDir.Replace('\', '/').Replace("'", "''")
+    $dataMount = (Join-Path $RuntimeDir 'data').Replace('\', '/').Replace("'", "''")
+    $tlsProbe = 'printf "GET /readyz HTTP/1.0\r\nHost: qdrant\r\n\r\n" | openssl s_client -quiet -connect 127.0.0.1:6333 -servername qdrant -verify_hostname qdrant -verify_return_error -CAfile /qdrant/tls/server-cert.pem 2>/dev/null | grep -q "^HTTP/1.[01] 200 "'
     $lines = @('services:')
     foreach ($service in $ServiceContainers.Keys) {
+        if ($Instance -eq $DefaultInstance -and $service -notin 'backend','qdrant') { continue }
         $lines += "  ${service}:"
-        $lines += "    container_name: $Instance-$service"
+        if ($Instance -ne $DefaultInstance) { $lines += "    container_name: $Instance-$service" }
         if ($service -eq 'backend') {
             $origins = @($EnvMap['FRONTEND_ADMIN_HOST'].TrimEnd('/'), $EnvMap['FRONTEND_USER_HOST'].TrimEnd('/'))
             $springJson = @{ 'chen-stack' = @{ 'allow-origins' = $origins } } | ConvertTo-Json -Depth 4 -Compress
             $lines += '    environment:'
             $lines += "      SPRING_APPLICATION_JSON: '$springJson'"
+            $lines += @(
+                "      CHEN_KNOWLEDGE_SIMPLE_ENABLED: 'true'",
+                "      CHEN_KNOWLEDGE_ENABLED: 'false'",
+                "      CHEN_RAG_ENABLED: 'false'",
+                "      CHEN_RAG_RELEASE_ENABLED: 'false'",
+                "      CHEN_WIKI_ENABLED: 'false'",
+                '    volumes:',
+                "      - '$($dataMount):/data'",
+                "      - '$tlsMount/cacerts:/opt/java/openjdk/lib/security/cacerts:ro'")
         }
-        if ($ImageServices.ContainsKey($service)) {
+        if ($service -eq 'qdrant') {
+            $lines += @(
+                '    environment:',
+                "      QDRANT__SERVICE__ENABLE_TLS: 'true'",
+                '      QDRANT__TLS__CERT: /qdrant/tls/server-cert.pem',
+                '      QDRANT__TLS__KEY: /qdrant/tls/server-key.pem',
+                '    volumes:',
+                "      - '$($tlsMount):/qdrant/tls:ro'",
+                '    healthcheck:',
+                "      test: ['CMD', 'bash', '-ec', '$tlsProbe']")
+        }
+        if ($Instance -ne $DefaultInstance -and $ImageServices.ContainsKey($service)) {
             $lines += "    image: $($ImageServices[$service])-$Instance`:$Instance"
         }
     }
-    $lines += 'volumes:'
-    foreach ($volume in @('mysql_data', 'redis_data', 'minio_data', 'rabbitmq_data', 'qdrant_data')) {
-        $lines += "  ${volume}:"
-        $lines += "    name: $Instance-$($volume -replace '_', '-')"
+    if ($Instance -ne $DefaultInstance) {
+        $lines += 'volumes:'
+        foreach ($volume in @('mysql_data', 'redis_data', 'minio_data', 'rabbitmq_data', 'qdrant_data')) {
+            $lines += "  ${volume}:"
+            $lines += "    name: $Instance-$($volume -replace '_', '-')"
+        }
+        $lines += 'networks:'
+        $lines += '  chen-stack-network:'
+        $lines += "    name: $Instance-network"
     }
-    $lines += 'networks:'
-    $lines += '  chen-stack-network:'
-    $lines += "    name: $Instance-network"
     Set-Content -LiteralPath $override -Value $lines -Encoding utf8NoBOM
     Write-Ok "已生成隔离覆盖文件 $override"
 }
@@ -507,32 +532,26 @@ function Assert-FreshCompose($EnvMap) {
         }
     }
     Write-Ok 'Compose 项目、容器、网络、卷和宿主挂载校验通过'
+    return $model.services.qdrant.image
 }
 
 # ---------------------------------------------------------------- 构建
 
 function Build-HostArtifacts {
     if ($SkipBuild) { Write-Warn2 '已跳过宿主机产物构建（-SkipBuild）'; return }
-    $jar = Join-Path $RepoRoot 'chen-stack-backend/target/zcx-chen-stack-backend-1.0-SNAPSHOT.jar'
-    if ($Action -ne 'upgrade' -and (Test-Path -LiteralPath $jar)) {
-        Write-Ok '后端 JAR 已存在，复用现有产物'
-    } else {
-        Assert-Command 'mvn' '构建后端需要 JDK 21 + Maven 3.9+，或先在本地执行 mvn package'
-        Write-Step '构建后端 JAR（跳过测试）'
-        Push-Location (Join-Path $RepoRoot 'chen-stack-backend')
-        try {
-            & mvn --batch-mode '-Dmaven.test.skip=true' package
-            if ($LASTEXITCODE -ne 0) { throw '后端构建失败' }
-        } finally { Pop-Location }
-    }
+    Assert-Command 'mvn' '构建后端需要 JDK 21 + Maven 3.9+'
+    Write-Step '构建后端 JAR（跳过测试）'
+    Push-Location (Join-Path $RepoRoot 'chen-stack-backend')
+    try {
+        & mvn --batch-mode '-Dmaven.test.skip=true' package
+        if ($LASTEXITCODE -ne 0) { throw '后端构建失败' }
+    } finally { Pop-Location }
     Assert-Command 'npm' '构建前端需要 Node.js 22.12+ 与 npm'
     $previousBackend = $env:VITE_BACKEND_SERVER
-    if ($Instance -ne $DefaultInstance) {
-        $envMap = Read-DotEnv (Get-EnvPath)
-        $backendPort = [int]$envMap['BACKEND_PORT']
-        if ($backendPort -lt 1 -or $backendPort -gt 65535) { throw '隔离实例 BACKEND_PORT 无效' }
-        $env:VITE_BACKEND_SERVER = "http://127.0.0.1:$backendPort"
-    }
+    $envMap = Read-DotEnv (Get-EnvPath)
+    $backendPort = if ($envMap['BACKEND_PORT']) { [int]$envMap['BACKEND_PORT'] } else { 5000 }
+    if ($backendPort -lt 1 -or $backendPort -gt 65535) { throw 'BACKEND_PORT 无效' }
+    $env:VITE_BACKEND_SERVER = "http://127.0.0.1:$backendPort"
     try {
         # dist 内嵌 API 地址，同一工作区内的其他实例可能已覆盖旧产物。
         foreach ($name in @('chen-stack-admin', 'chen-stack-user')) {
@@ -560,26 +579,43 @@ function Build-Images {
     Write-Ok '镜像构建完成'
 }
 
-function Initialize-AdminAccount {
+function Initialize-DefaultAccounts {
     $mysql = Get-ContainerName 'mysql'
     $image = $ImageServices['backend']
-    if ($Instance -ne $DefaultInstance) { $image = "${image}-$Instance`:$Instance" }
-    $password = New-Secret 8
-    $jshellInput = "System.out.println(""HASH="" + org.springframework.security.crypto.bcrypt.BCrypt.hashpw(""$password"", org.springframework.security.crypto.bcrypt.BCrypt.gensalt()));" + [char]10 + '/exit'
-    $hashScript = 'set -eu; cd "$(mktemp -d)"; entry=$(jar tf /app/app.jar | grep -E "^BOOT-INF/lib/spring-security-crypto-[^/]+\.jar$"); jar xf /app/app.jar "$entry"; exec jshell --feedback silent --class-path "$entry" -'
+    if ($Instance -ne $DefaultInstance) { $image = "${image}-$Instance" + ':' + $Instance }
+    $encode = 'System.out.println("HASH=" + new org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder().encode("123456"));'
+    $jshellInput = ($encode, $encode, '/exit') -join [char]10
+    $hashScript = 'set -eu; cd "$(mktemp -d)"; crypto=$(jar tf /app/app.jar | grep -E "^BOOT-INF/lib/spring-security-crypto-[^/]+\.jar$"); logging=$(jar tf /app/app.jar | grep -E "^BOOT-INF/lib/commons-logging-[^/]+\.jar$"); jar xf /app/app.jar "$crypto" "$logging"; exec jshell --feedback silent --class-path "$crypto:$logging" -'
     $output = @($jshellInput | & docker run -i --rm --pull never --network none --entrypoint sh $image -c $hashScript 2>$null)
     if ($LASTEXITCODE) { throw '无法为新实例生成管理端密码' }
     $hash = @($output | ForEach-Object {
         if ($_ -match 'HASH=(\$2[aby]\$[0-9]{2}\$[A-Za-z0-9./]{53})') { $Matches[1] }
     })
-    if ($hash.Count -ne 1) { throw '新实例管理端密码的哈希结果无效' }
-    $path = Join-Path $RuntimeDir 'secrets/initial-admin.env'
-    [IO.File]::WriteAllText($path, "USERNAME=chenstack`nPASSWORD=$password`n", [Text.UTF8Encoding]::new($false))
-    $sql = "UPDATE sys_user SET password='$($hash[0])' WHERE id=1 AND username='chenstack'; SELECT ROW_COUNT();"
-    $write = Invoke-Docker @('exec', $mysql, 'sh', '-c',
-        'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysql -uroot -D "$MYSQL_DATABASE" -N -B -e "$1"', 'sh', $sql) -AllowFailure
-    if ($write.ExitCode -ne 0 -or $write.Output -cne '1') { throw '无法初始化新实例的管理端账号' }
-    Write-Ok "首次管理端登录凭据已保存到 $path"
+    if ($hash.Count -ne 2 -or $hash[0] -ceq $hash[1]) { throw '新实例两个账号的 BCrypt 摘要无效' }
+    $sql = @"
+CREATE TEMPORARY TABLE bootstrap_accounts_guard (
+  ready TINYINT NOT NULL CHECK (ready = 1)
+);
+INSERT INTO bootstrap_accounts_guard VALUES (COALESCE(GET_LOCK('chen-stack-initial-users', 0), 0));
+START TRANSACTION;
+INSERT INTO bootstrap_accounts_guard
+SELECT NOT EXISTS (SELECT 1 FROM sys_user)
+   AND (SELECT COUNT(*) = 2 AND COUNT(DISTINCT role) = 2 FROM sys_role
+        WHERE role IN ('admin', 'content_admin') AND status = 0 AND is_deleted = 0);
+INSERT INTO sys_user (username, password, nickname, create_time, update_time)
+VALUES ('chenstack', '$($hash[0])', 'chenstack', NOW(), NOW()),
+       ('test', '$($hash[1])', 'test', NOW(), NOW());
+INSERT INTO sys_user_role (user_id, role_id)
+SELECT u.id, r.id
+FROM sys_user u JOIN sys_role r ON r.role = CASE u.username WHEN 'chenstack' THEN 'admin' ELSE 'content_admin' END
+WHERE u.username IN ('chenstack', 'test') AND r.status = 0 AND r.is_deleted = 0;
+INSERT INTO user_settings (user_id)
+SELECT id FROM sys_user WHERE username IN ('chenstack', 'test');
+COMMIT;
+"@
+    $null = $sql | & docker exec -i $mysql sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysql -uroot --protocol=socket -D "$MYSQL_DATABASE" -N -B' 2>$null
+    if ($LASTEXITCODE -ne 0) { throw '无法初始化默认账号，请核对用户表为空及两个有效管理角色' }
+    Write-Ok '已创建两个本地演示管理账号'
 }
 
 # ---------------------------------------------------------------- 服务与迁移
@@ -623,8 +659,26 @@ function Wait-Infrastructure {
     $qdrant = Get-ContainerName 'qdrant'
     if ($qdrant) {
         if (-not (Wait-Until -Label 'Qdrant 就绪' -TimeoutSeconds 120 -Probe {
-                    (Invoke-Docker @('exec', $qdrant, 'bash', '-ec', 'exec 3<>/dev/tcp/127.0.0.1/6333; printf "GET /readyz HTTP/1.0\r\nHost: localhost\r\n\r\n" >&3; head -n 1 <&3 | grep -q 200') -AllowFailure).ExitCode -eq 0
+                    (Invoke-Docker @('inspect', '--format', '{{.State.Health.Status}}', $qdrant) -AllowFailure).Output -ceq 'healthy'
                 })) { throw 'Qdrant 未就绪' }
+    }
+}
+
+function Assert-CurrentDatabase([switch]$Initial) {
+    $mysql = Get-ContainerName 'mysql'
+    if (!$mysql) { throw '缺少 MySQL 容器' }
+    $query = @'
+SELECT CONCAT_WS('/',
+  (SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=DATABASE() AND table_type='BASE TABLE'),
+  (SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name IN
+    ('knowledge_document','rag_knowledge','rag_chunk','wiki_page','wiki_page_revision','wiki_page_source','ai_chat_session','ai_chat_message')),
+  (SELECT COUNT(*) FROM information_schema.triggers WHERE trigger_schema=DATABASE()),
+  (SELECT COUNT(*) FROM sys_user));
+'@
+    $result = Invoke-Docker @('exec', $mysql, 'sh', '-c',
+        'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysql -uroot --protocol=socket -D "$MYSQL_DATABASE" -N -B -e "$1"', 'sh', $query) -AllowFailure
+    if ($result.ExitCode -ne 0 -or $result.Output -cnotmatch '^33/8/15/\d+$' -or ($Initial -and $result.Output -cne '33/8/15/0')) {
+        throw 'MySQL 与当前基线不符，或首次安装目标已有用户。保留现场并检查初始化日志'
     }
 }
 
@@ -633,6 +687,10 @@ function Invoke-Migrations {
     $database = if ($envMap.Contains('MYSQL_DATABASE') -and $envMap['MYSQL_DATABASE']) { [string]$envMap['MYSQL_DATABASE'] } else { 'chen_stack' }
     $mysql = Get-ContainerName 'mysql'
     if (-not $mysql) { throw '缺少 MySQL 容器，无法执行迁移' }
+    $current = Invoke-Docker @('exec', $mysql, 'sh', '-c',
+        'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysql -uroot --protocol=socket -D "$MYSQL_DATABASE" -N -B -e "$1"', 'sh',
+        "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name IN ('rag_knowledge','ai_chat_session')")
+    if ($current.Output -cne '0') { throw '历史迁移不适用于当前知识库结构' }
     foreach ($migration in $Migrations) {
         $file = Join-Path $RepoRoot "sql/$($migration.File)"
         if (-not (Test-Path -LiteralPath $file)) { throw "缺少迁移文件 sql/$($migration.File)" }
@@ -714,7 +772,7 @@ function Show-Status {
     if (Test-Path -LiteralPath $envPath) {
         $map = Read-DotEnv $envPath
         $mode = if ($map.Contains('AI_KNOWLEDGE_MODE')) { [string]$map['AI_KNOWLEDGE_MODE'] } else { '未设置' }
-        Write-Host ('  部署默认知识模式(AI_KNOWLEDGE_MODE)：' + $mode + '（实际生效以数据库配置为准）')
+        Write-Host ('  部署默认知识模式(AI_KNOWLEDGE_MODE)：' + $mode + '（实际生效以管理端 AI 配置为准）')
     }
     if (-not $WithDoctor) { return }
 
@@ -810,10 +868,23 @@ function Invoke-RepairPortsAction {
 
 # ---------------------------------------------------------------- 动作
 
+function Initialize-LocalQdrantTls([string]$QdrantImage) {
+    $mount = "type=bind,source=$QdrantTlsDir,target=/tls"
+    $backendImage = $ImageServices['backend']
+    if ($Instance -ne $DefaultInstance) { $backendImage = "$backendImage-$Instance" + ':' + $Instance }
+    if (Test-Path -LiteralPath (Join-Path $QdrantTlsDir 'server-key.pem')) { throw '首次安装要求全新的实例 TLS 目录' }
+    $null = Invoke-Docker @('run', '--rm', '--network', 'none', '--mount', $mount, '--entrypoint', 'sh',
+        $QdrantImage, '-ec', 'umask 077; openssl req -x509 -newkey rsa:2048 -nodes -sha256 -days 1825 -subj /CN=qdrant -addext subjectAltName=DNS:qdrant,DNS:localhost,IP:127.0.0.1 -keyout /tls/server-key.pem -out /tls/server-cert.pem')
+    $null = Invoke-Docker @('run', '--rm', '--network', 'none', '--pull', 'never', '--mount', $mount, '--entrypoint', 'sh',
+        $backendImage, '-ec', 'cp -L "$JAVA_HOME/lib/security/cacerts" /tls/cacerts; keytool -importcert -noprompt -storepass changeit -keystore /tls/cacerts -alias chen-stack-local-qdrant -file /tls/server-cert.pem')
+}
+
 function Invoke-Init {
     Write-Title "首次全新部署（实例 $Instance）"
     Assert-Command 'docker' '请先安装 Docker Desktop'
     [void](Invoke-Docker @('version', '--format', '{{.Server.Version}}'))
+    if (!(Test-Path -LiteralPath $BaselineFile -PathType Leaf)) { throw '缺少当前数据库基线' }
+    $script:WithRag = $true
     $existing = Invoke-Docker @('ps', '-aq', '--filter', "label=com.docker.compose.project=$Instance")
     if ($existing.Output) {
         throw "实例 $Instance 已有容器；请使用 up 或按已有数据流程升级"
@@ -829,16 +900,16 @@ function Invoke-Init {
     Initialize-PrivateRuntime
     $envMap = Initialize-Environment
     New-InstanceOverride $envMap
-    Assert-FreshCompose $envMap
+    $qdrantImage = Assert-FreshCompose $envMap
     Build-HostArtifacts
     Build-Images
+    Initialize-LocalQdrantTls $qdrantImage
 
     Write-Step '启动基础服务'
-    $services = if ($WithRag) { $InfraServices + 'qdrant' } else { $InfraServices }
-    [void](Invoke-Compose (@('up', '-d', '--no-build') + $services))
+    [void](Invoke-Compose (@('up', '-d', '--no-build') + $InfraServices + 'qdrant'))
     Wait-Infrastructure
-    Invoke-Migrations
-    Initialize-AdminAccount
+    Assert-CurrentDatabase -Initial
+    Initialize-DefaultAccounts
 
     Write-Step '启动应用服务'
     [void](Invoke-Compose (@('up', '-d', '--no-build', '--pull', 'never') + $AppServices))
@@ -846,8 +917,8 @@ function Invoke-Init {
     [void](Assert-HostReachability -Stage '首次部署')
     Show-Access (Get-EnvPath)
     Write-Host ''
-    Write-Host '  首次登录后请修改管理端密码并删除初始凭据文件。' -ForegroundColor Yellow
-    Write-Host '  小辰知识问答需要先准备知识：管理端「AI知识管理 → 整理知识」可手动新建并发布 Wiki 知识（无需 Embedding）。' -ForegroundColor Yellow
+    Write-Host '  管理端提供两个本地演示账号，登录方式见 README。' -ForegroundColor Yellow
+    Write-Host '  在管理端「AI知识管理 → 知识文档」上传 Markdown 或文本建立首批知识。' -ForegroundColor Yellow
 }
 
 function Invoke-Up {
@@ -906,6 +977,7 @@ function Invoke-Upgrade {
     $backend = Get-ContainerName 'backend'
     if (-not $backend) { throw "实例 $Instance 尚未初始化，请先执行 -Action init" }
     Assert-NotReleaseManaged $backend
+    Assert-CurrentDatabase
     Initialize-PrivateRuntime
 
     Write-Step '记录当前应用镜像，供回滚使用'
@@ -921,7 +993,6 @@ function Invoke-Upgrade {
 
     Build-HostArtifacts
     Build-Images
-    Invoke-Migrations
 
     Write-Step '重建应用容器（基础服务与数据卷不变）'
     [void](Invoke-Compose (@('up', '-d', '--no-deps', '--no-build', '--pull', 'never') + $AppServices))
@@ -956,6 +1027,24 @@ function Invoke-Rollback {
 
 $failed = $false
 try {
+    if ($Instance -eq 'prod') {
+        if ($WithRag -or $SkipBuild -or $PortBase -or $Apply -or $AllowReleaseRestart) {
+            throw '正式实例从 .runtime/prod 读取已核验配置，不接受开发构建、端口和诊断选项'
+        }
+        $prodArgs = @{ Action = $Action }
+        if ($PSBoundParameters.ContainsKey('BackendImage')) { $prodArgs.BackendImage = $BackendImage }
+        if ($PSBoundParameters.ContainsKey('ExpectedBackendImage')) { $prodArgs.ExpectedBackendImage = $ExpectedBackendImage }
+        & (Join-Path $PSScriptRoot 'ChenStackProd.ps1') @prodArgs
+        exit $LASTEXITCODE
+    }
+    if ($Action -eq 'replace-backend' -or $BackendImage -or $ExpectedBackendImage) {
+        throw '后端镜像替换仅支持 -Instance prod -Action replace-backend'
+    }
+    if ($Action -eq 'check') { throw '部署检查使用 -Instance prod' }
+    if ($Instance -eq $DefaultInstance -and (Test-Path -LiteralPath (Join-Path $RuntimeRoot 'prod/compose.json')) -and
+        $Action -notin @('status', 'doctor')) {
+        throw '正式服务仍使用原有容器名。日常运维使用 -Instance prod，开发任务使用独立实例名'
+    }
     switch ($Action) {
         'init' { Invoke-Init }
         'up' { Invoke-Up }

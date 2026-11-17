@@ -2,6 +2,8 @@ package com.zcx.chenstack.rag;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpServer;
+import com.zcx.chenstack.knowledge.KnowledgeSearch;
+import com.zcx.chenstack.knowledge.KnowledgeSettings;
 import com.zcx.chenstack.domain.vo.CustomerServiceEvent;
 import com.zcx.chenstack.service.CustomerServiceTools;
 import com.zcx.chenstack.service.CustomerServiceOrchestrator;
@@ -24,6 +26,7 @@ import org.springframework.ai.openai.OpenAiChatOptions;
 import com.zcx.chenstack.config.AiConfig;
 import org.springframework.test.util.ReflectionTestUtils;
 import reactor.core.publisher.Flux;
+import reactor.core.publisher.Sinks;
 
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
@@ -34,6 +37,8 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
 
@@ -107,6 +112,38 @@ class ProductRagAnswerServiceTest {
         return String.join("", answer(question, chat, 7).collectList().block(Duration.ofSeconds(8)));
     }
 
+    @Test void exactPublicFaqStreamsBeforeProviderCompletionAndKeepsVerifiedSources() throws Exception {
+        var library = mock(KnowledgeSearch.class);
+        var settings = mock(KnowledgeSettings.class);
+        when(settings.get()).thenReturn(new KnowledgeSettings.Settings("rag", "fixture", .3, 200, 5, 100, ""));
+        var evidence = new KnowledgeSearch.Evidence("rag",
+                List.of(new KnowledgeSearch.Hit("文章发布", "填写标题后提交。", "/editor", "fixture", null, null, "1")));
+        when(library.retrieve("如何发布文章？", "rag")).thenReturn(evidence);
+        when(library.current(evidence)).thenReturn(true);
+        service.configureLibrary(library, settings);
+        var history = mock(com.zcx.chenstack.service.CustomerServiceHistory.class);
+        service.configureHistory(history);
+        scopeRespond = prompt -> Flux.error(new AssertionError("固定公开问题无需分类"));
+        Sinks.Many<ChatResponse> frames = Sinks.many().unicast().onBackpressureBuffer();
+        respond = prompt -> frames.asFlux();
+
+        var first = new CompletableFuture<String>();
+        var answer = answer("如何发布文章？", "g6-public-faq", 7).doOnNext(first::complete).collectList().toFuture();
+        try {
+            assertEquals(Sinks.EmitResult.OK, frames.tryEmitNext(text("填写标题。", null)));
+            assertEquals("填写标题。", first.get(5, TimeUnit.SECONDS));
+            assertFalse(answer.isDone());
+            assertEquals(Sinks.EmitResult.OK, frames.tryEmitNext(text("再提交。", "stop")));
+            assertEquals(Sinks.EmitResult.OK, frames.tryEmitComplete());
+            assertEquals(List.of("填写标题。", "再提交。"), answer.get(5, TimeUnit.SECONDS));
+        } finally {
+            answer.cancel(false);
+        }
+        assertEquals(1, prompts.size());
+        verifyNoInteractions(history);
+        assertTrue(events.stream().anyMatch(event -> "KNOWLEDGE_SOURCES".equals(event.type())));
+    }
+
     @Test void promisedNavigationIsRecreatedForEverySseReplyWithoutAnotherModelRound() {
         respond = prompt -> Flux.just(text("登录后查看审核状态。下方按钮可直接进入文章管理。", "stop"));
         AiUsageService quota = mock(AiUsageService.class);
@@ -122,12 +159,92 @@ class ProductRagAnswerServiceTest {
         verifyNoInteractions(articles);
     }
 
+    @Test void explicitPageNavigationSkipsAllModelCallsAndPublishesTheWhitelistedAction() {
+        scopeRespond = prompt -> Flux.error(new AssertionError("explicit user-page navigation must not call the classifier"));
+
+        String reply = run("请打开文章管理页面", "direct-navigation");
+
+        assertTrue(reply.contains("点击下方“去管理文章”按钮"));
+        assertTrue(reply.contains("只负责页面导航，不会修改任何数据"));
+        assertTrue(prompts.isEmpty());
+        assertEquals(List.of("OPEN_ARTICLE_MANAGE"), events.stream().map(CustomerServiceEvent::action).toList());
+        assertEquals(0, reservations.get());
+    }
+
+    @Test void articleReviewExcludesCommentManagementUnlessCommentsAreAskedAbout() {
+        var library = mock(KnowledgeSearch.class);
+        var settings = mock(KnowledgeSettings.class);
+        when(settings.get()).thenReturn(new KnowledgeSettings.Settings("rag", "fixture", .3, 200, 5, 100, ""));
+        var article = new KnowledgeSearch.Hit("管理自己的文章", "在文章管理查看审核状态。", "/creation/articlemanage", "1", null, null, "1");
+        var comment = new KnowledgeSearch.Hit("管理发出的和收到的评论", "COMMENT_PROCESS_SENTINEL", "/", "2", null, null, "3");
+        when(library.retrieve(anyString(), eq("rag"))).thenReturn(new KnowledgeSearch.Evidence("rag", List.of(article, comment)));
+        when(library.current(any())).thenReturn(true);
+        service.configureLibrary(library, settings);
+        scopeRespond = prompt -> Flux.just(text("PLATFORM_KNOWLEDGE", "stop"));
+
+        run("我的文章为什么没有通过审核？", "article-audit-citations");
+        assertFalse(prompts.getLast().getInstructions().toString().contains("COMMENT_PROCESS_SENTINEL"));
+        assertEquals(List.of(article.title()), events.stream().filter(event -> "KNOWLEDGE_SOURCES".equals(event.type()))
+                .findFirst().orElseThrow().sources().stream().map(CustomerServiceEvent.KnowledgeSource::title).toList());
+
+        events.clear();
+        run("文章下的评论审核后在哪里管理？", "comment-audit-citations");
+        assertTrue(prompts.getLast().getInstructions().toString().contains("COMMENT_PROCESS_SENTINEL"));
+        assertTrue(events.stream().filter(event -> "KNOWLEDGE_SOURCES".equals(event.type()))
+                .flatMap(event -> event.sources().stream()).anyMatch(source -> source.title().equals(comment.title())));
+
+        events.clear();
+        String commentOnly = "评论管理中，评论正处于审核中时谁能看见？审核通过才会公开吗？";
+        var visibility = new KnowledgeSearch.Hit("文章发布后看不到：审核和可见范围", "ARTICLE_VISIBILITY_SENTINEL",
+                "/creation/articlemanage", "3", null, null, "1");
+        when(library.retrieve(commentOnly, "rag"))
+                .thenReturn(new KnowledgeSearch.Evidence("rag", List.of(article, comment, visibility)));
+        run(commentOnly, "comment-only-audit-citations");
+        assertFalse(prompts.getLast().getInstructions().toString().contains(article.content()));
+        assertFalse(prompts.getLast().getInstructions().toString().contains(visibility.content()));
+        assertEquals(List.of(comment.title()), events.stream().filter(event -> "KNOWLEDGE_SOURCES".equals(event.type()))
+                .findFirst().orElseThrow().sources().stream().map(CustomerServiceEvent.KnowledgeSource::title).toList());
+        assertEquals("3", events.stream().filter(event -> "KNOWLEDGE_SOURCES".equals(event.type()))
+                .findFirst().orElseThrow().sources().getFirst().version());
+    }
+
     @Test void explicitNavigationAndFinalPromiseProduceOnlyOneAction() {
         respond = prompt -> Flux.just(prompts.size() == 1
                 ? tools(call("showNavigation", "{\"destination\":\"ARTICLE_MANAGE\"}"))
                 : text("下方按钮可直接进入文章管理。", "stop"));
         run("打开文章管理", "nav-once");
         assertEquals(1, events.stream().filter(event -> "NAVIGATION_ACTION".equals(event.type())).count());
+    }
+
+    @Test void hybridArticleReviewWithCurrentEvidenceNeedsOnlyOneAnswerRound() {
+        var library = mock(KnowledgeSearch.class);
+        var settings = mock(KnowledgeSettings.class);
+        when(settings.get()).thenReturn(new KnowledgeSettings.Settings("hybrid", "fixture", .3, 200, 5, 100, ""));
+        var article = new KnowledgeSearch.Hit("管理自己的文章", "在文章管理查看审核原因，编辑后重新提交。",
+                "/creation/articlemanage", "1", null, null, "1");
+        when(library.retrieve(anyString(), eq("hybrid"))).thenReturn(new KnowledgeSearch.Evidence("rag", List.of(article)));
+        when(library.current(any())).thenReturn(true);
+        service.configureLibrary(library, settings);
+        scopeRespond = this::platformScope;
+        respond = prompt -> Flux.just(text("请在文章管理查看审核原因，编辑后重新提交。下方按钮可直接进入文章管理。", "stop"));
+
+        String question = "文章审核未通过后，普通用户在哪里查看原因并修改？";
+        assertTrue(run(question, "hybrid-review").contains("编辑后重新提交"));
+        assertEquals(1, prompts.size());
+        var options = (OpenAiChatOptions) prompts.getFirst().getOptions();
+        assertEquals("none", options.getToolChoice());
+        assertTrue(options.getToolCallbacks().isEmpty());
+        assertEquals(1, events.stream().filter(event -> "OPEN_ARTICLE_MANAGE".equals(event.action())).count());
+        assertTrue(events.stream().filter(event -> "KNOWLEDGE_SOURCES".equals(event.type()))
+                .flatMap(event -> event.sources().stream()).anyMatch(source -> "/creation/articlemanage".equals(source.url())));
+
+        run(question + "另外把它删除", "hybrid-review-compound");
+        assertEquals("auto", ((OpenAiChatOptions) prompts.getLast().getOptions()).getToolChoice());
+
+        when(library.retrieve(eq(question), eq("hybrid"))).thenReturn(new KnowledgeSearch.Evidence("wiki", List.of(
+                new KnowledgeSearch.Hit("审核帮助", "通过审核后可见", "/wiki/2", null, 2L, null, "2"))));
+        run(question, "hybrid-review-no-entry");
+        assertEquals("auto", ((OpenAiChatOptions) prompts.getLast().getOptions()).getToolChoice());
     }
 
     @Test void wikiPageButtonDescriptionsPassTheActualTwoRoundProductAnswerWithoutInventingReplyActions() {
@@ -704,10 +821,13 @@ class ProductRagAnswerServiceTest {
                     .collectList().block(Duration.ofSeconds(35))).contains("卡片"));
             assertEquals(2, wires.size());
             assertEquals(1, scopeWires.size());
+            assertEquals(16, json.readTree(scopeWires.getFirst()).path("max_tokens").asInt());
             assertFalse(scopeWires.getFirst().contains("PRIVATE_TITLE_SENTINEL"));
             verify(articles).listForUser(7, 1, 5);
             assertTrue(wires.get(1).contains("tool_call_id"));
             for (String wire : wires) {
+                assertFalse(json.readTree(wire).has("max_tokens"));
+                assertFalse(json.readTree(wire).has("max_completion_tokens"));
                 assertFalse(wire.contains("PRIVATE_TITLE_SENTINEL"));
                 assertFalse(wire.contains("73915"));
                 assertFalse(wire.contains("userId"));
@@ -758,6 +878,6 @@ class ProductRagAnswerServiceTest {
         ReflectionTestUtils.setField(config, "model", "fixture");
         ReflectionTestUtils.setField(config, "temperature", 0.0);
         ReflectionTestUtils.setField(config, "maxTokens", 2048);
-        return config.openAiChatModel(budget);
+        return config.customerServiceChatModel(budget);
     }
 }

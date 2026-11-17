@@ -48,14 +48,14 @@
 | 文章 / 专栏 / 评论 / 图片审核 | 审核队列、批量操作、驳回原因 |
 | 标签、用户、角色、菜单、权限 | RBAC 与动态菜单路由 |
 | 通知、日志 | 系统通知、登录日志、操作日志、访客日志 |
-| **AI 知识管理** | 原始知识（RAG）、整理知识（Wiki）、知识来源、智能整理、检索验证 |
+| **AI 知识管理** | 知识库（唯一知识新增入口）、知识来源、智能整理、Wiki页面、检索验证 |
 | **AI 配置** | 三档知识模式、每日额度、最近修改记录 |
 
 ### 智能助手能力
 
 - **三档知识模式**（管理员配置，普通用户无感）：
-  - `RAG 知识检索`：只使用已审校的原始知识目录；
-  - `Wiki 知识问答`：从当前已发布且来源有效的整理知识中检索；
+  - `RAG 知识检索`：只使用已审校的知识库内容；
+  - `Wiki 知识问答`：从当前已发布且来源有效的 Wiki 页面中检索；
   - `智能混合`：按问题在两者之间按需选择，简单交流不检索。
 - **按需检索**：混合模式先用一次轻量范围分类判断是否需要知识；需要时先读最相关的一侧，
   证据不足才补另一侧，不做「每轮都双查」。
@@ -92,9 +92,11 @@
 
 ### 部署
 
-Docker Compose（MySQL / Redis / MinIO / RabbitMQ / 后端 / 管理端 / 用户端，可选 Qdrant），
+Docker Compose（正式实例包含 MySQL / Redis / MinIO / RabbitMQ / Qdrant / 后端 / 管理端 / 用户端），
 基础镜像：`eclipse-temurin:21-alpine`、`nginx:alpine`、`mysql:8.0`、`redis:7-alpine`、
 `minio/minio:RELEASE.2025-04-08T15-41-24Z`、`rabbitmq:3-management-alpine`、`qdrant/qdrant:v1.13.6`。
+
+正式架构中，用户端和管理端由 Nginx 提供页面，通过 HTTP API 与后端交互。用户端通过 SSE 接收客服事件。后端连接 MySQL、Redis、RabbitMQ 和 MinIO。RAG 使用独立 Embedding 服务和 Qdrant，Wiki 从 MySQL 读取已发布页面及来源，DeepSeek 根据检索证据生成回答。
 
 ## 4. 项目结构
 
@@ -103,6 +105,7 @@ zcx-chen-stack/
 ├─ chen-stack-backend/                 # Spring Boot 后端
 │  ├─ src/main/java/com/zcx/chenstack/
 │  │  ├─ controller/  service/  mapper/  domain/  config/  security/
+│  │  ├─ knowledge/                    # 文档、知识处理与统一知识库
 │  │  ├─ rag/                          # RAG 知识目录、检索、发布与运行配置
 │  │  ├─ wiki/                         # LLM Wiki 来源、编译、发布与阅读
 │  │  └─ websocket/  redis/  rabbitmq/
@@ -111,8 +114,8 @@ zcx-chen-stack/
 │  └─ Dockerfile
 ├─ chen-stack-frontend/
 │  ├─ chen-stack-admin/                # 管理端（Vue 3）
-│  │  ├─ src/views/ai/                 # 原始知识 / 检索验证 / AI 配置
-│  │  ├─ src/views/wiki/               # 整理知识 / 知识来源 / 智能整理
+│  │  ├─ src/views/ai/                 # 知识库 / 检索验证 / AI 配置
+│  │  ├─ src/views/wiki/               # Wiki页面 / 知识来源 / 智能整理
 │  │  └─ Dockerfile
 │  └─ chen-stack-user/                 # 用户端（Vue 3）
 │     ├─ src/components/CustomerService/  # 小辰聊天、卡片、SSE 协议
@@ -130,157 +133,145 @@ zcx-chen-stack/
 
 ## 5. 快速开始
 
-以下命令在 **Windows 11 的 PowerShell 7** 执行。从 GitHub 全新克隆只需要源码，初始化会创建独立的本地数据和凭据。
+以下命令均在 **Windows 11 的 PowerShell 7** 中执行。已有正式数据时，从项目根目录进入 5.3 节。新环境从 5.2 节开始。
 
 ### 5.1 准备环境
 
-- **先启动 Docker Desktop**（使用 Linux 容器），等托盘图标显示 Engine 已运行后再执行任何部署命令。脚本会读取 Docker Engine 版本；Engine 未启动时 `up`、`status`、`doctor` 都会直接失败并提示。
-- Git，以及支持 `docker compose config --format json` 的 Compose 插件。可用下面的命令确认环境：
-  ```powershell
-  docker version --format '{{.Server.Version}}'
-  docker compose version --short
-  ```
-- 仅**首次初始化或升级构建**需要 JDK 21、Maven 3.9+、Node.js 22.12+ 和 npm。后端 JAR 和两个前端 `dist/` 先在宿主机生成，再打包进 Docker 镜像。日常 `up`、`stop`、`status`、`doctor` 不读取这些工具链。
-- 预留默认端口：5000（后端）、7000（用户端）、8000（管理端）等。如果本机已有辰栈或端口冲突，直接选用下方的隔离实例，不要修改业务源码或切换正式端口。
+- 启用 WSL 2，安装 Docker Desktop，使用 WSL 2 和 Linux 容器。开机后通过开始菜单打开 Docker Desktop，等 Engine 就绪。若已配置登录时启动 Docker Desktop，可直接检查 Engine。
+- 安装 Git、PowerShell 7 和支持 `docker compose config --format json` 的 Compose 插件。
+- 首次构建应用时安装 JDK 21、Maven 3.9+、Node.js 22.12+ 和 npm。已有正式容器的日常启停复用本地镜像。
 
-### 5.2 克隆并初始化
+```powershell
+wsl --list --verbose
+docker version --format '{{.Server.Version}}'
+docker compose version
+```
+
+### 5.2 首次部署（空数据卷）
+
+首次部署使用[当前数据库基线](sql/bootstrap/chen_stack_baseline.sql)和[本地 Compose](script/dev/docker-compose.yml)。基线建立 33 张表和 15 个触发器，预置角色、权限和菜单。业务数据、聊天历史、文档与向量从空状态开始，脚本为新实例生成本地服务凭据，并创建下列两个默认账号。MySQL 只在新数据卷中导入基线，SQL 也会检查目标数据库为空。
 
 ```powershell
 git clone https://github.com/zcxzzz188/zcx-chen-stack.git
 if ($LASTEXITCODE -ne 0) { throw '克隆失败' }
 Set-Location zcx-chen-stack
-pwsh -NoProfile -File ./script/deploy/ChenStack.ps1 -Action init
+New-Item -ItemType Directory -Path .runtime/chenstack-release -Force | Out-Null
+Copy-Item ./script/dev/.env.example .runtime/chenstack-release/.env
+notepad .runtime/chenstack-release/.env
 ```
 
-`init` 从模板生成 `.runtime/dev/.env` 和随机凭据，配置 Redis ACL，构建应用，启动 MySQL、Redis、MinIO 和 RabbitMQ，再导入基础库、执行七项迁移并启动后端和两个前端。默认的 `dev` 项目要求容器、网络和数据卷均为新资源。全新克隆应保留默认构建步骤。
-
-> **`init` 只用于全新实例。** 它要求目标项目的容器、网络和数据卷都不存在，任一已存在就会直接拒绝。已经在运行、已有数据、或由受控发布流程管理（正式 G3、R2 前端等）的实例，日常启动使用 `up`，不要用 `init`“修复”。初始化与恢复已有数据的区别见[部署手册](script/deploy/README.md#首次初始化与已有数据)。
-
-如需并行部署，从仓库根目录改用下面的命令。此例用户端为 **29108**，管理端为 **29107**，后端为 **29106**，请使用脚本输出的 `127.0.0.1` 地址。后续命令继续传入 `-Instance chenstack-test`。完整端口映射及构建选项见[部署手册](script/deploy/README.md)。
+在私有 env 填写 `SPRING_AI_OPENAI_API_KEY` 和 `CHEN_RAG_EMBEDDING_API_KEY`，核对第 6 节的模型与服务地址，保存后执行：
 
 ```powershell
-pwsh -NoProfile -File ./script/deploy/ChenStack.ps1 -Action init -Instance chenstack-test -PortBase 29100
+pwsh -NoProfile -File ./script/deploy/ChenStack.ps1 -Instance chenstack-release -PortBase 29220 -Action init
+if ($LASTEXITCODE -ne 0) { throw '首次部署失败' }
+pwsh -NoProfile -File ./script/deploy/ChenStack.ps1 -Instance chenstack-release -Action status
+(Invoke-RestMethod http://127.0.0.1:29226/actuator/health/readiness -TimeoutSec 10).status
+(Invoke-WebRequest http://127.0.0.1:29228 -TimeoutSec 10).StatusCode
+(Invoke-WebRequest http://127.0.0.1:29227 -TimeoutSec 10).StatusCode
 ```
 
-### 5.3 登录与日常启停
+初始化从当前源码构建后端和两个前端，创建实例专用 Qdrant TLS 证书，然后启动八个服务。看到后端 `UP` 和两个前端的 `200` 后，打开 [用户端](http://127.0.0.1:29228) 或 [管理端](http://127.0.0.1:29227)。普通账号注册及找回密码需要 SMTP。
 
-| 服务 | 默认宿主地址或端口 |
+| 管理端角色 | 用户名 | 初始密码 |
+|---|---|---|
+| 辰栈系统最高管理员 | `chenstack` | `123456` |
+| 内容管理员 | `test` | `123456` |
+
+默认账号和密码仅供本地学习演示，不得直接用于公网正式服务。安装器使用 Spring Security BCrypt 为两个账号分别生成密码摘要。已有数据库的日常启动会沿用当前账号和密码。
+
+示例使用 29220–29230 端口段，可与既有正式实例并存。按[隔离实例说明](script/deploy/README.md#隔离实例)选择其他空闲端口时，以脚本打印的地址为准。日常使用同一 `-Instance` 执行 `up`、`status` 或 `stop`，保留原数据。
+
+本轮在 Windows 11 验证了八服务启动、两个默认账号登录和权限隔离、MD/TXT 上传、三种知识检索和重启后的数据恢复。普通账号注册已用隔离 SMTP 实测。找回密码尚未实测。
+
+### 5.3 已有正式数据的日常启动与开机恢复
+
+正式入口为 `script/deploy/ChenStack.ps1 -Instance prod`。正式 Compose 为本机私有的 `.runtime/prod/compose.json`，项目名 `chen-stack-prod`。它引用既有本地镜像、外部网络和数据卷。历史基础服务可能保留 `dev` 或无 Compose 项目标签，正式入口按固定容器名和实际挂载管理它们。保留运行目录、现有镜像、挂载和凭据。
+
+Docker Engine 可连接后，从仓库根目录执行：
+
+```powershell
+pwsh -NoProfile -File ./script/deploy/ChenStack.ps1 -Instance prod -Action check
+if ($LASTEXITCODE -ne 0) { throw '正式配置检查失败' }
+pwsh -NoProfile -File ./script/deploy/ChenStack.ps1 -Instance prod -Action up
+if ($LASTEXITCODE -ne 0) { throw '正式服务启动失败' }
+pwsh -NoProfile -File ./script/deploy/ChenStack.ps1 -Instance prod -Action status
+```
+
+当前八个正式容器的重启策略均为 `unless-stopped`。Docker Desktop 启动后，Engine 会恢复关机前正在运行的容器。主动停止过的容器用上面的 `up` 恢复。该命令启动既有容器，缺失的容器使用正式 Compose 和本机已有镜像创建，并等待后端 readiness。
+
+| 服务 | 访问或检查方式 |
 |---|---|
+| 后端 API | http://127.0.0.1:5000 |
 | 用户端 | http://127.0.0.1:7000 |
 | 管理端 | http://127.0.0.1:8000 |
-| 后端 API | http://127.0.0.1:5000 |
-| MySQL / Redis | `127.0.0.1:3308` / `127.0.0.1:6379` |
-| MinIO API / 控制台 | `127.0.0.1:9000` / http://127.0.0.1:9001 |
-| RabbitMQ AMQP / 管理台 | `127.0.0.1:5672` / http://127.0.0.1:15672 |
-| Qdrant（仅 `-WithRag`） | `127.0.0.1:16333` HTTP / `127.0.0.1:16334` gRPC |
-
-管理端账号为 `chenstack`。在本机打开 `.runtime/<实例名>/secrets/initial-admin.env` 获取随机密码。首次登录后修改密码，再删除初始凭据文件。管理端和博客浏览可以先用，用户注册和找回密码需要配置邮件。
+| MySQL / Redis | 社区及 AI 数据 / 缓存与额度等在线状态 |
+| RabbitMQ / MinIO | 异步消息 / 社区业务对象存储 |
+| Qdrant | 通过内部网络提供向量集合，使用实例内 TLS 和独立密钥 |
 
 ```powershell
-pwsh -NoProfile -File ./script/deploy/ChenStack.ps1 -Action status
-pwsh -NoProfile -File ./script/deploy/ChenStack.ps1 -Action stop
-pwsh -NoProfile -File ./script/deploy/ChenStack.ps1 -Action up
+(Invoke-RestMethod http://127.0.0.1:5000/actuator/health/readiness -TimeoutSec 10).status
+(Invoke-WebRequest http://127.0.0.1:7000 -TimeoutSec 10).StatusCode
+(Invoke-WebRequest http://127.0.0.1:8000 -TimeoutSec 10).StatusCode
+docker ps -a --filter 'name=^/(chen-stack-(backend|user|admin|mysql|redis|minio|rabbitmq)|chen-qdrant-release)$' --format 'table {{.Names}}	{{.Status}}'
 ```
 
-`stop` 保留容器、配置和数据卷，`up` 启动已有容器并检查就绪。改过环境变量时，需要按[部署手册](script/deploy/README.md)重新创建应用容器。`restart` 仅重启三个应用容器，`upgrade` 和 `rollback` 只用于普通实例。
+应看到 readiness `UP`、两个前端均为 HTTP 200、八个正式容器正在运行。MySQL、Redis、RabbitMQ、MinIO 应为 `healthy`。Qdrant 向量链路可在管理端用 RAG 检索确认。
 
-`up` 不只看 Docker 是否 `Running`。它会在容器内健康之后继续核对：实际端口是否发布、`127.0.0.1` 的 `/actuator/health` 是否 `UP`、用户端与管理端是否能打开页面。任何一项不满足都会打印诊断、以非 0 退出，**不会**报告“启动成功”。想单独做一次完整检查时使用 `doctor`：
+正式应用停止命令如下。它停止后端、用户端和管理端，保留五个基础服务与全部数据。
 
 ```powershell
-pwsh -NoProfile -File ./script/deploy/ChenStack.ps1 -Action doctor
+pwsh -NoProfile -File ./script/deploy/ChenStack.ps1 -Instance prod -Action stop
+if ($LASTEXITCODE -ne 0) { throw '正式应用停止失败' }
 ```
 
-### 5.4 准备 Wiki、RAG 和混合问答
-
-全新实例没有已发布知识。最快的体验路径是手动发布 Wiki 页面，编辑和审核无需模型或 Embedding。
-
-1. 准备一篇自己有权使用的公开、已发布、审核通过的文章或专栏。全新站点可以先配置邮件并注册普通账号，发布一篇文章，再在管理端确认审核状态。
-2. 进入 **AI知识管理 → 知识来源**，选择材料，点 **检查并授权**，核对当前版本并确认授权。
-3. 在 **整理知识** 中新增知识，填写标题、摘要和正文，选择已授权来源，创建待审版本。打开版本后 **提交审核 → 核查来源与内容 → 审核通过 → 正式发布**。
-4. 配置聊天 Key 后，在 **AI知识管理 → AI配置** 选择 **Wiki 知识问答**，用普通账号在用户端向小辰提问。默认关闭的公开 Wiki 阅读入口不影响小辰使用已发布页面。
-
-`-WithRag` 用于在**全新实例**启动本地 Qdrant。它不会自动建立可检索的知识。RAG 首次发布需要独立 Embedding Key、匹配的服务地址和模型、Qdrant 连接与独立 Key，以及与实际制品匹配的发布清单和完成回执。内置的 [`knowledge/`](chen-stack-backend/src/main/resources/knowledge/) 是审校材料。正式发布见[受控发布手册](script/release/README.md)。
-
-普通 Compose 的部署默认值是 `hybrid`。要体验两路混合检索，先让 RAG 和 Wiki 都有有效的已发布知识，再在 AI 配置中选择 **智能混合**。运行时会按问题选择知识路径。仅使用 Wiki 的实例可直接选择 Wiki 模式。
-
-### 5.5 部署健康检查与安全恢复
-
-Docker 显示容器 `Running`、容器内 `/actuator/health` 返回 `UP`，都不代表宿主机能访问服务。2026-11-10 的真实故障就是这样：容器与 Spring Boot 都正常，`HostConfig.PortBindings` 也配置了 `127.0.0.1:5000 -> 5000/tcp`，但 `NetworkSettings.Ports` 是空的，`127.0.0.1:5000` 无法访问，登录验证码加载失败，而 `up` 仍报告成功。现在脚本把这类问题当作失败处理。
-
-只读诊断（不会启动、停止、重启或删除任何东西）：
+需要演练八个容器全部停止时，在维护窗口先执行应用停止命令，再执行以下命令。确认八个容器均已停止后，按本节的 `check → up → status` 恢复。
 
 ```powershell
-pwsh -NoProfile -File ./script/deploy/ChenStack.ps1 -Action doctor
+docker stop chen-qdrant-release chen-stack-rabbitmq chen-stack-minio chen-stack-redis chen-stack-mysql
+if ($LASTEXITCODE -ne 0) { throw '正式基础服务停止失败' }
+pwsh -NoProfile -File ./script/deploy/ChenStack.ps1 -Instance prod -Action status
 ```
 
-`doctor` 会检查 Docker Engine、实例容器与已停止的历史容器、实际端口发布（`HostConfig` 与 `NetworkSettings` 分开看）、Windows 监听进程与端口排除范围、容器网络互通、后端内部与宿主机健康、用户端与管理端访问、前端产物内嵌的 API 端口，以及后端最近日志中的关键错误。输出末尾给出固定摘要，并自动复制到剪贴板（回读校验）：
+### 5.4 G5/G6 知识库与客服
 
-```text
-CHEN_STACK_DOCTOR=PASS/FAIL
-BACKEND_INTERNAL_HEALTH=UP/DOWN
-BACKEND_HOST_ACCESS=PASS/FAIL
-PORT_5000_PUBLISHED=YES/NO
-FRONTEND_USER=PASS/FAIL
-FRONTEND_ADMIN=PASS/FAIL
-ROOT_CAUSE=...
-RECOMMENDED_ACTION=...
-```
+在管理端 **AI 知识管理 → 知识文档** 上传 Markdown 或文本，查看上传原件、整理母版和文档处理状态。系统按文档生成知识，分别推进 RAG 的分块、向量入库与 Wiki 的处理。管理端可分别查看 RAG 知识与 Wiki 页面及其来源，并在 **检索验证** 选择 RAG、Wiki 或 Hybrid。**AI 配置** 可读取或调整实际生效的知识模式、回复风格、检索条数和用户额度。用户端「小辰」提供带来源的流式回答、站内导航及会话恢复。
 
-诊断失败时 `doctor` 以非 0 退出，`ROOT_CAUSE` 会区分：容器未启动、Java 后端启动失败、Docker 端口发布失败、Windows 端口冲突、API HTTP 请求失败、前端 Nginx 不可访问、前端请求目标与发布端口不一致。诊断只读，不会修改正式环境。
-
-端口发布异常的安全恢复：
+### 5.5 服务未就绪时
 
 ```powershell
-# 默认只诊断，打印将要执行的命令
-pwsh -NoProfile -File ./script/deploy/ChenStack.ps1 -Action repair-ports
-
-# 人工确认后执行：只对同一个后端容器执行 docker restart --timeout 30（旧别名 --time）
-pwsh -NoProfile -File ./script/deploy/ChenStack.ps1 -Action repair-ports -Apply
+pwsh -NoProfile -File ./script/deploy/ChenStack.ps1 -Instance prod -Action status
+docker logs --tail 100 chen-stack-backend
+docker logs --tail 100 chen-stack-mysql
 ```
 
-`repair-ports` 只在“后端容器运行、容器内健康 `UP`、`HostConfig` 有本机端口绑定、`NetworkSettings` 没有实际发布、宿主机 HTTP 不可达、端口没有被其他进程占用”时才会重启后端，且最多重启 2 次（`-MaxAttempts 1..3`）。重启后重新核对镜像身份、挂载、容器状态、端口发布与宿主机 HTTP 健康；镜像身份变化或多次失败会立即停止并保留现场。它**不会**执行 `docker compose down -v`、`docker system prune`、数据库或卷操作，也不会重建容器、更换镜像或改写受控发布清单。
-
-受控发布实例（带 `chen.release` 标签、挂载 `/release` 或启用 RAG 恢复开关，例如正式 G3）默认拒绝执行恢复。确认现场后需要显式追加 `-AllowReleaseRestart`；它仍然只重启同一个容器，不重建、不更换镜像，因此发布清单绑定的运行制品不变。
-
-| `ROOT_CAUSE` | 含义与首选处理 |
+| 现象 | 检查方式 |
 |---|---|
-| `DOCKER_ENGINE_UNAVAILABLE` | Docker Desktop 未启动或 Engine 不可用。启动 Docker Desktop 后重试。 |
-| `CONTAINERS_NOT_CREATED` | 实例尚未初始化。确认是全新环境后再 `init`。 |
-| `BACKEND_NOT_RUNNING` / `INFRASTRUCTURE_NOT_RUNNING` | 容器未运行。执行 `up`，仍失败时看 `docker ps -a`。 |
-| `BACKEND_INTERNAL_HEALTH_DOWN` | Java 后端或依赖启动失败。先看后端日志与 MySQL/Redis 状态，重启容器不能修复这类问题。 |
-| `DOCKER_PORT_PUBLISH_MISSING` | 容器健康但 Docker 未完成端口发布。用 `repair-ports`。 |
-| `WINDOWS_PORT_CONFLICT` | 端口被其他进程占用。先释放端口，再重新诊断。 |
-| `PORT_CONFIG_MISMATCH` | 容器内的端口配置与当前 env 不一致，需要按部署手册重建应用容器（受控实例按发布流程）。 |
-| `BACKEND_HOST_HTTP_FAILED` | 端口已发布但宿主机仍请求失败，按提示重启后端并复核。 |
-| `FRONTEND_NGINX_UNREACHABLE` | 前端容器或 Nginx 异常，查看前端容器日志后重启应用容器。 |
-| `FRONTEND_REQUEST_TARGET_MISMATCH` | 前端产物内嵌的 API 端口与实际发布端口不一致，需要重新构建前端。 |
+| Engine 不可连接 | 打开 Docker Desktop，确认 WSL 2 和 Linux Engine 就绪，重试 `docker version`。 |
+| 正式 `check` 失败 | 确认 `.runtime/prod/compose.json`、外部网络、挂载与本机镜像仍可用。缺失时按[正式实例运维手册](script/deploy/README.md)核对。 |
+| 后端 readiness 超时 | 先看依赖容器健康与后端日志，检查 5000 端口和当前挂载。 |
+| 前端打不开或验证码不加载 | 查看相应前端容器日志，再确认宿主机 5000、7000、8000 的实际连通性及前端 API 地址。 |
+| 模型不可用、RAG 没有证据 | 查看 AI 配置、DeepSeek 状态、独立 Embedding 配置、Qdrant 集合和知识处理状态。 |
+
+普通开发实例的 `doctor` 和 `repair-ports` 用法见[部署手册](script/deploy/README.md)。正式实例使用本节的诊断命令。
 
 ## 6. 配置与凭据
 
-常用配置见 [`.env.example`](script/dev/.env.example)。一键部署读取 `.runtime/<实例名>/.env`。填写模型 Key 时，在实例的私有 env 中设置 `SPRING_AI_OPENAI_API_KEY`，并核对 `SPRING_AI_OPENAI_BASE_URL` 和 `SPRING_AI_OPENAI_CHAT_OPTIONS_MODEL`。在普通实例运行下列命令，复用已有应用镜像，并由 Compose 应用修改后的环境配置。
+开发模板为 [`script/dev/.env.example`](script/dev/.env.example)，正式配置字段可参考 [`script/prod/.env.example`](script/prod/.env.example)。正式 Windows 实例的应用环境由私有 Compose 提供。模型凭据留在私有运行配置中，复制示例时填入自己的值。
 
-```powershell
-pwsh -NoProfile -File ./script/deploy/ChenStack.ps1 -Action upgrade -SkipBuild
-```
-
-先启动目标实例的基础服务。隔离实例附加相同的 `-Instance`。受控发布实例按[受控发布手册](script/release/README.md)操作。勿通过只改 env 轮换现有数据库、Redis 或 MinIO 凭据。
-
-| 配置 | 本地部署默认行为 |
+| 用途 | 配置键 |
 |---|---|
-| `MYSQL_ROOT_PASSWORD`、`MYSQL_PASSWORD`、`MINIO_SECRET_KEY`、`RABBITMQ_DEFAULT_PASS`、`CHEN_STACK_JWT_SECRET` | 初始化为空的项生成随机值 |
-| `REDIS_USERNAME` / `REDIS_PASSWORD` | 后端通过命名 ACL 用户认证，Redis 禁用默认用户，配置和健康检查密码文件在实例的 `redis/` |
-| `NORMAL_AI_USAGE` | 默认启用，后端在 `ai-usage/events.jsonl` 初始化并追加 Provider 用量记录 |
-| `AI_KNOWLEDGE_MODE` / `CHEN_STACK_AI_DAILY_LIMIT` | 本地默认 `hybrid` / 每人每日 100 次，数据库中的在线配置优先 |
-| `CHEN_WIKI_ENABLED` / `CHEN_WIKI_PRODUCT_ENABLED` | 本地默认开启，初始化执行所需迁移 |
-| `CHEN_WIKI_COMPILER_ENABLED` / `WIKI_PUBLIC_PORTAL_ENABLED` | 默认关闭，分别控制智能整理和公开 Wiki 阅读 |
-| `MAIL_USERNAME` / `MAIL_PASSWORD` | 注册、重置密码等邮件功能。默认 SMTP 主机是 `smtp.qq.com`，使用邮箱及其 SMTP 授权码 |
-| `ALIYUN_ACCESS_KEY_ID` / `ALIYUN_ACCESS_KEY_SECRET` | 可选图片内容安全服务 |
+| DeepSeek 聊天 | `SPRING_AI_OPENAI_API_KEY`、`SPRING_AI_OPENAI_BASE_URL`、`SPRING_AI_OPENAI_CHAT_OPTIONS_MODEL` |
+| 独立 Embedding | `CHEN_RAG_EMBEDDING_API_KEY`、`CHEN_RAG_EMBEDDING_BASE_URL`、`CHEN_RAG_EMBEDDING_MODEL` |
+| 向量集合 | `CHEN_RAG_QDRANT_HOST`、`CHEN_RAG_QDRANT_GRPC_PORT`、`CHEN_RAG_QDRANT_TLS`、`CHEN_RAG_QDRANT_API_KEY`、`CHEN_RAG_QDRANT_COLLECTION` |
+
+正式 AI 在线配置保存在 `.runtime/prod/ai/settings.yml`。进程重启沿用已有容器环境。修改正式应用的环境变量应纳入部署流程，使容器加载新配置。Redis ACL、MySQL 与 MinIO 凭据应与各自服务的持久化配置一致。
 
 ## 7. 数据库与运行数据
 
-MySQL 仅在初始化新数据卷时导入 [`sql/chen_stack.sql`](sql/chen_stack.sql)。部署脚本的 `init`、`upgrade`、`migrate` 按[部署手册中的固定顺序](script/deploy/README.md#数据库迁移)检查并应用增量 SQL。脚本根据表、触发器或菜单标记跳过已应用项。
+现有正式 MySQL 的 `chen_stack` 库有 **33 张表、15 个触发器**，其中 AI 业务表有 **8 张**。它们覆盖知识文档、RAG 知识与分块、Wiki 页面与来源及版本、客服会话与消息。
 
-MySQL、Redis（AOF）、MinIO、RabbitMQ 和可选 Qdrant 使用 Docker 命名卷。AI 用量文件和 Redis 配置保存在 `.runtime/<实例名>/`。应用镜像回滚不回滚 SQL 或知识数据。升级前备份数据和运行配置，保留原卷和凭据。
+MySQL、Redis、MinIO、RabbitMQ 和 Qdrant 通过命名卷保存数据。正式 AI 设置、知识原件与整理文件、用量记录在 `.runtime/prod/` 对应挂载中。现存 Redis 和 Qdrant 还使用历史路径，详见[部署手册](script/deploy/README.md)。日常恢复保留原卷与文件，原地使用 `-Instance prod -Action up`。备份应包含卷数据与私有配置，保留在独立的备份目录并在隔离环境验证恢复。升级前核对镜像与数据库版本，应用镜像回滚不会回滚数据。
 
 ## 8. 开发与测试
 
@@ -324,49 +315,9 @@ pwsh -NoProfile -File ./script/deploy/tests/Run-DeployTests.ps1
 
 它依次运行静态安全检查、诊断/恢复的故障注入单元测试，以及用临时实例和 Docker 替身跑的命令行级端到端测试，覆盖端口未发布、端口被占用、Engine 未启动、前端不可访问、历史容器、受控发布边界、重试上限与幂等。仅使用只读检查和临时 `dsh-test-*` 实例，不会启动或重启任何正式容器。
 
-## 9. 安全与常见问题
+## 9. 运行安全
 
-一键部署的 Docker 端口只绑定本机。保护 `.runtime/` 下的 env、初始管理员文件、Redis ACL、账本和发布授权。它们受 Git 忽略。旧普通部署的 env 兼容路径见[部署手册](script/deploy/README.md)，受控实例应保留完整 Compose、凭据和挂载。查看配置时使用 `docker compose config --quiet`，避免展开秘密。
-
-| 现象 | 检查与处理 |
-|---|---|
-| `init` 报已有容器、卷或网络 | 已初始化的实例用 `up`。另起一套时指定新实例名与空闲端口。部分初始化失败时先保留资源并排查。 |
-| **容器 `Running` 但页面打不开、API 或验证码请求失败** | 不是普通“服务没起”。先运行 `-Action doctor`，看 `PORT_5000_PUBLISHED`、`BACKEND_HOST_ACCESS` 和 `ROOT_CAUSE`；若为 `DOCKER_PORT_PUBLISH_MISSING`，按[5.5 节](#55-部署健康检查与安全恢复)用 `repair-ports` 处理。不要靠反复 `docker compose up -d` 或删除容器“修复”。 |
-| 数据库未就绪或后端启动失败 | 后端内部健康 `DOWN` 时看 `docker logs --tail 200 chen-stack-backend` 与 MySQL 日志，确认基础服务容器状态；`up` 会等待 MySQL/Redis/MinIO/RabbitMQ 就绪，超时会明确报错。 |
-| 端口被占用 | `doctor` 会给出占用进程。用 `Get-NetTCPConnection -State Listen -LocalPort 5000 \| Select-Object LocalAddress,LocalPort,OwningProcess` 复核，释放端口后再诊断；不要为此修改业务端口。 |
-| 前端能打开但请求全部失败 | 多在端口发布或前端产物内嵌的 API 地址。看 `FRONTEND_REQUEST_TARGET` 与 `BACKEND_HOST_ACCESS`，必要时重新构建前端。 |
-| Docker Desktop 未启动 | `docker version` 失败。启动 Docker Desktop 并等待 Engine 就绪，再执行 `up` 或 `doctor`；脚本不会自行拉起 Desktop。 |
-| 浏览器提示请求或跨域失败 | 确认访问脚本输出的地址、API 端口和后端来源白名单。前端构建后更改 API 地址需要重新打包。 |
-| Redis 不健康 | 检查实例 `redis/` 下的配置、LF 格式 ACL 和健康检查密码文件，确认命名用户与应用 env 一致。 |
-| 小辰提示模型服务不可用 | 核对 Key、API 地址、模型权限与 Provider 额度，并确认 backend 使用了新环境。 |
-| 知识未命中或索引未就绪 | 检查在线生效模式、Wiki 来源和发布状态，或 RAG 的 Qdrant、Embedding、目录及发布回执。 |
-| `upgrade` 被拒绝或启动出现 `PUBLICATION_*` | 核对受控实例的运行 JAR、清单和发布回执，按[发布手册](script/release/README.md)处理。 |
-
-### 9.1 5000 端口映射异常的处理步骤
-
-适用于：容器在运行、容器内 `/actuator/health` 是 `UP`，但 Windows 打不开 `http://127.0.0.1:5000`（登录验证码、用户端 API、管理端 API 同时失败）。
-
-1. 运行诊断并保留输出（摘要会自动进剪贴板）：
-   ```powershell
-   pwsh -NoProfile -File ./script/deploy/ChenStack.ps1 -Action doctor
-   ```
-   关键行：`PORT_5000_PUBLISHED=NO`、`BACKEND_HOST_ACCESS=FAIL`、`ROOT_CAUSE=DOCKER_PORT_PUBLISH_MISSING`。诊断只读，可以先在正式环境执行。
-2. 区分“Docker 没发布”和“端口被别人占用”：`ROOT_CAUSE=WINDOWS_PORT_CONFLICT` 说明宿主机端口被其他进程占用，先处理占用进程：
-   ```powershell
-   Get-NetTCPConnection -State Listen -LocalPort 5000 | Select-Object LocalAddress,LocalPort,OwningProcess
-   netsh int ipv4 show excludedportrange protocol=tcp
-   ```
-3. 确认是 `DOCKER_PORT_PUBLISH_MISSING` 后，先只诊断、不动作：
-   ```powershell
-   pwsh -NoProfile -File ./script/deploy/ChenStack.ps1 -Action repair-ports
-   ```
-4. 人工确认后执行受控重启（脚本内部等价于 `docker restart --timeout 30 chen-stack-backend`，但会先核对镜像、挂载与重试上限，并在重启后重新验证端口发布与宿主机 HTTP）：
-   ```powershell
-   pwsh -NoProfile -File ./script/deploy/ChenStack.ps1 -Action repair-ports -Apply
-   ```
-5. 复核结果：`CHEN_STACK_REPAIR=SUCCESS` 后再跑一次 `doctor`，确认 `CHEN_STACK_DOCTOR=PASS`、`PORT_5000_PUBLISHED=YES`、`BACKEND_HOST_ACCESS=PASS`、`FRONTEND_USER=PASS`、`FRONTEND_ADMIN=PASS`。
-
-如果 `repair-ports` 判定为 `REFUSED` 或 `FAILED`，不要继续反复重启：按输出里的 `NEXT_STEP` 处理，保留现场并核对容器日志、端口占用与 Windows 排除端口范围。直接原因可能是 Docker 端口代理、Windows 端口保留或宿主网络栈状态，但具体触发点需要现场证据确认，脚本不会替你下结论。
+保留 `.runtime/` 中的私有 Compose、env、Redis ACL、TLS 私钥和 AI 配置。查看 Compose 校验结果时使用 `config --quiet`。停止和恢复时保留正式数据卷，禁止对正式实例执行 `down -v` 或卷清理。空卷初始化和退役迁移属于单独的部署流程。
 
 ## 10. 文档索引
 

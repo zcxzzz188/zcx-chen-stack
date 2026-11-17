@@ -19,8 +19,8 @@ export const knowledgeModeOptions = [
   { mode: 'hybrid', label: '智能混合', description: '按问题自动选择 RAG 或 Wiki，简单交流不检索知识。' },
 ]
 
-const legacyModeLabels = { chat: '普通对话（历史配置）' }
-const shortLabels = { rag: 'RAG', wiki: 'Wiki', hybrid: '智能混合', chat: '普通对话' }
+const legacyModeLabels = { chat: '普通对话（历史配置）', doc: '文档知识检索' }
+const shortLabels = { rag: 'RAG', wiki: 'Wiki', hybrid: '智能混合', chat: '普通对话', doc: '文档' }
 
 export function knowledgeModeLabel(mode) {
   return knowledgeModeOptions.find((item) => item.mode === mode)?.label || legacyModeLabels[mode] || '未设置'
@@ -32,7 +32,7 @@ export function knowledgeModeShortLabel(mode) {
 
 /** 人工新增知识可关联的真实用户端页面，与后端知识目录白名单一致。 */
 export const knowledgeSourcePages = [
-  { value: '/', label: '首页' },
+  { value: '/', label: '全站通用（首页）' },
   { value: '/register', label: '注册页' },
   { value: '/login', label: '登录页' },
   { value: '/reset', label: '找回密码页' },
@@ -45,5 +45,6 @@ export const knowledgeSourcePages = [
 ]
 
 export function knowledgeSourcePageLabel(value) {
+  if (!value) return '全站通用（未关联页面）'
   return knowledgeSourcePages.find((item) => item.value === value)?.label || '平台页面'
 }

@@ -6,20 +6,17 @@
 
 ## 首次初始化
 
+按[根目录 README](../../README.md#52-首次部署空数据卷)复制私有 env 并填写 DeepSeek 和 Embedding 配置，再从 PowerShell 7 执行：
+
 ```powershell
-pwsh -NoProfile -File ./script/deploy/ChenStack.ps1 -Action init
+pwsh -NoProfile -File ./script/deploy/ChenStack.ps1 -Instance chenstack-release -PortBase 29220 -Action init
 ```
 
-`init` 要求目标项目的容器、网络和数据卷均未创建。首次启动时脚本按以下顺序执行。
+`init` 要求独占的新容器、网络和卷。它建立 Redis ACL、本地服务凭据和 Qdrant TLS，从当前源码构建后端及两个前端，然后启动八个服务。MySQL 在新卷上导入[当前基线](../../sql/bootstrap/chen_stack_baseline.sql)。基线校验数据库为空，创建 33 张表和 15 个触发器，并预置角色、菜单和权限。空库保留完整的 8 张 AI 表，知识库从空状态开始。
 
-1. 生成 `.runtime/dev/.env`，为空的本地服务密码和密钥生成随机值。创建 Redis 配置、账本目录及 RAG 私有目录。
-2. 构建后端 JAR、两个前端的静态产物和应用镜像。首次初始化会复用已有的目标路径 JAR，因此切换过源码时请先构建匹配的 JAR。
-3. 启动 MySQL、Redis、MinIO、RabbitMQ 并等待就绪。MySQL 在新卷上导入基础 SQL，脚本再执行[增量迁移](#数据库迁移)。
-4. 写入初始管理员密码并启动后端和两个前端。浏览器使用脚本打印的地址。
+启动完成后使用脚本输出的两个网站地址。管理端提供[两个本地演示账号](../../README.md#52-首次部署空数据卷)，安装时分别生成 BCrypt 密码摘要。首次登录后更新密码。注册与找回密码需要 SMTP。日常启停和升级会沿用当前账号。
 
-在本机打开 `.runtime/<实例名>/secrets/initial-admin.env` 获取 `chenstack` 的随机密码。登录管理端后修改密码，再删除该文件。普通账号的邮件注册和找回密码需要另行配置 SMTP。初始管理员的密码不会随常规启停或升级重置。
-
-`-SkipBuild` 同时跳过宿主产物和 Docker 镜像构建。仅当本机已有目标实例所需的三个匹配镜像时使用。只有 JAR 和 `dist/` 仍需构建镜像，首次克隆应使用正常 `init`。
+`-SkipBuild` 需要三个实例专用的匹配镜像已存在。首次克隆使用正常 `init`。
 
 ### 首次初始化与已有数据
 
@@ -37,6 +34,68 @@ pwsh -NoProfile -File ./script/deploy/ChenStack.ps1 -Action init
 
 恢复已有数据时保留实例的 `.runtime/<实例名>/`（env、Redis ACL、账本、发布授权）以及 Docker 命名卷；`up` 不会重建或重置它们。初始化新实例不会读取、覆盖或迁移已有实例的数据。
 
+## Windows 本机正式实例（G4）
+
+正式实例使用 `.runtime/prod/compose.json` 中的本机私有配置。首次迁移须以当前正式容器为依据，保存现行环境变量、命令、端口、健康检查和镜像 ID。现有命名卷和 `chen-stack-network` 按 external 引用。保留私有配置的访问控制，凭据、TLS 私钥、Redis ACL 和正式账本均不得纳入 Git。
+
+```powershell
+# PowerShell 7
+pwsh -NoProfile -File script/deploy/ChenStack.ps1 -Instance prod -Action check
+pwsh -NoProfile -File script/deploy/ChenStack.ps1 -Instance prod -Action status
+pwsh -NoProfile -File script/deploy/ChenStack.ps1 -Instance prod -Action up
+pwsh -NoProfile -File script/deploy/ChenStack.ps1 -Instance prod -Action stop
+pwsh -NoProfile -File script/deploy/ChenStack.ps1 -Instance prod -Action restart
+```
+
+`up` 启动已有正式容器，缺失时才从固定的本地镜像创建对应容器。`stop` 和 `restart` 只操作后端及两个前端。数据服务保持运行。Compose 不从仓库外加载配置，不拉取镜像，不构建镜像，不创建正式网络或数据卷。操作前核对项目内挂载、外部命名卷和 `D:\ChenStack-Backups`。当前 Redis 和 Qdrant 容器仍读取仓库内的 `.runtime/dev/redis` 和 `script/dev/rag-tls`，清理时须保留这些目录。下次重建对应容器时使用 `.runtime/prod` 内的配置副本。
+
+当前知识库模式下，验证本地候选制品后，可以仅替换后端。两项参数均填完整的本地镜像 ID（`sha256:…`）。
+
+```powershell
+pwsh -NoProfile -File ./script/deploy/ChenStack.ps1 -Instance prod -Action replace-backend -BackendImage $candidate -ExpectedBackendImage $current
+```
+
+脚本校验现有正式配置和后端身份，更新后端镜像引用，等待 readiness 并核对运行镜像。失败时恢复旧引用与镜像。保留旧镜像，在验收失败需要回退时交换两个 ID 重跑。使用 `RECOVER` 清单的旧发布模式继续使用受控发布流程。
+
+知识库启用时，AI 配置保存在 `.runtime/prod/ai/settings.yml`。旧文件缺少 `reply-style` 时使用简洁专业，首次保存配置时写入该字段。部署前核对并备份 Compose 和该 YAML。回退到仅识别旧字段的后端时，先停止后端，再在保留当前模式、模型参数、检索条数、额度及旧提示词的前提下，从 YAML 移除 `reply-style`，或恢复已经核对过的旧版 YAML。最后用原 Compose 和镜像启动，确认 5000 readiness 为 `UP`。
+
+私有配置中的后端关键字段如下，镜像占位符需替换为实测的完整镜像 ID。
+
+```yaml
+services:
+  backend:
+    image: sha256:<本机正式镜像ID>
+    container_name: chen-stack-backend
+    pull_policy: never
+    restart: unless-stopped
+    environment:
+      CHEN_RAG_RELEASE_MANIFEST_PATH: /release/manifest.json
+      CHEN_RAG_RELEASE_OPERATION_PATH: /release/operation-cfgfix.json
+      CHEN_RAG_RELEASE_ARTIFACT_PATH: /app/app.jar
+      AI_USAGE_LEDGER_PATH: /ai-usage/events.jsonl
+    volumes:
+      - type: bind
+        source: ./rag/control
+        target: /release
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ./rag/tls/qdrant-truststore.p12
+        target: /opt/java/openjdk/lib/security/cacerts
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ./ai-usage
+        target: /ai-usage
+        bind: {create_host_path: false}
+```
+
+切换后端挂载前，先导出容器内账本并验证完整性。确认现行清单、运行 JAR 和数据库 RECOVER 回执一致后，复制发布状态并逐文件校验 SHA256。旧 `operation.json` 随历史发布材料保留。正式运行状态与备份位置见 [AGENTS.md](../../AGENTS.md)。恢复备份时使用同版本服务，MySQL 使用 SQL 转储，Qdrant 使用原生集合快照，MinIO 使用数据归档恢复到兼容卷。恢复前另行核验目标卷及备份哈希。
+
+### 历史性能验收摘要
+
+性能优化 R2 的前端候选通过 262 项单测、13 个文件的 lint 检查和干净构建。浏览器回归使用隔离夹具，覆盖封面与首页生命周期。该轮保留了原运行容器和数据卷，正式用户端候选尚未部署。这份摘要保留构建与验收范围，供后续定位正式用户端制品来源。
+
 ## 日常运维
 
 | Action | 条件和实际行为 |
@@ -44,12 +103,12 @@ pwsh -NoProfile -File ./script/deploy/ChenStack.ps1 -Action init
 | `up` | 启动已有容器，等待基础设施与应用就绪，并校验宿主机连通性（端口发布 + 后端/前端 HTTP）。不会创建缺失容器，也不会应用新的 env。 |
 | `stop` | 停止该实例正在运行的容器，保留卷、容器和私有配置。 |
 | `restart` | 重启后端和两个前端，使用容器原有镜像、挂载和环境；结束后同样校验宿主机连通性。 |
-| `status`（默认） | 显示容器、镜像标识、后端健康、env 中的部署默认知识模式，并附一份宿主机连通性摘要。实际知识模式以管理端显示的数据库配置为准。 |
+| `status`（默认） | 显示容器、镜像标识、后端健康、env 中的部署默认知识模式，并附一份宿主机连通性摘要。实际知识模式以管理端显示的在线配置为准。 |
 | `doctor` | 只读诊断：Docker Engine、实例容器与历史容器、端口发布、Windows 监听与端口排除、容器网络、内外健康、前端访问与请求目标、后端日志。输出固定摘要并复制到剪贴板。 |
 | `repair-ports` | 端口发布异常的安全恢复。默认只诊断并打印命令；`-Apply` 才执行一次受控的 `docker restart`。条件、上限与受控实例边界见下文。 |
-| `upgrade` | 要求普通实例及可用的 MySQL。先保存当前应用镜像到 `:previous`，再构建、检查迁移，并按 Compose 配置更新应用容器。基础服务及其端口不更新。 |
+| `upgrade` | 要求普通实例及可用的 MySQL。先保存当前应用镜像到 `:previous`，确认现有库符合当前基线，再构建并按 Compose 配置更新应用容器。基础服务及其端口不更新。 |
 | `rollback` | 要求三个 `:previous` 镜像标签，按当前 Compose/env 恢复应用镜像。不会恢复旧配置或回滚数据库迁移。 |
-| `migrate` | 只对已有、可用的 MySQL 执行缺失的增量迁移。不启动应用或构建镜像。 |
+| `migrate` | 旧版恢复入口。检测到当前知识库表时拒绝执行。 |
 
 例如：
 
@@ -155,7 +214,7 @@ pwsh -NoProfile -File ./script/deploy/tests/Run-DeployTests.ps1
 
 三个套件依次执行，全部使用测试替身与临时实例，不会接触正式容器：
 
-- `Test-DeployStaticSafety.ps1`：语法、inspect 用法、只读边界、凭据字段与摘要字段的静态检查。
+- `Test-DeployStaticSafety.ps1`：语法、inspect 用法、只读边界、凭据与摘要字段，并检查正式源码、构建、部署和迁移输入对 `.work`、阶段目录及辰栈绝对源码路径的引用。
 - `ChenStackDoctor.Tests.ps1`：故障注入单元测试（端口未发布、端口占用、内部健康 DOWN、Engine 未启动、前端不可达、请求目标不一致、历史容器、恢复上限、受控边界、幂等、脱敏）。
 - `ChenStackDoctor.Cli.Tests.ps1`：用真实脚本进程 + Docker 替身 + loopback 测试服务跑的端到端用例，其中包含“`up` 在端口未发布时不得报告成功”。
 
@@ -169,9 +228,9 @@ pwsh -NoProfile -File ./script/deploy/tests/Run-DeployTests.ps1
 pwsh -NoProfile -File ./script/deploy/ChenStack.ps1 -Action upgrade -SkipBuild
 ```
 
-该命令仍检查待应用迁移，并按配置更新应用容器。进程重启不会重新注入 env。Redis 用户、ACL、健康检查密码文件和后端密码必须一致。修改 env 中的基础服务端口或密码不能单独完成既有实例的配置变更，需按该服务的持久化与轮换流程操作。
+该命令检查当前数据库结构，并按配置更新应用容器。进程重启不会重新注入 env。Redis 用户、ACL、健康检查密码文件和后端密码必须一致。修改 env 中的基础服务端口或密码不能单独完成既有实例的配置变更，需按该服务的持久化与轮换流程操作。
 
-本地持久目录为 `.runtime/<实例名>/ai-usage`。后端默认启用 `NORMAL_AI_USAGE` 并创建 `events.jsonl`，应用重建后继续使用原文件。MySQL、Redis、MinIO、RabbitMQ 和可选 Qdrant 使用 Docker 命名卷。
+本地持久目录为 `.runtime/<实例名>/ai-usage`。后端默认启用 `NORMAL_AI_USAGE` 并创建 `events.jsonl`，应用重建后继续使用原文件。MySQL、Redis、MinIO、RabbitMQ 和 Qdrant 使用 Docker 命名卷。
 
 ## 隔离实例
 
@@ -180,7 +239,7 @@ pwsh -NoProfile -File ./script/deploy/ChenStack.ps1 -Action init -Instance chens
 pwsh -NoProfile -File ./script/deploy/ChenStack.ps1 -Action status -Instance chenstack-test
 ```
 
-实例名以小写字母开头，后接小写字母、数字或连字符，最长 48 个字符。非默认实例的首次 `init` 需要 `-PortBase`，可选范围为 `1024..65525`。脚本检查从基准端口起连续 11 个 TCP 端口，基础安装绑定前 9 个，启用 Qdrant 时再绑定最后两个。后续操作只需继续指定相同实例名。
+实例名以小写字母开头，后接小写字母、数字或连字符，最长 48 个字符。非默认实例的首次 `init` 需要 `-PortBase`，可选范围为 `1024..65525`。脚本检查从基准端口起连续 11 个 TCP 端口。末两个端口用于 Qdrant。后续操作只需继续指定相同实例名。
 
 | 相对基准偏移 | 服务 | 示例宿主端口 |
 |---|---|---|
@@ -195,26 +254,13 @@ pwsh -NoProfile -File ./script/deploy/ChenStack.ps1 -Action status -Instance che
 ## 可选 Qdrant 与知识准备
 
 ```powershell
-pwsh -NoProfile -File ./script/deploy/ChenStack.ps1 -Action init -Instance chenstack-rag -PortBase 29200 -WithRag
+pwsh -NoProfile -File ./script/deploy/ChenStack.ps1 -Action init -Instance chenstack-rag -PortBase 29200
 ```
 
-`-WithRag` 用于全新实例，启用本地 `rag` Compose profile。脚本将后端 Qdrant 目标设为容器网络中的 `qdrant:6334`（本地无 TLS），并给空的 Qdrant Key 生成值。默认空的 Embedding Key 会让后端保持 `dev` 且 RAG 关闭。若初始化前已在所选 env 配置 Embedding Key，脚本会设为 `dev,rag` 并打开 RAG 开关。创建 Qdrant 不会导入任何知识或授权读取。既有实例不能靠重跑 `init` 或给 `up` 加 `-WithRag` 补建容器。
-
-发布内置知识须单独准备受控环境、已审校主题、独立凭据、清单与完成回执。默认的本地 Qdrant 参数不能直接通过受控预检。第一次体验知识问答可以按[主文档的 Wiki 流程](../../README.md#54-准备-wikirag-和混合问答)发布手动页面。
+新实例的后端通过 `qdrant:6334` 使用 TLS 和独立 API Key。安装时生成的证书、私钥和 Java 信任库保存在实例 `rag/tls` 目录。备份私有运行目录时保留这些文件。添加知识后系统按需创建文档向量集合。新实例的 G5/G6 知识功能从 `知识文档` 入口使用，自动处理需要配置真实的聊天与 Embedding 服务。
 
 ## 数据库迁移
 
-[基础 SQL](../../sql/chen_stack.sql)只在 MySQL 初始化空数据卷时导入。脚本按下表顺序检查标记，跳过已有项。
+当前首次安装只导入 [`sql/bootstrap/chen_stack_baseline.sql`](../../sql/bootstrap/chen_stack_baseline.sql)。种子包含管理员、内容管理员、普通用户角色及当前菜单、权限和角色关系。安装脚本核对用户表为空后，按角色编码创建两个本地演示账号。SQL 不包含已有用户、密码、初始知识和业务记录。当前知识处理无需预导入公共知识，第一次上传会从空库开始。
 
-| 顺序 | 文件（`sql/` 下） | 标记 |
-|---|---|---|
-| 1 | `g2_rag_catalog.sql` | 表 `rag_catalog_state` |
-| 2 | `g3_wiki_foundation.sql` | 表 `wiki_source` |
-| 3 | `g3_wiki_compiler.sql` | 表 `wiki_compile_budget` |
-| 4 | `g3_wiki_invalidation.sql` | 触发器 `wiki_article_changed` |
-| 5 | `g3_wiki_product.sql` | 表 `wiki_page` |
-| 6 | `g3_ai_knowledge_management.sql` | 菜单 `9300` |
-| 7 | `g3_ai_knowledge_configuration.sql` | 表 `ai_runtime_config` |
-
-出现部分迁移失败时先核对现场和标记。部署脚本不会删除卷，也不会自动执行 `sql/*_rollback.sql`。
-
+`sql/` 中的阶段迁移仅供对应历史版本恢复参考。当前首次安装和现有正式实例启停均无需运行历史脚本。`-Action migrate` 只保留为旧版恢复入口，遇到当前的知识库结构会拒绝执行。生产迁移应根据实际结构、备份和停写计划操作。

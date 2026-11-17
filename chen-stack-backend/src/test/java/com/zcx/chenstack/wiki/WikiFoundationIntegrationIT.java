@@ -59,6 +59,9 @@ class WikiFoundationIntegrationIT {
         manager = new DataSourceTransactionManager(dataSource);
         apply(Path.of("../sql/g2_rag_catalog.sql"));
         apply(Path.of("../sql/g3_wiki_foundation.sql"));
+        apply(Path.of("../sql/g3_wiki_compiler.sql"));
+        // G4：Wiki 预算/草稿/来源依赖已合并进 wiki_compile_job 与 wiki_compile_source
+        apply(Path.of("../sql/g4v3a_knowledge_schema.sql"));
         jdbc.execute("""
                 CREATE TABLE article (
                     id INT PRIMARY KEY, user_id INT NOT NULL, title VARCHAR(50) NOT NULL,
@@ -72,7 +75,9 @@ class WikiFoundationIntegrationIT {
     }
 
     @BeforeEach void resetOnlyOwnedFixture() throws Exception {
-        for (String table : List.of("wiki_draft","wiki_job_source","wiki_compile_job","wiki_source_snapshot","wiki_source","article","rag_source_state","rag_catalog_state")) {
+        // G4 合并后，编译来源直接引用任务；清理顺序必须先生成来源行
+        for (String table : List.of("wiki_compile_source","wiki_compile_attempt",
+                "wiki_compile_job","wiki_source_snapshot","wiki_source","article","rag_source_state","rag_catalog_state")) {
             jdbc.update("DELETE FROM " + table);
         }
         jdbc.update("""
@@ -163,7 +168,7 @@ class WikiFoundationIntegrationIT {
         assertEquals(job, wiki.prepare("same-request", List.of(source.id(), source.id()), CONTRACT));
         assertThrows(IllegalStateException.class, () -> wiki.prepare("same-request", List.of(source.id()), "d".repeat(64)));
         assertEquals(1, count("wiki_compile_job"));
-        assertEquals(1, count("wiki_job_source"));
+        assertEquals(1, count("wiki_compile_source"));
         assertEquals(List.of("same-request"), wiki.affectedJobs(ARTICLE));
     }
 
@@ -179,7 +184,7 @@ class WikiFoundationIntegrationIT {
             assertEquals(attempts.getFirst().get(10, TimeUnit.SECONDS), attempts.getLast().get(10, TimeUnit.SECONDS));
         }
         assertEquals(1, count("wiki_compile_job"));
-        assertEquals(1, count("wiki_job_source"));
+        assertEquals(1, count("wiki_compile_source"));
     }
 
     @Test void allOriginChangesBlockExistingInputsAndPersistInvalidationBeforeThrowing() {
@@ -232,9 +237,9 @@ class WikiFoundationIntegrationIT {
         String output = "# 合成草稿\nstatus: PUBLISHED\n仅是模型文本";
         Draft draft = freshFoundation().saveDraft("restart", output);
         assertEquals(draft, wiki.saveDraft("restart", output));
-        assertEquals("DRAFT", jdbc.queryForObject("SELECT state FROM wiki_draft WHERE request_id='restart'", String.class));
+        assertEquals("DRAFT_READY", jdbc.queryForObject("SELECT state FROM wiki_compile_job WHERE request_id='restart'", String.class));
         assertEquals(draft, freshFoundation().readDraft("restart"));
-        assertThrows(DataAccessException.class, () -> jdbc.update("UPDATE wiki_draft SET state='PUBLISHED' WHERE request_id='restart'"));
+        assertThrows(DataAccessException.class, () -> jdbc.update("UPDATE wiki_compile_job SET draft_body_hash=NULL WHERE request_id='restart'"));
         assertThrows(IllegalStateException.class, () -> wiki.saveDraft("restart", "不同候选"));
     }
 
@@ -249,7 +254,7 @@ class WikiFoundationIntegrationIT {
         jdbc.execute("CREATE TRIGGER reject_ready BEFORE UPDATE ON wiki_compile_job FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='synthetic job failure'");
         try { assertThrows(DataAccessException.class, () -> wiki.saveDraft("fault", "草稿正文")); }
         finally { jdbc.execute("DROP TRIGGER reject_ready"); }
-        assertEquals(0, count("wiki_draft"));
+        assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM wiki_compile_job WHERE request_id='fault' AND draft_markdown IS NOT NULL", Integer.class));
         assertEquals("QUEUED", jdbc.queryForObject("SELECT state FROM wiki_compile_job WHERE request_id='fault'", String.class));
     }
 
@@ -262,7 +267,7 @@ class WikiFoundationIntegrationIT {
         wiki.cancel("tamper");
         assertThrows(IllegalStateException.class, () -> wiki.inputs("tamper"));
         assertThrows(IllegalStateException.class, () -> wiki.saveDraft("tamper", "late output"));
-        assertEquals(0, count("wiki_draft"));
+        assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM wiki_compile_job WHERE request_id='fault' AND draft_markdown IS NOT NULL", Integer.class));
     }
 
     @Test void helpRequiresBothCurrentCatalogAndPersistedPublishedSourceWithoutChangingG2() throws Exception {
@@ -468,4 +473,3 @@ class WikiFoundationIntegrationIT {
         }
     }
 }
-

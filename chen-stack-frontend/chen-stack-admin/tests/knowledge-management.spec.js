@@ -5,10 +5,15 @@ import { createPinia, setActivePinia } from 'pinia'
 import RagManagement from '@/views/ai/rag/index.vue'
 import KnowledgeSearch from '@/views/ai/search/index.vue'
 import { knowledgeApi } from '@/api/knowledge'
+import {
+  analyzeKnowledgeImport, getKnowledgeImportAnalysis, listRecentKnowledgeImports,
+  saveKnowledgeImportDrafts, uploadKnowledgeFile,
+} from '@/api/knowledgeDoc'
 import { getMenuList } from '@/api/menu'
 import { useUserStore } from '@/stores/userStore'
 
 vi.mock('@/api/knowledge', () => ({ knowledgeApi: Object.fromEntries(['status', 'documents', 'document', 'versions', 'update', 'revoke', 'drafts', 'createDraft', 'updateDraft', 'discardDraft', 'publishDraft', 'pending', 'resume', 'test', 'usage'].map((key) => [key, vi.fn()])) }))
+vi.mock('@/api/knowledgeDoc', () => ({ uploadKnowledgeFile: vi.fn(), analyzeKnowledgeImport: vi.fn(), getKnowledgeImportAnalysis: vi.fn(), listRecentKnowledgeImports: vi.fn(), saveKnowledgeImportDrafts: vi.fn() }))
 vi.mock('@/api/menu', () => ({ getMenuList: vi.fn() }))
 vi.mock('@/api/user', () => ({ info: vi.fn() }))
 let wrapper
@@ -23,11 +28,19 @@ beforeEach(() => {
   knowledgeApi.drafts.mockResolvedValue({ data: [] })
   knowledgeApi.pending.mockResolvedValue({ data: [] })
   knowledgeApi.usage.mockResolvedValue({ data: [] })
+  listRecentKnowledgeImports.mockResolvedValue({ data: [] })
+  getKnowledgeImportAnalysis.mockResolvedValue({ data: { status: 'NOT_ANALYZED' } })
 })
 afterEach(() => { wrapper?.unmount(); window.document.body.innerHTML = ''; vi.restoreAllMocks() })
 async function open(component) { wrapper = mount(component, { attachTo: window.document.body, global: { plugins: [ElementPlus] } }); await flushPromises() }
 function button(text) { return [...window.document.querySelectorAll('button')].find((item) => item.textContent.trim() === text) }
 function dialogButtonIn(dialog, text) { return [...dialog.querySelectorAll('button')].find((item) => item.textContent.trim() === text) }
+function tabIn(dialog, text) { return [...dialog.querySelectorAll('.el-tabs__item')].find((item) => item.textContent.trim() === text) }
+async function openManualTab() {
+  const dialog = [...window.document.querySelectorAll('.el-dialog')].find((item) => item.textContent.includes('新增知识'))
+  tabIn(dialog, '文字添加').click(); await flushPromises()
+  return dialog
+}
 describe('AI知识管理产品体验', () => {
   it.each([
     ['rag', 'RAG 知识检索'],
@@ -54,12 +67,14 @@ describe('AI知识管理产品体验', () => {
     expect(wrapper.text()).not.toContain('知识列表暂未加载')
     expect(wrapper.find('.el-pagination').exists()).toBe(true)
   })
-  it('所有知识页面组件通过服务端菜单生成，未分配时不补造知识路由', async () => {
+  it('所有知识页面组件通过服务端菜单生成，已合并的旧知识文档菜单不会恢复', async () => {
     const children = ['rag', 'wiki', 'sources', 'tasks', 'search'].map((name, index) => ({ id: index + 2, parentId: 1, name, path: `/ai/${name}`, component: `/ai/${name}`, sort: index }))
+    children.push({ id: 99, parentId: 1, name: '知识文档', path: '/ai/documents', component: '/ai/documents', sort: 99 })
     getMenuList.mockResolvedValue({ data: [{ id: 1, parentId: 0, name: 'AI知识管理', path: '/ai', sort: 10 }, ...children] })
     const store = useUserStore()
     const routes = await store.loadMenusAndRoutes(true)
     expect(routes[0].children).toHaveLength(5)
+    expect(routes[0].children.some((route) => route.path === '/ai/documents')).toBe(false)
     expect(routes[0].children.every((route) => typeof route.component === 'function')).toBe(true)
     getMenuList.mockResolvedValue({ data: [] })
     expect(await store.loadMenusAndRoutes(true)).toEqual([])
@@ -80,7 +95,7 @@ describe('AI知识管理产品体验', () => {
     button('更新知识').click(); await flushPromises()
     const dialog = window.document.querySelector('.el-dialog')
     expect(button('确认更新').disabled).toBe(true)
-    const inputs = dialog.querySelectorAll('input')
+    const inputs = dialog.querySelectorAll('.editor input')
     inputs[1].value = 'v2'; inputs[1].dispatchEvent(new Event('input', { bubbles: true }))
     dialog.querySelector('input[type="checkbox"]').click(); await flushPromises()
     button('确认更新').click(); await flushPromises()
@@ -167,11 +182,14 @@ describe('AI知识管理产品体验', () => {
     await open(RagManagement)
     button('新增知识').click(); await flushPromises()
     const dialog = [...window.document.querySelectorAll('.el-dialog')].find((item) => item.textContent.includes('新增知识'))
-    const inputs = dialog.querySelectorAll('input')
+    expect(tabIn(dialog, '文档上传')).toBeTruthy()
+    expect(tabIn(dialog, '文字添加')).toBeTruthy()
+    await openManualTab()
+    const inputs = dialog.querySelectorAll('.editor input')
     inputs[0].value = '审核状态说明'; inputs[0].dispatchEvent(new Event('input', { bubbles: true }))
     const sourceSelect = wrapper.findAllComponents({ name: 'ElSelect' }).find((item) => String(item.props('placeholder') || '').includes('关联'))
     sourceSelect.vm.$emit('update:modelValue', '/creation/articlemanage'); await flushPromises()
-    const textareas = dialog.querySelectorAll('textarea')
+    const textareas = dialog.querySelectorAll('.editor textarea')
     textareas[0].value = '审核'; textareas[0].dispatchEvent(new Event('input', { bubbles: true }))
     textareas[1].value = '在文章管理查看审核状态。'; textareas[1].dispatchEvent(new Event('input', { bubbles: true }))
     await flushPromises()
@@ -189,6 +207,131 @@ describe('AI知识管理产品体验', () => {
     expect(knowledgeApi.publishDraft).toHaveBeenCalledWith('draft-1', expect.objectContaining({
       expectedGeneration: 5, confirmReviewed: true,
     }))
+  })
+
+  it('文字添加不要求用途页面和关键词，也允许保存草稿', async () => {
+    knowledgeApi.createDraft.mockResolvedValue({ data: { draftId: 'draft-manual' } })
+    await open(RagManagement)
+    button('新增知识').click(); await flushPromises()
+    const dialog = await openManualTab()
+    const inputs = dialog.querySelectorAll('.editor input')
+    inputs[0].value = '仅标题和正文'; inputs[0].dispatchEvent(new Event('input', { bubbles: true }))
+    const textareas = dialog.querySelectorAll('.editor textarea')
+    textareas[1].value = '这篇知识暂时不关联页面，也不填写关键词。'; textareas[1].dispatchEvent(new Event('input', { bubbles: true }))
+    await flushPromises()
+    const save = dialogButtonIn(dialog, '保存草稿')
+    expect(save.disabled).toBe(false)
+    save.click(); await flushPromises()
+    expect(knowledgeApi.createDraft).toHaveBeenCalledWith(expect.objectContaining({
+      title: '仅标题和正文', text: '这篇知识暂时不关联页面，也不填写关键词。',
+      version: 'manual-1', sourceUrl: '', keywords: [],
+    }))
+  })
+
+  it('文档上传分析后展示候选，编辑并排除后保存所选草稿', async () => {
+    const candidateA = { candidateId: 'a'.repeat(16), title: 'Redis 缓存穿透', content: '缓存穿透正文', keywords: ['缓存', '穿透'], sourceSection: '缓存穿透', sourceExcerpt: '缓存穿透是指查询不存在的数据', confidence: 0.9, reviewHints: [], reviewStatus: 'PENDING_REVIEW' }
+    const candidateB = { candidateId: 'b'.repeat(16), title: 'Redis 缓存击穿', content: '缓存击穿正文', keywords: ['击穿'], sourceSection: '缓存击穿', sourceExcerpt: '热点 key 过期', confidence: 0.8, reviewHints: [], reviewStatus: 'PENDING_REVIEW' }
+    uploadKnowledgeFile.mockResolvedValue({ data: { requestId: 'imp-1' } })
+    analyzeKnowledgeImport.mockResolvedValue({ data: { requestId: 'imp-1', originalFilename: 'Redis.md', title: 'Redis', sourceDocumentId: 5, sourceVersionId: 6, reviewStatus: 'PENDING_REVIEW', model: 'fake', candidates: [candidateA, candidateB], inputTruncated: false, candidatesTruncated: false, warning: '' } })
+    saveKnowledgeImportDrafts.mockResolvedValue({ data: { batchId: 'batch-1', saved: [{ candidateId: candidateA.candidateId, draft: { draftId: 'draft-1' } }], failed: [] } })
+    await open(RagManagement)
+    button('新增知识').click(); await flushPromises()
+    const dialog = [...window.document.querySelectorAll('.el-dialog')].find((item) => item.textContent.includes('新增知识'))
+    expect(tabIn(dialog, '文档上传').classList.contains('is-active')).toBe(true)
+    const fileInput = dialog.querySelector('input[type="file"]')
+    const file = new File(['# Redis\n缓存穿透'], 'Redis.md', { type: 'text/markdown' })
+    Object.defineProperty(fileInput, 'files', { value: [file], configurable: true })
+    fileInput.dispatchEvent(new Event('change', { bubbles: true }))
+    await flushPromises()
+    expect(dialog.textContent).toContain('Redis.md')
+    dialogButtonIn(dialog, '上传并分析').click(); await flushPromises()
+    expect(uploadKnowledgeFile).toHaveBeenCalledOnce()
+    expect(analyzeKnowledgeImport).toHaveBeenCalledWith('imp-1')
+    expect(dialog.textContent).toContain('Redis 缓存穿透')
+    expect(dialog.textContent).toContain('Redis 缓存击穿')
+    expect(dialog.textContent).toContain('来源文档 #5')
+    expect(dialog.textContent).toContain('来源版本 #6')
+
+    const editButton = [...dialog.querySelectorAll('button')].find((item) => item.textContent.trim() === '编辑')
+    editButton.click(); await flushPromises()
+    const titleInput = dialog.querySelector('.candidate-title-input input')
+    titleInput.value = 'Redis 缓存穿透（已编辑）'
+    titleInput.dispatchEvent(new Event('input', { bubbles: true }))
+    const excludeButtons = [...dialog.querySelectorAll('button')].filter((item) => item.textContent.trim() === '排除')
+    excludeButtons[1].click(); await flushPromises()
+    const save = dialogButtonIn(dialog, '保存所选草稿')
+    expect(save.disabled).toBe(false)
+    save.click(); await flushPromises()
+    expect(saveKnowledgeImportDrafts).toHaveBeenCalledOnce()
+    const [, payload] = saveKnowledgeImportDrafts.mock.calls[0]
+    expect(payload.candidates).toHaveLength(1)
+    expect(payload.candidates[0]).toMatchObject({ candidateId: candidateA.candidateId, title: 'Redis 缓存穿透（已编辑）', content: '缓存穿透正文', keywords: ['缓存', '穿透'] })
+  })
+
+  it('AI 分析失败显示 AI_ANALYSIS_FAILED 并允许重试，不生成空草稿', async () => {
+    uploadKnowledgeFile.mockResolvedValue({ data: { requestId: 'imp-2' } })
+    analyzeKnowledgeImport.mockRejectedValue(Object.assign(new Error('AI分析服务暂时不可用'), { response: { data: { msg: 'AI分析服务暂时不可用，文件已保留' }, headers: { 'x-error-code': 'AI_ANALYSIS_FAILED' } } }))
+    await open(RagManagement)
+    button('新增知识').click(); await flushPromises()
+    const dialog = [...window.document.querySelectorAll('.el-dialog')].find((item) => item.textContent.includes('新增知识'))
+    const fileInput = dialog.querySelector('input[type="file"]')
+    Object.defineProperty(fileInput, 'files', { value: [new File(['x'], 'a.md', { type: 'text/markdown' })], configurable: true })
+    fileInput.dispatchEvent(new Event('change', { bubbles: true }))
+    await flushPromises()
+    dialogButtonIn(dialog, '上传并分析').click(); await flushPromises()
+    expect(dialog.textContent).toContain('AI_ANALYSIS_FAILED')
+    expect(dialog.textContent).toContain('重试分析')
+    expect(dialogButtonIn(dialog, '保存所选草稿').disabled).toBe(true)
+    expect(knowledgeApi.createDraft).not.toHaveBeenCalled()
+    expect(saveKnowledgeImportDrafts).not.toHaveBeenCalled()
+  })
+
+  it('最近导入任务可恢复已持久化的候选快照', async () => {
+    listRecentKnowledgeImports.mockResolvedValue({ data: [{ requestId: 'imp-restore', originalFilename: 'Redis-cache.md', status: 'PARSED', analysisStatus: 'COMPLETED', candidateCount: 1, createdAt: '2026-11-10T10:00:00Z' }] })
+    getKnowledgeImportAnalysis.mockResolvedValue({ data: { status: 'COMPLETED', requestId: 'imp-restore', originalFilename: 'Redis-cache.md', title: 'Redis', sourceDocumentId: 5, sourceVersionId: 6, reviewStatus: 'PENDING_REVIEW', model: 'fake', candidates: [{ candidateId: 'c'.repeat(16), title: '恢复的候选', content: '恢复正文', keywords: ['恢复'], sourceSection: '章节', sourceExcerpt: '', confidence: 0.9, reviewHints: [], reviewStatus: 'PENDING_REVIEW' }], inputTruncated: false, candidatesTruncated: false, warning: '' } })
+    await open(RagManagement)
+    button('新增知识').click(); await flushPromises()
+    const dialog = [...window.document.querySelectorAll('.el-dialog')].find((item) => item.textContent.includes('新增知识'))
+    expect(dialog.textContent).toContain('最近上传')
+    expect(dialog.textContent).toContain('Redis-cache.md')
+    const restore = [...dialog.querySelectorAll('button')].find((item) => item.textContent.trim() === '恢复候选')
+    expect(restore).toBeTruthy()
+    restore.click(); await flushPromises()
+    expect(getKnowledgeImportAnalysis).toHaveBeenCalledWith('imp-restore')
+    expect(dialog.textContent).toContain('AI 分析完成')
+    expect(dialog.textContent).toContain('恢复的候选')
+    expect(dialogButtonIn(dialog, '保存所选草稿').disabled).toBe(false)
+  })
+
+  it('最近导入任务显示分析错误并可重试', async () => {
+    listRecentKnowledgeImports.mockResolvedValue({ data: [{ requestId: 'imp-failed', originalFilename: 'Redis.md', status: 'PARSED', analysisStatus: 'FAILED', analysisErrorCode: 'AI_ANALYSIS_FAILED', candidateCount: 0, createdAt: '2026-11-10T10:00:00Z' }] })
+    getKnowledgeImportAnalysis.mockResolvedValue({ data: { status: 'FAILED', requestId: 'imp-failed', originalFilename: 'Redis.md', errorCode: 'AI_ANALYSIS_FAILED', errorMessage: 'AI分析服务暂时不可用', candidates: [] } })
+    await open(RagManagement)
+    button('新增知识').click(); await flushPromises()
+    const dialog = [...window.document.querySelectorAll('.el-dialog')].find((item) => item.textContent.includes('新增知识'))
+    expect(dialog.textContent).toContain('AI_ANALYSIS_FAILED')
+    const errorButton = [...dialog.querySelectorAll('button')].find((item) => item.textContent.trim() === '查看错误')
+    errorButton.click(); await flushPromises()
+    expect(dialog.textContent).toContain('AI_ANALYSIS_FAILED')
+    expect(dialog.textContent).toContain('重试分析')
+  })
+
+  it('未关联页面的通用知识草稿可以正常发布', async () => {
+    knowledgeApi.drafts.mockResolvedValue({ data: [{ draftId: 'd-general', title: 'Redis 通用技术知识', text: 'Redis 过期键删除策略说明。', version: 'ai-1', sourceUrl: null, sourceUrlLabel: '全站通用（未关联页面）', keywords: [], state: 'DRAFT', updatedAt: '2026-11-10 20:00:00' }] })
+    knowledgeApi.publishDraft.mockResolvedValue({ data: { operationId: 'manage-general', status: 'COMPLETED', generation: 6 } })
+    await open(RagManagement)
+    const draftsButton = [...window.document.querySelectorAll('button')].find((item) => item.textContent.includes('知识草稿'))
+    draftsButton.click(); await flushPromises()
+    const draftsDialog = [...window.document.querySelectorAll('.el-dialog')].find((item) => item.textContent.includes('知识草稿'))
+    dialogButtonIn(draftsDialog, '预览并发布').click(); await flushPromises()
+    const publishDialog = [...window.document.querySelectorAll('.el-dialog')].find((item) => item.textContent.includes('发布前核对'))
+    expect(publishDialog.textContent).toContain('全站通用')
+    const confirm = dialogButtonIn(publishDialog, '确认发布')
+    expect(confirm.disabled).toBe(true)
+    publishDialog.querySelector('input[type="checkbox"]').click(); await flushPromises()
+    expect(confirm.disabled).toBe(false)
+    confirm.click(); await flushPromises()
+    expect(knowledgeApi.publishDraft).toHaveBeenCalledWith('d-general', expect.objectContaining({ confirmReviewed: true }))
   })
 
   it('知识详情展示被替换的历史版本正文', async () => {

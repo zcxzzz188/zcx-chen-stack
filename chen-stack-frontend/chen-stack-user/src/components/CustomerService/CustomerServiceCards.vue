@@ -38,9 +38,18 @@ onUnmounted(() => { mounted = false })
 watch(() => props.event, value => { current.value = value })
 const stillCurrent = userId => mounted && userId === userStore.user?.id
 
+const follow = async (target) => {
+  const userId = userStore.user?.id
+  const origin = router.currentRoute?.value.fullPath
+  const failure = await router.push(target)
+  if (!failure && stillCurrent(userId)) emit('navigate', origin)
+}
 const navigate = async () => {
-  await router.push(navigationTarget(current.value.action, undefined, userStore.user?.id))
-  if (mounted) emit('navigate')
+  try {
+    await follow(navigationTarget(current.value.action, undefined, userStore.user?.id))
+  } catch {
+    if (mounted) ElMessage.error('暂时无法打开页面')
+  }
 }
 const loadPage = async page => {
   const userId = userStore.user?.id
@@ -59,8 +68,7 @@ const edit = async article => {
   try {
     const response = await getEditableArticle(article.articleId)
     if (stillCurrent(userId) && response.data?.articleId === article.articleId && response.data?.canEdit === true) {
-      await router.push(navigationTarget('OPEN_EDIT_ARTICLE', response.data))
-      if (mounted) emit('navigate')
+      await follow(navigationTarget('OPEN_EDIT_ARTICLE', response.data))
     }
   } catch {
     if (stillCurrent(userId)) current.value = { type: 'ERROR_STATE', text: '文章已不可编辑或登录已失效，请重新查询。', action: 'RETRY_ARTICLES' }

@@ -30,12 +30,8 @@ public class WikiAdminController {
                           @NotEmpty @Size(max=16) List<@NotNull @Positive Long> snapshotIds,
                           @Size(max=16) Set<@NotBlank @Size(max=100) String> topics) {}
     public record CreateRevision(@NotBlank @Size(max=80) String requestId, @Positive Long pageId,
-                                 @NotBlank @Size(max=160) String title, @NotBlank @Size(max=500) String summary,
+                                 @NotBlank @Size(max=160) String title, @Size(max=500) String summary,
                                  @Size(max=900000) String markdown) {}
-    public record ManualPage(@NotBlank @Pattern(regexp="[A-Za-z0-9_.:-]{1,80}") String requestId,
-                             @NotEmpty @Size(max=16) List<@NotNull @Positive Long> snapshotIds,
-                             @NotBlank @Size(max=160) String title, @NotBlank @Size(max=500) String summary,
-                             @NotBlank @Size(max=900000) String markdown) {}
     public record PageEdit(@NotBlank @Size(max=160) String title, @NotBlank @Size(max=500) String summary,
                            @NotBlank @Size(max=900000) String markdown) {}
     public record Hash(@NotNull @Pattern(regexp="[a-f0-9]{64}") String bodyHash) {}
@@ -73,11 +69,6 @@ public class WikiAdminController {
     }
     @GetMapping("/pages/{id}") public Result<ManagedPageDetail> page(@PathVariable long id) {
         return Result.success(publication.pageDetail(id));
-    }
-    @PreAuthorize("@adminSecurity.hasKnowledgePermission('ai:wiki:edit')")
-    @PostMapping("/pages") public Result<Revision> createManual(@Valid @RequestBody ManualPage request) {
-        return Result.success(publication.createManual(request.requestId(), request.snapshotIds(), request.title(),
-                request.summary(), request.markdown()));
     }
     @PreAuthorize("@adminSecurity.hasKnowledgePermission('ai:wiki:edit')")
     @PostMapping("/pages/{id}/revisions") public Result<Revision> editPage(@PathVariable long id, @Valid @RequestBody PageEdit request) {

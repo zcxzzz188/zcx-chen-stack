@@ -21,7 +21,7 @@ import java.util.function.Supplier;
  * 每个调用拥有短事务；不可把返回快照缓存后绕过 inputs/readDraft 的当前来源校验。
  */
 public final class WikiFoundation {
-    public enum SourceType { ARTICLE, PLATFORM_HELP }
+    public enum SourceType { ARTICLE, PLATFORM_HELP, KNOWLEDGE_DOC }
 
     public record SourceKey(SourceType type, String id) {
         public SourceKey {
@@ -130,52 +130,10 @@ public final class WikiFoundation {
                 throw new IllegalStateException("WIKI_REQUEST_ID_CONFLICT");
             }
             for (Snapshot snapshot : sources) {
-                jdbc.update("INSERT INTO wiki_job_source(request_id,snapshot_id) VALUES(?,?) ON DUPLICATE KEY UPDATE snapshot_id=snapshot_id",
+                jdbc.update("INSERT INTO wiki_compile_source(request_id,snapshot_id,topic_key) VALUES(?,?,'') ON DUPLICATE KEY UPDATE topic_key=topic_key",
                         requestId, snapshot.id());
             }
             return job;
-        });
-    }
-
-    /** 管理员人工编写的草稿：仍绑定已授权来源快照，不调用模型、不伪造编译结果。 */
-    public Draft createManualDraft(String requestId, List<Long> snapshotIds, String title, String summary,
-                                   String markdown) {
-        int actor = operator("ai:wiki:edit");
-        requestId(requestId);
-        if (title == null || title.isBlank() || title.length() > 160 || summary == null || summary.isBlank()
-                || summary.length() > 500 || markdown == null || markdown.isBlank()
-                || markdown.getBytes(StandardCharsets.UTF_8).length > 900_000) {
-            throw new IllegalArgumentException("WIKI_MANUAL_CONTENT_INVALID");
-        }
-        List<Long> ids = ids(snapshotIds);
-        String contract = KnowledgeCatalog.hash("WIKI_MANUAL_AUTHORING_V1|user:" + actor);
-        return checked(() -> load(ids), sources -> {
-            String manifest = KnowledgeCatalog.hash(contract + ":" +
-                    sources.stream().map(s -> s.id() + ":" + s.material().fingerprint()).toList());
-            jdbc.update("""
-                    INSERT INTO wiki_compile_job(request_id,manifest_hash,contract_hash,state)
-                    VALUES(?,?,?,'DRAFT_READY') ON DUPLICATE KEY UPDATE request_id=request_id
-                    """, requestId, manifest, contract);
-            Job job = job(requestId);
-            if (!manifest.equals(job.manifestHash()) || !contract.equals(job.contractHash())
-                    || !"DRAFT_READY".equals(job.state())) {
-                throw new IllegalStateException("WIKI_REQUEST_ID_CONFLICT");
-            }
-            for (Snapshot snapshot : sources) {
-                jdbc.update("INSERT INTO wiki_job_source(request_id,snapshot_id) VALUES(?,?) ON DUPLICATE KEY UPDATE snapshot_id=snapshot_id",
-                        requestId, snapshot.id());
-            }
-            String bodyHash = KnowledgeCatalog.hash(markdown);
-            List<Draft> existing = drafts(requestId);
-            if (!existing.isEmpty()) {
-                if (!bodyHash.equals(existing.getFirst().bodyHash()) || !markdown.equals(existing.getFirst().markdown())) {
-                    throw new IllegalStateException("WIKI_DRAFT_CONFLICT");
-                }
-                return existing.getFirst();
-            }
-            jdbc.update("INSERT INTO wiki_draft(request_id,markdown,body_hash,state) VALUES(?,?,?,'DRAFT')",
-                    requestId, markdown, bodyHash);
-            return new Draft(requestId, markdown, bodyHash);
         });
     }
 
@@ -253,7 +211,7 @@ public final class WikiFoundation {
             }
             if (!Set.of("QUEUED", "RUNNING").contains(job.state())) throw new IllegalStateException("WIKI_JOB_NOT_QUEUED");
             metadata.run();
-            jdbc.update("INSERT INTO wiki_draft(request_id,markdown,body_hash,state) VALUES(?,?,?,'DRAFT')", requestId, markdown, bodyHash);
+            jdbc.update("UPDATE wiki_compile_job SET draft_markdown=?,draft_body_hash=?,draft_created_at=CURRENT_TIMESTAMP(6) WHERE request_id=?", markdown, bodyHash, requestId);
             if (jdbc.update("UPDATE wiki_compile_job SET state='DRAFT_READY' WHERE request_id=? AND state IN ('QUEUED','RUNNING')", requestId) != 1) {
                 throw new IllegalStateException("WIKI_JOB_CONFLICT");
             }
@@ -296,7 +254,7 @@ public final class WikiFoundation {
     public List<String> affectedJobs(SourceKey key) {
         operator();
         return transaction.execute(status -> jdbc.queryForList("""
-                SELECT DISTINCT d.request_id FROM wiki_job_source d
+                SELECT DISTINCT d.request_id FROM wiki_compile_source d
                 JOIN wiki_source_snapshot s ON s.id=d.snapshot_id
                 JOIN wiki_source o ON o.id=s.source_id
                 WHERE o.source_type=? AND o.source_key=? ORDER BY d.request_id
@@ -377,13 +335,13 @@ public final class WikiFoundation {
     }
 
     private List<Long> jobSources(String id) {
-        List<Long> rows = jdbc.queryForList("SELECT snapshot_id FROM wiki_job_source WHERE request_id=? ORDER BY snapshot_id", Long.class, id);
+        List<Long> rows = jdbc.queryForList("SELECT snapshot_id FROM wiki_compile_source WHERE request_id=? AND topic_key='' ORDER BY snapshot_id", Long.class, id);
         if (rows.isEmpty()) throw new IllegalStateException("WIKI_JOB_NOT_FOUND");
         return ids(rows);
     }
 
     private List<Draft> drafts(String id) {
-        return jdbc.query("SELECT request_id,markdown,body_hash FROM wiki_draft WHERE request_id=? AND state='DRAFT'",
+        return jdbc.query("SELECT request_id,draft_markdown AS markdown,draft_body_hash AS body_hash FROM wiki_compile_job WHERE request_id=? AND draft_markdown IS NOT NULL",
                 (rs, n) -> new Draft(rs.getString(1), rs.getString(2), rs.getString(3)), id);
     }
 
@@ -413,4 +371,3 @@ public final class WikiFoundation {
         if (value == null || !value.matches("[a-f0-9]{64}")) throw new IllegalArgumentException("WIKI_HASH_INVALID");
     }
 }
-

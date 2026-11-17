@@ -14,13 +14,16 @@ final class WikiCompilationStore {
 
     void open(String requestId, String model, WikiCompilationService.Options options) {
         jdbc.update("""
-                INSERT INTO wiki_compile_budget(request_id,model,max_calls,max_units,output_tokens,deadline_at)
-                VALUES(?,?,?,?,?,TIMESTAMPADD(MICROSECOND,?,CURRENT_TIMESTAMP(6)))
-                """, requestId, model, options.maxCalls(), options.maxUnits(), options.outputTokens(), options.timeout().toNanos() / 1000);
+                UPDATE wiki_compile_job
+                SET model=?,max_calls=?,max_units=?,output_tokens=?,
+                    deadline_at=TIMESTAMPADD(MICROSECOND,?,CURRENT_TIMESTAMP(6))
+                WHERE request_id=?
+                """, model, options.maxCalls(), options.maxUnits(), options.outputTokens(),
+                options.timeout().toNanos() / 1000, requestId);
     }
 
     Attempt reserve(String requestId, String phase, int bytes) {
-        var limits = jdbc.queryForMap("SELECT * FROM wiki_compile_budget WHERE request_id=? FOR UPDATE", requestId);
+        var limits = jdbc.queryForMap("SELECT max_calls,max_units,output_tokens,deadline_at,first_stop FROM wiki_compile_job WHERE request_id=? FOR UPDATE", requestId);
         if (expired(requestId)) throw new IllegalStateException("WIKI_COMPILE_TIMEOUT");
         int count = Objects.requireNonNull(jdbc.queryForObject("SELECT COUNT(*) FROM wiki_compile_attempt WHERE request_id=?", Integer.class, requestId));
         Long used = jdbc.queryForObject("SELECT COALESCE(SUM(reserved_units),0) FROM wiki_compile_attempt WHERE request_id=?", Long.class, requestId);
@@ -50,11 +53,11 @@ final class WikiCompilationStore {
     }
 
     void stop(String requestId, String reason) {
-        jdbc.update("UPDATE wiki_compile_budget SET first_stop=COALESCE(first_stop,?) WHERE request_id=?", reason, requestId);
+        jdbc.update("UPDATE wiki_compile_job SET first_stop=COALESCE(first_stop,?) WHERE request_id=?", reason, requestId);
     }
 
     boolean expired(String requestId) {
-        return Boolean.TRUE.equals(jdbc.queryForObject("SELECT deadline_at<=CURRENT_TIMESTAMP(6) FROM wiki_compile_budget WHERE request_id=?", Boolean.class, requestId));
+        return Boolean.TRUE.equals(jdbc.queryForObject("SELECT deadline_at<=CURRENT_TIMESTAMP(6) FROM wiki_compile_job WHERE request_id=?", Boolean.class, requestId));
     }
 
     void abandon(String requestId) {
@@ -64,23 +67,24 @@ final class WikiCompilationStore {
 
     void topics(String requestId, WikiDraftCompiler.Result result) {
         result.dependencies().forEach((topic, sources) -> sources.forEach(snapshot -> jdbc.update(
-                "INSERT INTO wiki_compile_topic(request_id,topic_key,snapshot_id) VALUES(?,?,?)", requestId, topic, snapshot)));
+                "INSERT INTO wiki_compile_source(request_id,topic_key,snapshot_id) VALUES(?,?,?)", requestId, topic, snapshot)));
     }
 
     Set<String> knownTopics() {
-        return new TreeSet<>(jdbc.queryForList("SELECT DISTINCT topic_key FROM wiki_compile_topic ORDER BY topic_key LIMIT 128", String.class));
+        return new TreeSet<>(jdbc.queryForList("SELECT DISTINCT topic_key FROM wiki_compile_source WHERE topic_key<>'' ORDER BY topic_key LIMIT 128", String.class));
     }
 
     List<AffectedTopic> affected(WikiFoundation.SourceKey source) {
         List<Map<String, Object>> rows = jdbc.queryForList("""
-                SELECT DISTINCT t.request_id,t.topic_key FROM wiki_compile_topic t
+                SELECT DISTINCT t.request_id,t.topic_key FROM wiki_compile_source t
                 JOIN wiki_source_snapshot s ON s.id=t.snapshot_id JOIN wiki_source o ON o.id=s.source_id
-                WHERE o.source_type=? AND o.source_key=? ORDER BY t.request_id,t.topic_key
+                WHERE o.source_type=? AND o.source_key=? AND t.topic_key<>''
+                ORDER BY t.request_id,t.topic_key
                 """, source.type().name(), source.id());
         return rows.stream().map(row -> {
             String request = (String) row.get("request_id"), topic = (String) row.get("topic_key");
             return new AffectedTopic(request, topic, jdbc.queryForList(
-                    "SELECT snapshot_id FROM wiki_compile_topic WHERE request_id=? AND topic_key=? ORDER BY snapshot_id", Long.class, request, topic));
+                    "SELECT snapshot_id FROM wiki_compile_source WHERE request_id=? AND topic_key=? ORDER BY snapshot_id", Long.class, request, topic));
         }).toList();
     }
 }

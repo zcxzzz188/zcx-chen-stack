@@ -12,6 +12,13 @@ Object.assign(modules, import.meta.glob('../views/**/*.vue'))
 // 导入 404 组件
 Object.assign(modules, import.meta.glob('../components/404.vue'))
 
+// 旧版“知识文档”独立入口已合并到“知识库 → 新增知识”。
+// 后端菜单停用脚本见 sql/g4_knowledge_menu_retire.sql；这里再做一次导航兜底，
+// 避免旧菜单缓存或尚未执行停用 SQL 的环境重新出现两个录入入口。
+const removeRetiredMenus = (items) => (items || [])
+  .filter((item) => item.path !== '/ai/documents' || item.component === '/ai/library')
+  .map((item) => (Array.isArray(item.children) ? { ...item, children: removeRetiredMenus(item.children) } : item))
+
 export const useUserStore = defineStore('user', () => {
   const user = ref(null)
   const menus = ref([])
@@ -83,8 +90,8 @@ export const useUserStore = defineStore('user', () => {
     try {
       const res = await getMenuList()
 
-      // 按照 sort 排序并树形化
-      menus.value = formatMenu(res.data)
+      // 按照 sort 排序并树形化；同时移除已合并的旧知识文档入口。
+      menus.value = removeRetiredMenus(formatMenu(res.data))
 
       //生成路由
       routes.value = generateRoutes(menus.value)

@@ -11,7 +11,8 @@ public final class WikiViews {
     public record Job(String requestId, String state, String createdAt, String model, Integer maxCalls,
                       long usedCalls, Long maxUnits, long usedUnits, String firstStop, List<String> topics) {}
     public record Draft(String requestId, String markdown, String bodyHash, String manifestHash, String compilerVersion,
-                        String createdAt, List<Source> sources, List<String> topics, List<String> conflicts) {}
+                        String createdAt, List<Source> sources, List<String> topics, List<String> conflicts,
+                        String title, String summary) {}
     public record Revision(long id, long pageId, int version, String requestId, String title, String summary,
                            String markdown, String state, String bodyHash, String manifestHash, String createdAt, boolean current) {}
     public record ManagedPage(long id, String title, Integer currentVersion, boolean withdrawn, boolean publicEligible,

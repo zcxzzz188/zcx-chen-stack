@@ -17,6 +17,8 @@ import java.util.*;
 
 /** 复用正式知识目录和检索链，不把数据库行或索引参数暴露为管理契约。 */
 @Service
+@org.springframework.boot.autoconfigure.condition.ConditionalOnProperty(
+        prefix = "chen.knowledge.simple", name = "enabled", havingValue = "false", matchIfMissing = true)
 @lombok.extern.slf4j.Slf4j
 public class AiKnowledgeManagementService {
     public record Page<T>(List<T> items, long total, int page, int size) {}
@@ -24,7 +26,8 @@ public class AiKnowledgeManagementService {
                            String sourceUrl, String visibility, String reviewStatus, Instant updatedAt,
                            List<String> keywords, String contentHash, long generation, boolean effective) {}
     public record Draft(String draftId, String sourceId, String title, String text, String version, String sourceUrl,
-                        String sourceUrlLabel, List<String> keywords, String state, String updatedAt, String operator) {}
+                        String sourceUrlLabel, List<String> keywords, String state, String updatedAt, String operator,
+                        String sourceRef) {}
     public record Version(String version, String title, String text, String sourceUrl, String sourceUrlLabel,
                           List<String> keywords, String contentHash, String state, String archivedAt, String operator) {}
     public record Status(String mode, List<String> supportedModes, Map<String, Object> rag,
@@ -44,6 +47,8 @@ public class AiKnowledgeManagementService {
     private final ObjectProvider<WikiPublicationService> wiki;
     private final JdbcTemplate jdbc;
     private final RagKnowledgeAdministration administration;
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.zcx.chenstack.knowledge.KnowledgeDocRetrievalService docRetrieval;
 
     public AiKnowledgeManagementService(CatalogLifecycle lifecycle, RagKnowledgeService rag,
             AiKnowledgeProperties properties, AdminSecurity security, ObjectProvider<WikiPublicationService> wiki) {
@@ -128,52 +133,195 @@ public class AiKnowledgeManagementService {
         String q = query == null ? "" : query.strip();
         if (q.length() > 80) throw bad();
         return jdbc.query("""
-                SELECT id,source_id,title,text,version,source_url,keywords_json,state,updated_by,updated_at
-                FROM rag_knowledge_draft WHERE state='DRAFT' AND (?='' OR LOCATE(?,title)>0)
-                ORDER BY updated_at DESC,id DESC LIMIT 100
+                SELECT d.id,d.source_key,d.title,v.normalized_body,v.version_label,d.source_url,
+                       d.keywords_json,d.review_status,d.updated_by,d.updated_at,d.origin_ref
+                FROM knowledge_document d
+                JOIN knowledge_document_version v ON v.document_id=d.id AND v.state='DRAFT'
+                WHERE d.review_status='DRAFT' AND d.document_kind='PLATFORM_HELP'
+                  AND d.deleted=FALSE AND (?='' OR LOCATE(?,d.title)>0)
+                ORDER BY d.updated_at DESC,d.id DESC LIMIT 100
                 """, (rs, index) -> draft(rs.getString(1), rs.getString(2), rs.getString(3), rs.getString(4),
                 rs.getString(5), rs.getString(6), rs.getString(7), rs.getString(8),
-                time(rs.getTimestamp(10)), nickname(rs.getInt(9))), q, q);
+                time(rs.getTimestamp(10)), nickname(rs.getInt(9)), rs.getString(11)), q, q);
     }
 
     public Draft createDraft(String title, String text, String version, String sourceUrl, List<String> keywords) {
         require("ai:rag:manage");
         requireStorage();
         DraftInput input = validateDraft(title, text, version, sourceUrl, keywords);
-        String id = "draft-" + UUID.randomUUID();
         String sourceId = "help-managed-" + UUID.randomUUID().toString().replace("-", "").substring(0, 16);
         int actor = SecurityUtils.getUserId();
+        var keys = new org.springframework.jdbc.support.GeneratedKeyHolder();
+        jdbc.update(connection -> {
+            var insert = connection.prepareStatement("""
+                    INSERT INTO knowledge_document(source_key,document_kind,mirror_mode,source_ref_kind,source_url,
+                        origin_ref,title,visibility,review_status,publish_status,keywords_json,created_by,
+                        created_by_kind,updated_by,updated_by_kind)
+                    VALUES(?,'PLATFORM_HELP','AUTHORITATIVE',?,?,'admin-draft',?,'INTERNAL',
+                        'DRAFT','UNPUBLISHED',?,?,'USER',?,'USER')
+                    """, java.sql.Statement.RETURN_GENERATED_KEYS);
+            insert.setString(1, sourceId);
+            insert.setString(2, input.sourceRefKind());
+            insert.setString(3, input.sourceUrl());
+            insert.setString(4, input.title());
+            insert.setString(5, JSON.toJSONString(input.keywords()));
+            insert.setInt(6, actor);
+            insert.setInt(7, actor);
+            return insert;
+        }, keys);
+        long documentId = keys.getKey().longValue();
         jdbc.update("""
-                INSERT INTO rag_knowledge_draft(id,source_id,title,text,version,source_url,keywords_json,state,created_by,updated_by)
-                VALUES(?,?,?,?,?,?,?,'DRAFT',?,?)
-                """, id, sourceId, input.title, input.text, input.version, input.sourceUrl,
-                JSON.toJSONString(input.keywords), actor, actor);
-        return draftById(id);
+                INSERT INTO knowledge_document_version(document_id,version_no,version_label,raw_body,normalized_body,
+                    raw_format,normalized_sha256,char_length,body_available,body_provenance,state,created_by,created_by_kind)
+                VALUES(?,1,?,?,?,'TEXT',?,?,TRUE,'IMPORT','DRAFT',?,'USER')
+                """, documentId, input.version(), input.text(), input.text(),
+                com.zcx.chenstack.knowledge.KnowledgeChunker.contentHash(input.text()),
+                input.text().length(), actor);
+        return draftById(Long.toString(documentId));
     }
 
     public Draft updateDraft(String id, String title, String text, String version, String sourceUrl, List<String> keywords) {
         require("ai:rag:manage");
         requireStorage();
         DraftInput input = validateDraft(title, text, version, sourceUrl, keywords);
-        int updated = jdbc.update("""
-                UPDATE rag_knowledge_draft SET title=?,text=?,version=?,source_url=?,keywords_json=?,updated_by=?
-                WHERE id=? AND state='DRAFT'
-                """, input.title, input.text, input.version, input.sourceUrl, JSON.toJSONString(input.keywords),
-                SecurityUtils.getUserId(), id);
-        if (updated != 1) throw new WikiProductException(404, "知识草稿不存在或已发布");
+        int actor = SecurityUtils.getUserId();
+        long documentId;
+        try {
+            documentId = Long.parseLong(id);
+        } catch (NumberFormatException invalid) {
+            throw new WikiProductException(404, "知识草稿不存在或已发布");
+        }
+        int versions = jdbc.update("""
+                UPDATE knowledge_document_version
+                SET raw_body=?,normalized_body=?,version_label=?,normalized_sha256=?,char_length=?
+                WHERE document_id=? AND state='DRAFT'
+                """, input.text(), input.text(), input.version(),
+                com.zcx.chenstack.knowledge.KnowledgeChunker.contentHash(input.text()),
+                input.text().length(), documentId);
+        int documents = jdbc.update("""
+                UPDATE knowledge_document SET title=?,source_ref_kind=?,source_url=?,keywords_json=?,updated_by=?
+                WHERE id=? AND review_status='DRAFT' AND document_kind='PLATFORM_HELP' AND deleted=FALSE
+                """, input.title(), input.sourceRefKind(), input.sourceUrl(),
+                JSON.toJSONString(input.keywords()), actor, documentId);
+        if (versions != 1 || documents != 1) throw new WikiProductException(404, "知识草稿不存在或已发布");
         return draftById(id);
     }
 
     public void discardDraft(String id) {
         require("ai:rag:manage");
         requireStorage();
-        String sourceId = jdbc.query("SELECT source_id FROM rag_knowledge_draft WHERE id=? AND state='DRAFT'",
-                rs -> rs.next() ? rs.getString(1) : null, id);
-        if (sourceId == null) throw new WikiProductException(404, "知识草稿不存在或已发布");
+        long documentId;
+        try {
+            documentId = Long.parseLong(id);
+        } catch (NumberFormatException invalid) {
+            throw new WikiProductException(404, "知识草稿不存在或已发布");
+        }
+        List<Map<String, Object>> rows = jdbc.queryForList("""
+                SELECT d.source_key,d.review_status FROM knowledge_document d
+                WHERE d.id=? AND d.document_kind='PLATFORM_HELP' AND d.deleted=FALSE
+                """, documentId);
+        if (rows.isEmpty() || !"DRAFT".equals(rows.getFirst().get("review_status"))) {
+            throw new WikiProductException(404, "知识草稿不存在或已发布");
+        }
+        String sourceId = String.valueOf(rows.getFirst().get("source_key"));
         if (lifecycle.snapshot().source(sourceId) != null) {
             throw new WikiProductException(409, "该知识已发布，请刷新列表，不能按草稿删除");
         }
-        jdbc.update("DELETE FROM rag_knowledge_draft WHERE id=? AND state='DRAFT'", id);
+        jdbc.update("DELETE FROM knowledge_document_version WHERE document_id=? AND state='DRAFT'", documentId);
+        jdbc.update("DELETE FROM knowledge_document WHERE id=? AND review_status='DRAFT'", documentId);
+    }
+
+    /**
+     * 把一条 AI 候选知识保存为原有知识草稿，并保留来源导入任务、原始文档和版本。
+     *
+     * <p>{@code originRef} 同时承担幂等键：同一导入任务、同一条候选重复提交时复用原草稿，
+     * 不再生成第二份。只有管理员确认后的候选才会走这里，不会自动审核或发布。</p>
+     */
+    @org.springframework.transaction.annotation.Transactional
+    public Draft createDraftFromImport(String importRequestId, String title, String text, String version,
+                                       String sourceUrl, List<String> keywords, String originRef,
+                                       long sourceDocumentId, long sourceVersionId) {
+        require("ai:rag:manage");
+        requireStorage();
+        if (importRequestId == null || !importRequestId.matches("[A-Za-z0-9._-]{1,72}")
+                || originRef == null || !originRef.matches("imp:[A-Za-z0-9._-]{1,72}:[a-f0-9]{16}")) {
+            throw bad();
+        }
+        DraftInput input = validateDraft(title, text, version, sourceUrl, keywords);
+        int actor = SecurityUtils.getUserId();
+        List<Map<String, Object>> existing = jdbc.queryForList("""
+                SELECT id,review_status FROM knowledge_document
+                WHERE origin_ref=? AND document_kind='PLATFORM_HELP' AND deleted=FALSE
+                ORDER BY id LIMIT 1
+                """, originRef);
+        if (!existing.isEmpty()) {
+            long documentId = ((Number) existing.getFirst().get("id")).longValue();
+            if (!"DRAFT".equals(existing.getFirst().get("review_status"))) {
+                throw new WikiProductException(409, "该候选知识已存在且不再是草稿，未重复创建");
+            }
+            jdbc.update("""
+                    UPDATE knowledge_document_version
+                    SET raw_body=?,normalized_body=?,version_label=?,normalized_sha256=?,char_length=?
+                    WHERE document_id=? AND state='DRAFT'
+                    """, input.text(), input.text(), input.version(),
+                    com.zcx.chenstack.knowledge.KnowledgeChunker.contentHash(input.text()),
+                    input.text().length(), documentId);
+            jdbc.update("""
+                    UPDATE knowledge_document SET title=?,source_ref_kind=?,source_url=?,keywords_json=?,updated_by=?
+                    WHERE id=? AND review_status='DRAFT' AND document_kind='PLATFORM_HELP' AND deleted=FALSE
+                    """, input.title(), input.sourceRefKind(), input.sourceUrl(),
+                    JSON.toJSONString(input.keywords()), actor, documentId);
+            return draftById(Long.toString(documentId));
+        }
+        String sourceId = "help-managed-" + UUID.randomUUID().toString().replace("-", "").substring(0, 16);
+        var keys = new org.springframework.jdbc.support.GeneratedKeyHolder();
+        jdbc.update(connection -> {
+            var insert = connection.prepareStatement("""
+                    INSERT INTO knowledge_document(source_key,document_kind,mirror_mode,source_ref_kind,source_url,
+                        origin_ref,title,visibility,review_status,publish_status,keywords_json,created_by,
+                        created_by_kind,updated_by,updated_by_kind)
+                    VALUES(?,'PLATFORM_HELP','AUTHORITATIVE',?,?,?,?,'INTERNAL','DRAFT','UNPUBLISHED',?,?,'USER',?,'USER')
+                    """, java.sql.Statement.RETURN_GENERATED_KEYS);
+            insert.setString(1, sourceId);
+            insert.setString(2, input.sourceRefKind());
+            insert.setString(3, input.sourceUrl());
+            insert.setString(4, originRef);
+            insert.setString(5, input.title());
+            insert.setString(6, JSON.toJSONString(input.keywords()));
+            insert.setInt(7, actor);
+            insert.setInt(8, actor);
+            return insert;
+        }, keys);
+        long documentId = keys.getKey().longValue();
+        jdbc.update("""
+                INSERT INTO knowledge_document_version(document_id,version_no,version_label,raw_body,normalized_body,
+                    raw_format,normalized_sha256,char_length,body_available,body_provenance,state,created_by,created_by_kind)
+                VALUES(?,1,?,?,?,'TEXT',?,?,TRUE,'IMPORT','DRAFT',?,'USER')
+                """, documentId, input.version(), input.text(), input.text(),
+                com.zcx.chenstack.knowledge.KnowledgeChunker.contentHash(input.text()),
+                input.text().length(), actor);
+        Long versionId = jdbc.queryForObject("""
+                SELECT id FROM knowledge_document_version WHERE document_id=? AND state='DRAFT'
+                """, Long.class, documentId);
+        try {
+            storeAuditDraftCreated(importRequestId, documentId, versionId, originRef,
+                    sourceDocumentId, sourceVersionId, actor);
+        } catch (RuntimeException auditFailure) {
+            // 审计失败不能把已经保存的草稿伪装成失败；下次保存会按 originRef 复用并补记。
+            log.warn("AI候选知识草稿审计写入失败，原因类型={}", auditFailure.getClass().getSimpleName());
+        }
+        return draftById(Long.toString(documentId));
+    }
+
+    private void storeAuditDraftCreated(String importRequestId, long documentId, Long versionId, String originRef,
+                                        long sourceDocumentId, long sourceVersionId, int actor) {
+        jdbc.update("""
+                INSERT INTO knowledge_audit_log(request_id,document_id,version_id,import_task_id,actor_id,actor_kind,
+                    action,target_kind,reason_code,detail_json)
+                VALUES(?,?,?,?,?,'USER','CREATE','DOCUMENT','AI_CANDIDATE_DRAFT',?)
+                """, importRequestId, documentId, versionId, importRequestId, actor,
+                JSON.toJSONString(Map.of("originRef", originRef,
+                        "sourceDocumentId", sourceDocumentId, "sourceVersionId", sourceVersionId)));
     }
 
     /**
@@ -186,47 +334,78 @@ public class AiKnowledgeManagementService {
         if (!confirmReviewed) throw new WikiProductException(400, "请先预览正文并确认已审核");
         if (requestId == null || !requestId.matches("[A-Za-z0-9._-]{1,72}")) throw bad();
         requireStorage();
+        long documentId;
+        try {
+            documentId = Long.parseLong(id);
+        } catch (NumberFormatException invalid) {
+            throw new WikiProductException(404, "知识草稿不存在");
+        }
         List<Map<String, Object>> rows = jdbc.queryForList("""
-                SELECT source_id,title,text,version,source_url,keywords_json,state,publish_request_id,published_generation
-                FROM rag_knowledge_draft WHERE id=?
-                """, id);
+                SELECT d.source_key,d.title,d.review_status,d.publish_status,
+                       v.normalized_body,v.version_label,d.source_url,d.keywords_json
+                FROM knowledge_document d
+                JOIN knowledge_document_version v ON v.document_id=d.id AND v.state='DRAFT'
+                WHERE d.id=? AND d.document_kind='PLATFORM_HELP' AND d.deleted=FALSE
+                """, documentId);
         if (rows.isEmpty()) throw new WikiProductException(404, "知识草稿不存在");
         Map<String, Object> row = rows.getFirst();
-        String sourceId = String.valueOf(row.get("source_id"));
-        if ("PUBLISHED".equals(row.get("state"))) {
-            Object previousRequest = row.get("publish_request_id");
-            if (requestId.equals(previousRequest) && row.get("published_generation") != null) {
-                return new RagKnowledgeAdministration.Result("manage-" + requestId, "COMPLETED",
-                        ((Number) row.get("published_generation")).longValue());
+        String sourceId = String.valueOf(row.get("source_key"));
+        if ("PUBLISHED".equals(row.get("publish_status"))) {
+            RagKnowledgeAdministration.Result replay = administration.completedCreate(requestId, sourceId);
+            if (replay != null) {
+                return replay;
             }
             throw new WikiProductException(409, "该知识已经发布，请刷新列表");
         }
         // 客户端未收到已成功操作的响应时，按同一幂等键补记完成，不重复写目录或索引。
         RagKnowledgeAdministration.Result completed = administration.completedCreate(requestId, sourceId);
         if (completed != null) {
-            markDraftPublished(id, requestId, completed.generation());
+            markDraftPublished(documentId, requestId, completed.generation());
             return completed;
         }
         if (lifecycle.snapshot().source(sourceId) != null) {
             throw new WikiProductException(409, "该知识已经发布，请刷新列表");
         }
-        List<String> keywords = JSON.parseArray(String.valueOf(row.get("keywords_json")), String.class);
+        Object sourceUrlValue = row.get("source_url");
+        String sourceUrl = publishedSourceUrl(sourceUrlValue);
+        if (!KnowledgeCatalog.validSourceUrl(sourceUrl)) {
+            throw new WikiProductException(400, "发布前请先编辑草稿并选择用途页面");
+        }
+        String keywordsJson = row.get("keywords_json") == null ? null : String.valueOf(row.get("keywords_json"));
+        List<String> keywords = keywordsJson == null || keywordsJson.isBlank()
+                ? List.of() : JSON.parseArray(keywordsJson, String.class);
+        if (keywords == null) keywords = List.of();
+        String body = String.valueOf(row.get("normalized_body"));
         KnowledgeDocument addition = new KnowledgeDocument(sourceId, String.valueOf(row.get("title")),
-                String.valueOf(row.get("text")), String.valueOf(row.get("version")), "PLATFORM_HELP",
-                String.valueOf(row.get("source_url")), "PUBLIC", "DOCUMENT_REVIEWED", Instant.now(), keywords);
+                body, String.valueOf(row.get("version_label")), "PLATFORM_HELP",
+                sourceUrl, "PUBLIC", "DOCUMENT_REVIEWED", Instant.now(), keywords);
         RagKnowledgeAdministration.Result result = administration.create(addition, expectedGeneration, requestId,
                 SecurityUtils.getUserId());
         if ("COMPLETED".equals(result.status())) {
-            markDraftPublished(id, requestId, result.generation());
+            markDraftPublished(documentId, requestId, result.generation());
         }
         return result;
     }
 
-    private void markDraftPublished(String draftId, String requestId, long generation) {
+    private void markDraftPublished(long documentId, String requestId, long generation) {
+        int actor = SecurityUtils.getUserId();
         jdbc.update("""
-                UPDATE rag_knowledge_draft SET state='PUBLISHED',published_generation=?,published_at=CURRENT_TIMESTAMP(6),
-                    publish_request_id=?,updated_by=? WHERE id=? AND state='DRAFT'
-                """, generation, requestId, SecurityUtils.getUserId(), draftId);
+                UPDATE knowledge_document_version SET state='CURRENT',published_at=CURRENT_TIMESTAMP(6)
+                WHERE document_id=? AND state='DRAFT'
+                """, documentId);
+        List<Map<String, Object>> version = jdbc.queryForList("""
+                SELECT id,version_no,normalized_sha256 FROM knowledge_document_version
+                WHERE document_id=? AND state='CURRENT' ORDER BY version_no DESC LIMIT 1
+                """, documentId);
+        if (version.isEmpty()) return;
+        Map<String, Object> current = version.getFirst();
+        jdbc.update("""
+                UPDATE knowledge_document SET review_status='APPROVED',publish_status='PUBLISHED',
+                    current_published_version_id=?,current_version_no=?,content_sha256=?,updated_by=?
+                WHERE id=?
+                """, ((Number) current.get("id")).longValue(), ((Number) current.get("version_no")).intValue(),
+                String.valueOf(current.get("normalized_sha256")), actor, documentId);
+        jdbc.update("UPDATE rag_catalog_state SET generation=GREATEST(generation,?) WHERE id=1", generation);
     }
 
     /** 仅返回被替换/撤销的历史正文；当前正文以知识目录为准。 */
@@ -236,13 +415,16 @@ public class AiKnowledgeManagementService {
         source(lifecycle.snapshot(), sourceId);
         if (jdbc == null) return List.of();
         return jdbc.query("""
-                SELECT version,title,text,source_url,keywords_json,content_sha256,state,created_by,archived_at
-                FROM rag_knowledge_version WHERE source_id=? AND state<>'PENDING'
-                ORDER BY archived_at DESC,id DESC LIMIT 50
+                SELECT v.version_label,d.title,v.normalized_body,d.source_url,v.normalized_sha256,
+                       v.state,v.created_by,v.created_at
+                FROM knowledge_document_version v
+                JOIN knowledge_document d ON d.id=v.document_id
+                WHERE d.source_key=? AND v.state<>'DRAFT'
+                ORDER BY v.version_no DESC LIMIT 50
                 """, (rs, index) -> new Version(rs.getString(1), rs.getString(2), rs.getString(3), rs.getString(4),
-                SOURCE_URL_LABELS.getOrDefault(rs.getString(4), "平台页面"),
-                JSON.parseArray(rs.getString(5), String.class), rs.getString(6), rs.getString(7),
-                time(rs.getTimestamp(9)), nickname(rs.getInt(8))), sourceId);
+                sourceUrlLabel(rs.getString(4)),
+                java.util.List.of(), rs.getString(5), rs.getString(6),
+                time(rs.getTimestamp(8)), nickname(rs.getInt(7))), sourceId);
     }
 
     public List<PendingOperation> pendingOperations() {
@@ -273,6 +455,12 @@ public class AiKnowledgeManagementService {
                             .map(chunk -> chunk.getText()).collect(java.util.stream.Collectors.joining("\n\n")),
                             source.sourceUrl(), source.version())).toList();
             evidence.catalog().requireCurrent();
+        } else if ("doc".equals(mode)) {
+            if (docRetrieval == null) throw new WikiProductException(503, "文档通道未启用");
+            var evidence = docRetrieval.retrieve(query);
+            items = evidence.hits().stream()
+                    .map(hit -> new Hit(hit.sourceKey(), hit.title(), hit.text(), null, hit.versionLabel()))
+                    .toList();
         } else if ("wiki".equals(mode)) {
             WikiPublicationService publication = wiki.getIfAvailable();
             if (publication == null) throw new WikiProductException(503, "整理知识服务尚未启用");
@@ -305,24 +493,53 @@ public class AiKnowledgeManagementService {
     }
 
     private Draft draftById(String id) {
+        long documentId;
+        try {
+            documentId = Long.parseLong(id);
+        } catch (NumberFormatException invalid) {
+            throw new WikiProductException(404, "知识草稿不存在");
+        }
         List<Draft> rows = jdbc.query("""
-                SELECT id,source_id,title,text,version,source_url,keywords_json,state,updated_by,updated_at
-                FROM rag_knowledge_draft WHERE id=?
+                SELECT d.id,d.source_key,d.title,v.normalized_body,v.version_label,d.source_url,
+                       d.keywords_json,d.review_status,d.updated_by,d.updated_at,d.origin_ref
+                FROM knowledge_document d
+                JOIN knowledge_document_version v ON v.document_id=d.id AND v.state='DRAFT'
+                WHERE d.id=? AND d.document_kind='PLATFORM_HELP' AND d.deleted=FALSE
                 """, (rs, index) -> draft(rs.getString(1), rs.getString(2), rs.getString(3), rs.getString(4),
                 rs.getString(5), rs.getString(6), rs.getString(7), rs.getString(8),
-                time(rs.getTimestamp(10)), nickname(rs.getInt(9))), id);
+                time(rs.getTimestamp(10)), nickname(rs.getInt(9)), rs.getString(11)), documentId);
         if (rows.size() != 1) throw new WikiProductException(404, "知识草稿不存在");
         return rows.getFirst();
     }
 
     private static Draft draft(String id, String sourceId, String title, String text, String version, String sourceUrl,
-                               String keywords, String state, String updatedAt, String operator) {
+                               String keywords, String state, String updatedAt, String operator, String sourceRef) {
+        List<String> parsed = keywords == null || keywords.isBlank()
+                ? List.of() : JSON.parseArray(keywords, String.class);
         return new Draft(id, sourceId, title, text, version, sourceUrl,
-                SOURCE_URL_LABELS.getOrDefault(sourceUrl, "平台页面"),
-                JSON.parseArray(keywords, String.class), state, updatedAt, operator);
+                sourceUrlLabel(sourceUrl), parsed == null ? List.of() : parsed,
+                state, updatedAt, operator, sourceRef);
     }
 
-    private record DraftInput(String title, String text, String version, String sourceUrl, List<String> keywords) { }
+    private static String sourceUrlLabel(String sourceUrl) {
+        if (sourceUrl == null || sourceUrl.isBlank()) return "全站通用（未关联页面）";
+        return SOURCE_URL_LABELS.getOrDefault(sourceUrl, "平台页面");
+    }
+
+    private record DraftInput(String title, String text, String version, String sourceUrl, String sourceRefKind,
+                              List<String> keywords) { }
+
+    /**
+     * 草稿未选具体页面时，发布用 G3 已有的“全站通用”锚点 {@link KnowledgeCatalog#GENERAL_SOURCE_URL}。
+     * 仍然走 {@link KnowledgeCatalog#validSourceUrl(String)} 白名单校验，非法页面不会被接受。
+     */
+    static String publishedSourceUrl(Object raw) {
+        String value = raw == null ? "" : String.valueOf(raw).strip();
+        if (value.isEmpty() || "null".equalsIgnoreCase(value)) {
+            return KnowledgeCatalog.GENERAL_SOURCE_URL;
+        }
+        return value;
+    }
 
     private static DraftInput validateDraft(String title, String text, String version, String sourceUrl, List<String> keywords) {
         String safeTitle = title == null ? "" : title.strip();
@@ -331,7 +548,17 @@ public class AiKnowledgeManagementService {
         if (safeTitle.isEmpty() || safeTitle.length() > 80 || safeTitle.codePoints().anyMatch(Character::isISOControl)) throw bad();
         if (safeText.isEmpty() || safeText.length() > 20000) throw bad();
         if (!safeVersion.matches("[a-zA-Z0-9._-]{1,40}")) throw bad();
-        if (!KnowledgeCatalog.validSourceUrl(sourceUrl)) throw new WikiProductException(400, "请选择知识关联的页面");
+        String safeSourceUrl = sourceUrl == null ? "" : sourceUrl.strip();
+        String sourceRefKind;
+        if (safeSourceUrl.isEmpty()) {
+            safeSourceUrl = null;
+            sourceRefKind = "DOCUMENT";
+        } else {
+            if (!KnowledgeCatalog.validSourceUrl(safeSourceUrl)) {
+                throw new WikiProductException(400, "请选择知识关联的页面");
+            }
+            sourceRefKind = "PLATFORM_PAGE";
+        }
         List<String> clean = new ArrayList<>();
         if (keywords != null) {
             if (keywords.size() > 20) throw new WikiProductException(400, "检索关键词最多20个");
@@ -344,7 +571,7 @@ public class AiKnowledgeManagementService {
                 if (!clean.contains(value)) clean.add(value);
             }
         }
-        return new DraftInput(safeTitle, safeText, safeVersion, sourceUrl, List.copyOf(clean));
+        return new DraftInput(safeTitle, safeText, safeVersion, safeSourceUrl, sourceRefKind, List.copyOf(clean));
     }
 
     private void requireStorage() {
@@ -366,43 +593,85 @@ public class AiKnowledgeManagementService {
         }
     }
 
-    /** 在正式更新前保留旧正文；失败时按目录实际状态决定保留还是清理。 */
+    /**
+     * 版本历史由 {@code knowledge_document_version} 承载，正文本身就保存在版本行中，
+     * 因此更新前无需另存一份归档；此处只做可见性校验。
+     */
     private void beginArchive(KnowledgeDocument previous, int actor) {
-        if (jdbc == null) return;
-        try {
-            jdbc.update("""
-                    INSERT INTO rag_knowledge_version(source_id,version,title,text,source_url,keywords_json,
-                        content_sha256,state,created_by) VALUES(?,?,?,?,?,?,?,'PENDING',?)
-                    ON DUPLICATE KEY UPDATE state='PENDING',content_sha256=VALUES(content_sha256)
-                    """, previous.sourceId(), previous.version(), previous.title(), previous.text(), previous.sourceUrl(),
-                    JSON.toJSONString(previous.keywords() == null ? List.of() : previous.keywords()),
-                    KnowledgeCatalog.hash(KnowledgeCatalog.normalize(previous.text())), actor);
-        } catch (RuntimeException unavailable) {
-            log.warn("知识历史版本暂存失败，原因类型={}", unavailable.getClass().getSimpleName());
+        if (jdbc == null) {
+            return;
         }
     }
 
+    /** 目录更新成功后，把新正文落成新版本，并把旧版本标记为被替换。 */
     private void finishArchive(KnowledgeDocument previous, long generation, String state) {
-        if (jdbc == null) return;
-        try {
-            jdbc.update("UPDATE rag_knowledge_version SET state=?,generation=? WHERE source_id=? AND version=?",
-                    state, generation, previous.sourceId(), previous.version());
-        } catch (RuntimeException unavailable) {
-            log.warn("知识历史版本归档失败，原因类型={}", unavailable.getClass().getSimpleName());
+        if (jdbc == null) {
+            return;
         }
-    }
-
-    private void settleArchive(KnowledgeDocument previous, String archivedState) {
-        if (jdbc == null) return;
         try {
             KnowledgeDocument current = lifecycle.snapshot().source(previous.sourceId());
-            boolean applied = current != null && (!current.version().equals(previous.version())
-                    || "REVOKED".equals(current.reviewStatus()));
-            if (applied) finishArchive(previous, lifecycle.snapshot().epoch(), archivedState);
-            else jdbc.update("DELETE FROM rag_knowledge_version WHERE source_id=? AND version=? AND state='PENDING'",
-                    previous.sourceId(), previous.version());
+            if (current == null) {
+                return;
+            }
+            Long documentId = jdbc.query("SELECT id FROM knowledge_document WHERE source_key=?",
+                    rs -> rs.next() ? rs.getLong(1) : null, previous.sourceId());
+            if (documentId == null) {
+                return;
+            }
+            String sha = KnowledgeCatalog.hash(KnowledgeCatalog.normalize(current.text()));
+            Integer existing = jdbc.queryForObject("""
+                    SELECT COUNT(*) FROM knowledge_document_version
+                    WHERE document_id=? AND version_label=?
+                    """, Integer.class, documentId, current.version());
+            if (existing != null && existing > 0) {
+                jdbc.update("""
+                        UPDATE knowledge_document_version
+                        SET raw_body=?,normalized_body=?,normalized_sha256=?,char_length=?,state='CURRENT',
+                            published_at=CURRENT_TIMESTAMP(6)
+                        WHERE document_id=? AND version_label=?
+                        """, current.text(), current.text(), sha, current.text().length(), documentId, current.version());
+            } else {
+                jdbc.update("""
+                        UPDATE knowledge_document_version SET state='SUPERSEDED'
+                        WHERE document_id=? AND state IN ('CURRENT','PENDING')
+                        """, documentId);
+                Integer next = jdbc.queryForObject("""
+                        SELECT COALESCE(MAX(version_no),0)+1 FROM knowledge_document_version WHERE document_id=?
+                        """, Integer.class, documentId);
+                jdbc.update("""
+                        INSERT INTO knowledge_document_version(document_id,version_no,version_label,raw_body,
+                            normalized_body,raw_format,normalized_sha256,char_length,body_available,body_provenance,
+                            state,published_at,created_by_kind)
+                        VALUES(?,?,?,?,?,'TEXT',?,?,TRUE,'LEGACY_JSON','CURRENT',CURRENT_TIMESTAMP(6),'SYSTEM')
+                        """, documentId, next, current.version(), current.text(), current.text(), sha,
+                        current.text().length());
+            }
+            jdbc.update("""
+                    UPDATE knowledge_document d
+                    JOIN knowledge_document_version v ON v.document_id=d.id AND v.state='CURRENT'
+                    SET d.current_published_version_id=v.id,d.current_version_no=v.version_no,
+                        d.content_sha256=v.normalized_sha256,d.review_status='APPROVED',
+                        d.publish_status='PUBLISHED',d.updated_by_kind='SYSTEM'
+                    WHERE d.id=?
+                    """, documentId);
         } catch (RuntimeException unavailable) {
-            log.warn("知识历史版本状态无法确认，保留待核查记录，原因类型={}", unavailable.getClass().getSimpleName());
+            log.warn("知识历史版本同步失败，原因类型={}", unavailable.getClass().getSimpleName());
+        }
+    }
+
+    /** 目录已回退或来源未变化时，不留下半成品版本。 */
+    private void settleArchive(KnowledgeDocument previous, String archivedState) {
+        if (jdbc == null) {
+            return;
+        }
+        try {
+            KnowledgeDocument current = lifecycle.snapshot().source(previous.sourceId());
+            boolean applied = current != null && !current.version().equals(previous.version());
+            if (applied) {
+                finishArchive(previous, lifecycle.snapshot().epoch(), archivedState);
+            }
+        } catch (RuntimeException unavailable) {
+            log.warn("知识历史版本状态无法确认，原因类型={}", unavailable.getClass().getSimpleName());
         }
     }
     private static KnowledgeDocument source(KnowledgeCatalog catalog, String id) {

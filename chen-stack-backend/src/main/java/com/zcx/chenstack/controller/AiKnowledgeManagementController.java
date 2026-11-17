@@ -12,6 +12,7 @@ import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.AssertTrue;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
@@ -20,8 +21,9 @@ import java.util.Map;
 
 @RestController
 @RequestMapping("/admin")
+@ConditionalOnProperty(prefix = "chen.knowledge.simple", name = "enabled", havingValue = "false", matchIfMissing = true)
 public class AiKnowledgeManagementController {
-    public record Test(@NotBlank @Size(max = 500) String query, @NotBlank @Pattern(regexp = "rag|wiki") String mode) {}
+    public record Test(@NotBlank @Size(max = 500) String query, @NotBlank @Pattern(regexp = "rag|wiki|doc") String mode) {}
     public record Update(@NotBlank @Pattern(regexp = "[A-Za-z0-9._-]{1,72}") String requestId,
                          @Min(0) long expectedGeneration, @NotBlank @Pattern(regexp = "[a-f0-9]{64}") String expectedContentHash,
                          @NotBlank @Size(max = 80) String title, @NotBlank @Size(max = 20000) String text,
@@ -35,8 +37,8 @@ public class AiKnowledgeManagementController {
     public record DraftRequest(@Size(max = 80) String draftId,
                                @NotBlank @Size(max = 80) String title, @NotBlank @Size(max = 20000) String text,
                                @NotBlank @Pattern(regexp = "[a-zA-Z0-9._-]{1,40}") String version,
-                               @NotBlank @Size(max = 80) String sourceUrl,
-                               @NotNull @Size(max = 20) List<@NotBlank @Size(max = 30) String> keywords) {}
+                               @Size(max = 80) String sourceUrl,
+                               @Size(max = 20) List<@NotBlank @Size(max = 30) String> keywords) {}
     public record DraftPublish(@NotBlank @Pattern(regexp = "[A-Za-z0-9._-]{1,72}") String requestId,
                                @Min(0) long expectedGeneration, @AssertTrue boolean confirmReviewed) {}
     private final AiKnowledgeManagementService management;

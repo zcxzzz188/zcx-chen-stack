@@ -33,21 +33,39 @@ public final class WikiPublicationService {
         transaction.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
         transaction.setIsolationLevel(TransactionDefinition.ISOLATION_READ_COMMITTED);
         transaction.setTimeout(10);
-        Integer triggers = jdbc.queryForObject("""
+        // 失效触发器有两套等价命名：G3 的 wiki_help_*（旧 rag_source_state）
+        // 与 G4 的 wiki_knowledge_doc_*（统一知识文档表）。任一完整存在即可。
+        Integer legacy = jdbc.queryForObject("""
                 SELECT COUNT(*) FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=DATABASE()
                 AND TRIGGER_NAME IN ('wiki_article_changed','wiki_article_deleted','wiki_help_changed','wiki_help_deleted')
                 """, Integer.class);
-        if (!Integer.valueOf(4).equals(triggers)) throw new IllegalStateException("WIKI_INVALIDATION_MIGRATION_REQUIRED");
+        Integer unified = jdbc.queryForObject("""
+                SELECT COUNT(*) FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=DATABASE()
+                AND TRIGGER_NAME IN ('wiki_article_changed','wiki_article_deleted','wiki_knowledge_doc_changed','wiki_knowledge_doc_deleted')
+                """, Integer.class);
+        if (!Integer.valueOf(4).equals(legacy) && !Integer.valueOf(4).equals(unified)) {
+            throw new IllegalStateException("WIKI_INVALIDATION_MIGRATION_REQUIRED");
+        }
     }
 
     public Revision create(String requestId, Long pageId, String title, String summary, String markdown) {
         int actor = operator("ai:wiki:edit");
-        text(title, 160); text(summary, 500);
+        text(title, 160);
         if (pageId != null) positive(pageId);
         return foundation.withValidDraft(requestId, (draft, sources) -> {
             String body = publicMarkdown(markdown == null ? draft.markdown() : markdown);
-            text(body, 900_000);
+            if (body.isBlank() || body.indexOf('\0') >= 0) {
+                throw new WikiProductException(400, "Wiki正文缺少有效内容");
+            }
             if (body.getBytes(StandardCharsets.UTF_8).length > 900_000) throw bad();
+            WikiDraftSummary.Content content = WikiDraftSummary.content(body);
+            if (!content.hasContent()) {
+                throw new WikiProductException(400, "Wiki正文缺少有效内容");
+            }
+            String revisionSummary = summary == null ? content.summary() : summary;
+            if (!WikiDraftSummary.meaningful(revisionSummary) || revisionSummary.length() > WikiDraftSummary.MAX_LENGTH) {
+                throw new WikiProductException(400, "Wiki页面摘要须包含有效文字且不超过 500 字");
+            }
             long target;
             if (pageId == null) {
                 GeneratedKeyHolder keys = new GeneratedKeyHolder();
@@ -57,7 +75,7 @@ public final class WikiPublicationService {
             int version = Objects.requireNonNull(jdbc.queryForObject(
                     "SELECT COALESCE(MAX(version),0)+1 FROM wiki_revision WHERE page_id=?", Integer.class, target));
             String manifest = manifest(requestId);
-            String hash = bodyHash(title, summary, body);
+            String hash = bodyHash(title, revisionSummary, body);
             GeneratedKeyHolder keys = new GeneratedKeyHolder();
             jdbc.update(c -> {
                 var insert = c.prepareStatement("""
@@ -65,7 +83,7 @@ public final class WikiPublicationService {
                         VALUES(?,?,?,?,?,?,?,?)
                         """, Statement.RETURN_GENERATED_KEYS);
                 insert.setLong(1, target); insert.setInt(2, version); insert.setString(3, requestId);
-                insert.setString(4, title); insert.setString(5, summary); insert.setString(6, body);
+                insert.setString(4, title); insert.setString(5, revisionSummary); insert.setString(6, body);
                 insert.setString(7, hash); insert.setString(8, manifest); return insert;
             }, keys);
             Row result = row(Objects.requireNonNull(keys.getKey()).longValue(), false);
@@ -132,19 +150,17 @@ public final class WikiPublicationService {
             Pointer pointer = pointer(pageId);
             if (!Objects.equals(pointer.version(), expectedCurrentVersion)) throw conflict();
             jdbc.update("UPDATE wiki_page SET withdrawn=TRUE WHERE id=?", pageId);
-            jdbc.update("INSERT INTO wiki_review_event(page_id,revision_id,action,actor_id) VALUES(?,?,'WITHDRAW',?)",
+            jdbc.update("INSERT INTO knowledge_audit_log(wiki_page_id,wiki_revision_id,actor_id,actor_kind,action,target_kind) VALUES(?,?,?,'USER','WITHDRAW','WIKI_REVISION')",
                     pageId, pointer.revisionId(), actor);
         });
     }
 
-    /** 管理员人工编写：仍使用已授权来源快照，不调用模型；随后进入同一审核发布链。 */
-    public Revision createManual(String requestId, List<Long> snapshotIds, String title, String summary, String markdown) {
-        operator("ai:wiki:edit");
-        foundation.createManualDraft(requestId, snapshotIds, title, summary, markdown);
-        return create(requestId, null, title, summary, markdown);
-    }
-
-    /** 基于当前页面已有来源起草新版本；不改变已发布正文，审核发布后才切换。 */
+    /**
+     * 基于当前页面已有来源起草新版本；不改变已发布正文，审核发布后才切换。
+     *
+     * <p>G4 起不再提供"独立新增 Wiki 知识"的入口：新页面只能由
+     * 知识来源授权 → 智能整理编译草稿 → 创建待审版本 产生。本方法只服务既有页面的正文更新。</p>
+     */
     public Revision editPage(long pageId, String title, String summary, String markdown) {
         operator("ai:wiki:edit");
         positive(pageId);
@@ -252,7 +268,7 @@ public final class WikiPublicationService {
                        CASE WHEN o.source_type='ARTICLE' THEN
                            (SELECT CONCAT('/user/',a.user_id,'/article/',a.id) FROM article a WHERE a.id=o.source_key)
                            ELSE NULL END
-                FROM wiki_job_source js
+                FROM wiki_compile_source js
                 JOIN wiki_source_snapshot s ON s.id=js.snapshot_id
                 JOIN wiki_source o ON o.id=s.source_id
                 WHERE js.request_id=? ORDER BY js.snapshot_id LIMIT 32
@@ -346,7 +362,7 @@ public final class WikiPublicationService {
     }
 
     List<String> topics(String requestId) {
-        return jdbc.queryForList("SELECT DISTINCT topic_key FROM wiki_compile_topic WHERE request_id=? ORDER BY topic_key", String.class, requestId);
+        return jdbc.queryForList("SELECT DISTINCT topic_key FROM wiki_compile_source WHERE request_id=? AND topic_key<>'' ORDER BY topic_key", String.class, requestId);
     }
 
     private Pointer pointer(long pageId) {
@@ -371,8 +387,8 @@ public final class WikiPublicationService {
             Objects.equals(rs.getObject("current_revision_id", Long.class), rs.getLong("id"))), rs.getString("approved_hash"));
 
     private void event(Revision revision, String action, int actor) {
-        jdbc.update("INSERT INTO wiki_review_event(page_id,revision_id,action,actor_id,body_hash) VALUES(?,?,?,?,?)",
-                revision.pageId(), revision.id(), action, actor, revision.bodyHash());
+        jdbc.update("INSERT INTO knowledge_audit_log(wiki_page_id,wiki_revision_id,actor_id,actor_kind,action,target_kind,after_sha256) VALUES(?,?,?,'USER',?,'WIKI_REVISION',?)",
+                revision.pageId(), revision.id(), actor, action, revision.bodyHash());
     }
 
     int operator() { return operator("ai:wiki:read"); }
