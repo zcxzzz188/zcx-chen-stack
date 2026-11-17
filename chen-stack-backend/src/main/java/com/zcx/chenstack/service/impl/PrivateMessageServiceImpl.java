@@ -103,6 +103,9 @@ public class PrivateMessageServiceImpl extends ServiceImpl<PrivateMessageMapper,
         }
         Integer fromUserId = message.getFromUserId();
         Integer toUserId = message.getToUserId();
+        if (!sysUserMapper.isCommunityUser(fromUserId) || !sysUserMapper.isCommunityUser(toUserId)) {
+            return;
+        }
         conversationService.updateConversation(fromUserId, toUserId, message);
         SysUser fromUser = sysUserMapper.selectById(fromUserId);
         SysUser toUser = sysUserMapper.selectById(toUserId);
@@ -183,6 +186,7 @@ public class PrivateMessageServiceImpl extends ServiceImpl<PrivateMessageMapper,
     @Override
     public PageVo<List<PrivateMessageVo>> getChatHistory(Integer userId, Integer targetUserId,
             Integer pageNum, Integer pageSize) {
+        sysUserMapper.requireCommunityUser(targetUserId);
         Page<PrivateMessage> page = new Page<>(pageNum, pageSize);
 
         LambdaQueryWrapper<PrivateMessage> qw = new LambdaQueryWrapper<PrivateMessage>()
@@ -254,6 +258,7 @@ public class PrivateMessageServiceImpl extends ServiceImpl<PrivateMessageMapper,
         if (!message.getFromUserId().equals(userId)) {
             throw new BlogException(BlogConstants.CannotRevokeOthersMessage);
         }
+        sysUserMapper.requireCommunityUser(message.getToUserId());
 
         // 检查是否在2分钟内
         long diff = System.currentTimeMillis() - message.getCreateTime().getTime();
@@ -285,7 +290,8 @@ public class PrivateMessageServiceImpl extends ServiceImpl<PrivateMessageMapper,
             throw new BlogException(BlogConstants.CannotRevokeOthersMessage);
         }
 
-        // 使用 MyBatis-Plus 的逻辑删除
+        sysUserMapper.requireCommunityUser(message.getFromUserId().equals(userId)
+                ? message.getToUserId() : message.getFromUserId());
         privateMessageMapper.deleteById(message.getId());
     }
 
@@ -293,6 +299,7 @@ public class PrivateMessageServiceImpl extends ServiceImpl<PrivateMessageMapper,
     public Integer getUnreadCount(Integer userId) {
         LambdaQueryWrapper<PrivateMessage> qw = new LambdaQueryWrapper<PrivateMessage>()
                 .eq(PrivateMessage::getToUserId, userId)
+                .inSql(PrivateMessage::getFromUserId, SysUserMapper.COMMUNITY_USER_IDS)
                 .eq(PrivateMessage::getIsRead, 0)
                 .eq(PrivateMessage::getIsRevoked, 0) // 过滤掉已撤回的消息
                 .and(w -> w.eq(PrivateMessage::getExamineStatus, ExamineStatusEnum.PASS.getCode())

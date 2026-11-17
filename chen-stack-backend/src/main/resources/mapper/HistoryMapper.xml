@@ -4,6 +4,7 @@
 
     <!-- 分页查询用户浏览历史（关联文章和作者信息） -->
     <select id="getUserHistoryList" resultType="com.zcx.chenstack.domain.vo.HistoryVo">
+        <bind name="communityUserIds" value="@com.zcx.chenstack.mapper.SysUserMapper@COMMUNITY_USER_IDS"/>
         SELECT h.id,
                h.article_id as articleId,
                h.view_time  as viewTime,
@@ -21,6 +22,7 @@
                  INNER JOIN
              sys_user u ON a.user_id = u.id
                  AND u.is_deleted = 0
+                 AND u.id IN (${communityUserIds})
         WHERE h.user_id = #{userId}
           AND h.is_deleted = 0
           AND a.visible_range IN (0, 1, 2)

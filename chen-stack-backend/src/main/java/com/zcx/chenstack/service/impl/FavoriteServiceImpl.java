@@ -342,7 +342,8 @@ public class FavoriteServiceImpl extends ServiceImpl<FavoriteMapper, Favorite> i
 
         // 构建查询条件
         LambdaQueryWrapper<Favorite> queryWrapper = new LambdaQueryWrapper<>();
-        queryWrapper.eq(Favorite::getUserId, targetUserId);
+        queryWrapper.eq(Favorite::getUserId, targetUserId)
+                .inSql(Favorite::getUserId, SysUserMapper.COMMUNITY_USER_IDS);
 
         // 如果查询的是别人的收藏夹，只返回公开的
         if (!targetUserId.equals(currentUserId)) {
@@ -365,9 +366,8 @@ public class FavoriteServiceImpl extends ServiceImpl<FavoriteMapper, Favorite> i
 
     @Override
     public List<ArticleVo> getArticleListByFavoriteId(Integer favoriteId) {
-        // 检查收藏夹是否存在
         Favorite favorite = this.getById(favoriteId);
-        if (favorite == null) {
+        if (favorite == null || !sysUserMapper.isCommunityUser(favorite.getUserId())) {
             throw new BlogException(BlogConstants.NotFoundFavorite);
         }
 
@@ -397,7 +397,8 @@ public class FavoriteServiceImpl extends ServiceImpl<FavoriteMapper, Favorite> i
 
         // 查询文章详情
         LambdaQueryWrapper<Article> articleQueryWrapper = new LambdaQueryWrapper<>();
-        articleQueryWrapper.in(Article::getId, articleIds);
+        articleQueryWrapper.in(Article::getId, articleIds)
+                .inSql(Article::getUserId, SysUserMapper.COMMUNITY_USER_IDS);
         List<Article> articles = articleMapper.selectList(articleQueryWrapper);
 
         // 转换为ArticleVo

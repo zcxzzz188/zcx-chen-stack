@@ -166,7 +166,7 @@ public class SysUserServiceImpl extends ServiceImpl<SysUserMapper, SysUser> impl
             Authentication authenticate = authenticationManager.authenticate(authentication);
             // 获取用户信息，返回的就是UserDetails
             LoginUser loginUser = (LoginUser) authenticate.getPrincipal();
-            if (!isUserAccount(loginUser.getSysUser())) {
+            if (!SysUserDetailsService.isCommunityAccount(loginUser.getSysUser())) {
                 throw new BlogException(BlogConstants.AdminAccountUseAdminLogin);
             }
             recordLoginSuccess(loginUser.getSysUser(), RegisterOrLoginTypeEnum.EMAIL.getCode());
@@ -405,10 +405,7 @@ public class SysUserServiceImpl extends ServiceImpl<SysUserMapper, SysUser> impl
     @Override
     public SysUserVo info() {
         Integer userId = SecurityUtils.getUserId();
-        SysUser sysUser = sysUserMapper.selectById(userId);
-        if (sysUser == null) {
-            throw new BlogException(BlogConstants.NotFoundUser); // 用户不存在
-        }
+        SysUser sysUser = sysUserMapper.requireCommunityUser(userId);
         SysUserVo sysUserVo = new SysUserVo();
         sysUserVo.setId(sysUser.getId());
         sysUserVo.setNickname(sysUser.getNickname());
@@ -417,8 +414,7 @@ public class SysUserServiceImpl extends ServiceImpl<SysUserMapper, SysUser> impl
         sysUserVo.setIntroduction(sysUser.getIntroduction());
         sysUserVo.setAvatar(sysUser.getAvatar());
         sysUserVo.setSex(sysUser.getSex());
-        sysUserVo.setFansCount(sysUser.getFansCount());
-        sysUserVo.setFollowCount(sysUser.getFollowCount());
+        fillCommunityFollowCounts(sysUserVo);
 
         Photo latestAvatarPhoto = photoMapper.selectOne(new LambdaQueryWrapper<Photo>()
                 .select(Photo::getUrl, Photo::getExamineStatus)
@@ -440,10 +436,7 @@ public class SysUserServiceImpl extends ServiceImpl<SysUserMapper, SysUser> impl
 
     @Override
     public SysUserVo getUserInfoById(Integer userId) {
-        SysUser sysUser = sysUserMapper.selectById(userId);
-        if (sysUser == null) {
-            throw new BlogException(BlogConstants.NotFoundUser); // 用户不存在
-        }
+        SysUser sysUser = sysUserMapper.requireCommunityUser(userId);
         SysUserVo sysUserVo = new SysUserVo();
         sysUserVo.setId(sysUser.getId());
         sysUserVo.setNickname(sysUser.getNickname());
@@ -454,14 +447,14 @@ public class SysUserServiceImpl extends ServiceImpl<SysUserMapper, SysUser> impl
         sysUserVo.setCreateTime(sysUser.getCreateTime());
         String loginAddress = processLoginAddress(sysUser.getLoginAddress());
         sysUserVo.setLoginAddress(loginAddress);
-        sysUserVo.setFansCount(sysUser.getFansCount());
-        sysUserVo.setFollowCount(sysUser.getFollowCount());
+        fillCommunityFollowCounts(sysUserVo);
 
         // 实时查询已发布且审核通过的文章数量
         LambdaQueryWrapper<Article> articleQuery = new LambdaQueryWrapper<>();
         articleQuery.eq(Article::getUserId, userId)
                 .eq(Article::getEditStatus, EditStatusEnum.PUBLISHED.getCode()) // 已发布
-                .eq(Article::getExamineStatus, ExamineStatusEnum.PASS.getCode()); // 审核通过
+                .eq(Article::getExamineStatus, ExamineStatusEnum.PASS.getCode())
+                .eq(Article::getVisibleRange, VisibleRangeEnum.ALL.getCode());
         Integer articleCount = Math.toIntExact(articleMapper.selectCount(articleQuery));
         sysUserVo.setArticleCount(articleCount);
         return sysUserVo;
@@ -877,17 +870,6 @@ public class SysUserServiceImpl extends ServiceImpl<SysUserMapper, SysUser> impl
                 .eq(SysRole::getRole, "admin")) > 0;
     }
 
-    private boolean isUserAccount(SysUser user) {
-        if (user == null || user.getSysRoles() == null) {
-            return false;
-        }
-        Set<String> roleCodes = user.getSysRoles().stream()
-                .map(SysRole::getRole)
-                .filter(Objects::nonNull)
-                .collect(Collectors.toSet());
-        return roleCodes.size() == 1 && roleCodes.contains("user");
-    }
-
     private boolean isAdminAccount(SysUser user) {
         if (user == null || user.getSysRoles() == null) {
             return false;
@@ -1273,28 +1255,17 @@ public class SysUserServiceImpl extends ServiceImpl<SysUserMapper, SysUser> impl
 
     @Override
     public List<SysUserVo> getRecommendedAuthors(Integer limit) {
-        // 按文章数量排序，获取活跃作者（已发布且审核通过的文章数量）
-        // 先获取所有用户，然后按文章数量排序
-        LambdaQueryWrapper<SysUser> queryWrapper = new LambdaQueryWrapper<>();
-        queryWrapper.eq(SysUser::getIsDeleted, 0) // 只统计未删除的用户
-                .orderByDesc(SysUser::getFansCount) // 按粉丝数降序
-                // 添加参数边界验证，防止负数或过大值导致 SQL 错误
-                .last("LIMIT " + Math.min(Math.max(1, limit), 100));
+        return sysUserMapper.selectRecommendedCommunityAuthors(Math.min(Math.max(1, limit), 100),
+                EditStatusEnum.PUBLISHED.getCode(), ExamineStatusEnum.PASS.getCode(), VisibleRangeEnum.ALL.getCode());
+    }
 
-        List<SysUser> users = this.list(queryWrapper);
-        List<SysUserVo> result = BeanUtil.copyToList(users, SysUserVo.class);
-
-        // 为每个用户设置文章数量
-        for (SysUserVo userVo : result) {
-            LambdaQueryWrapper<Article> articleQuery = new LambdaQueryWrapper<Article>()
-                    .eq(Article::getUserId, userVo.getId())
-                    .eq(Article::getEditStatus, EditStatusEnum.PUBLISHED.getCode())
-                    .eq(Article::getExamineStatus, ExamineStatusEnum.PASS.getCode());
-            Integer articleCount = Math.toIntExact(articleMapper.selectCount(articleQuery));
-            userVo.setArticleCount(articleCount);
-        }
-
-        return result;
+    private void fillCommunityFollowCounts(SysUserVo profile) {
+        profile.setFansCount(Math.toIntExact(followMapper.selectCount(new LambdaQueryWrapper<Follow>()
+                .eq(Follow::getFollowedId, profile.getId())
+                .inSql(Follow::getFollowerId, SysUserMapper.COMMUNITY_USER_IDS))));
+        profile.setFollowCount(Math.toIntExact(followMapper.selectCount(new LambdaQueryWrapper<Follow>()
+                .eq(Follow::getFollowerId, profile.getId())
+                .inSql(Follow::getFollowedId, SysUserMapper.COMMUNITY_USER_IDS))));
     }
 
     private void maskEmailsForNonAdmin(List<SysUserVo> sysUserVos) {
@@ -1308,45 +1279,19 @@ public class SysUserServiceImpl extends ServiceImpl<SysUserMapper, SysUser> impl
 
     @Override
     public Map<String, Object> getCommunityStats() {
-        Map<String, Object> stats = new HashMap<>();
-
         List<Article> publicArticles = articleMapper.selectList(new LambdaQueryWrapper<Article>()
                 .select(Article::getUserId, Article::getReadCount)
-                .eq(Article::getIsDeleted, 0)
+                .inSql(Article::getUserId, SysUserMapper.COMMUNITY_USER_IDS)
                 .eq(Article::getEditStatus, EditStatusEnum.PUBLISHED.getCode())
                 .eq(Article::getExamineStatus, ExamineStatusEnum.PASS.getCode())
                 .eq(Article::getVisibleRange, VisibleRangeEnum.ALL.getCode()));
 
-        Long articleCount = (long) publicArticles.size();
-
-        // 获取用户总数（未删除）
-        LambdaQueryWrapper<SysUser> userQuery = new LambdaQueryWrapper<SysUser>()
-                .eq(SysUser::getIsDeleted, 0);
-        Long userCount = this.count(userQuery);
-
-        // 获取总阅读量（符合首页公开口径文章的 readCount 求和）
-        Long totalViews = publicArticles.stream()
-                .map(Article::getReadCount)
-                .filter(Objects::nonNull)
-                .mapToLong(Integer::longValue)
-                .sum();
-
-        Set<Integer> authorUserIds = publicArticles.stream()
-                .map(Article::getUserId)
-                .filter(Objects::nonNull)
-                .collect(Collectors.toSet());
-        Long authorCount = 0L;
-        if (ObjectUtil.isNotEmpty(authorUserIds)) {
-            authorCount = sysUserMapper.selectCount(new LambdaQueryWrapper<SysUser>()
-                    .in(SysUser::getId, authorUserIds)
-                    .eq(SysUser::getIsDeleted, 0));
-        }
-
-        stats.put("articleCount", articleCount);
-        stats.put("userCount", userCount);
-        stats.put("viewCount", totalViews);
-        stats.put("authorCount", authorCount);
-
+        Map<String, Object> stats = new HashMap<>();
+        stats.put("articleCount", (long) publicArticles.size());
+        stats.put("userCount", sysUserMapper.selectCount(SysUserMapper.communityUsers()));
+        stats.put("viewCount", publicArticles.stream().map(Article::getReadCount)
+                .filter(Objects::nonNull).mapToLong(Integer::longValue).sum());
+        stats.put("authorCount", publicArticles.stream().map(Article::getUserId).distinct().count());
         return stats;
     }
 

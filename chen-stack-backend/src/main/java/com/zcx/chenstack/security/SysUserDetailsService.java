@@ -74,6 +74,13 @@ public class SysUserDetailsService implements UserDetailsService {
     }
 
 
+    public static boolean isCommunityAccount(SysUser user) {
+        if (user == null || user.getSysRoles() == null || user.getSysRoles().isEmpty()) {
+            return false;
+        }
+        return user.getSysRoles().stream().allMatch(role -> "user".equals(role.getRole()));
+    }
+
     // 处理登录
     public LoginUser handleLogin(SysUser sysUser) {
 

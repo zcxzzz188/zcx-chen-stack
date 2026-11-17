@@ -8,6 +8,7 @@ import com.zcx.chenstack.domain.entity.PrivateMessage;
 import com.zcx.chenstack.domain.enums.ExamineStatusEnum;
 import com.zcx.chenstack.domain.result.AuditResult;
 import com.zcx.chenstack.mapper.PhotoMapper;
+import com.zcx.chenstack.mapper.SysUserMapper;
 import com.zcx.chenstack.service.PrivateMessageService;
 import com.zcx.chenstack.utils.TextAuditUtils;
 import org.junit.jupiter.api.BeforeEach;
@@ -28,6 +29,7 @@ import static org.mockito.Mockito.*;
 
 class PrivateMessageWebSocketHandlerTest {
     private final PrivateMessageService service = mock(PrivateMessageService.class);
+    private final SysUserMapper users = mock(SysUserMapper.class);
     private final PhotoMapper photos = mock(PhotoMapper.class);
     private final TextAuditUtils textAudit = mock(TextAuditUtils.class);
     private final PrivateMessageWebSocketHandler handler = new PrivateMessageWebSocketHandler();
@@ -37,6 +39,9 @@ class PrivateMessageWebSocketHandlerTest {
     void setUp() {
         ReflectionTestUtils.setField(handler, "privateMessageService", service);
         ReflectionTestUtils.setField(handler, "photoMapper", photos);
+        ReflectionTestUtils.setField(handler, "sysUserMapper", users);
+        when(users.isCommunityUser(7)).thenReturn(true);
+        when(users.isCommunityUser(8)).thenReturn(true);
         ReflectionTestUtils.setField(handler, "textAuditUtils", textAudit);
         when(sender.getAttributes()).thenReturn(Map.of("userId", 7));
         when(sender.isOpen()).thenReturn(true);
@@ -95,6 +100,13 @@ class PrivateMessageWebSocketHandlerTest {
         ArgumentCaptor<TextMessage> reply = ArgumentCaptor.forClass(TextMessage.class);
         verify(sender).sendMessage(reply.capture());
         assertEquals("SYSTEM", JSON.parseObject(reply.getValue().getPayload(), WebSocketMessage.class).getType());
+    }
+
+    @Test
+    void blocksIneligibleRecipientBeforeAuditAndPersistence() {
+        when(users.isCommunityUser(8)).thenReturn(false);
+        handler.handleTextMessage(sender, request(1, "测试文字", null));
+        verifyNoInteractions(service, textAudit, photos);
     }
 
     private static TextMessage request(int type, String content, String imageUrl) {

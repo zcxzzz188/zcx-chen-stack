@@ -3,6 +3,7 @@ package com.zcx.chenstack.service.impl;
 import com.baomidou.mybatisplus.annotation.DbType;
 import com.baomidou.mybatisplus.extension.plugins.inner.PaginationInnerInterceptor;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.zcx.chenstack.mapper.SysUserMapper;
 import org.apache.ibatis.builder.xml.XMLMapperBuilder;
 import org.apache.ibatis.executor.parameter.ParameterHandler;
 import org.apache.ibatis.io.Resources;
@@ -77,6 +78,9 @@ class HistoryVisibilityTest {
         String where = sql.substring(sql.indexOf("WHERE h.user_id"), sql.lastIndexOf("ORDER BY"));
         String count = new PaginationInnerInterceptor(DbType.MYSQL).autoCountSql(new Page<>(1, 2), sql);
         assertTrue(normalize(count).contains(normalize(where)), count);
+        String communityScope = normalize("u.id IN (" + SysUserMapper.COMMUNITY_USER_IDS + ")");
+        assertTrue(normalize(sql).contains(communityScope), sql);
+        assertTrue(normalize(count).contains(communityScope), count);
         assertFalse(normalize(count).contains("orderby"), count);
         assertTrue(normalize(count).contains("count(*)"), count);
         for (String required : List.of("a.examine_status = 1", "a.edit_status = 0", "a.is_deleted = 0", "u.is_deleted = 0")) {

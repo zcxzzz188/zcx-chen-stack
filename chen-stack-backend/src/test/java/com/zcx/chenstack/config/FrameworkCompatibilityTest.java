@@ -90,6 +90,9 @@ class FrameworkCompatibilityTest {
         SysUserDetailsService details = mock(SysUserDetailsService.class);
         SysUser user = new SysUser();
         user.setId(7); user.setUsername("fixture"); user.setStatus(StatusEnum.NORMAL.getStatus());
+        var communityRole = new com.zcx.chenstack.domain.entity.SysRole();
+        communityRole.setRole("user");
+        user.setSysRoles(List.of(communityRole));
         user.setSysPermissions(List.of());
         when(users.selectById(7)).thenReturn(user);
         when(details.handleLogin(user)).thenReturn(new LoginUser(user));
@@ -128,6 +131,15 @@ class FrameworkCompatibilityTest {
                             .andExpect(status().isOk()).andExpect(content().string("7"))
                             .andExpect(header().exists("X-Refresh-Token"));
                     mvc.perform(get("/framework/admin").header("Authorization", token)).andExpect(status().isForbidden());
+                    var staffRole = new com.zcx.chenstack.domain.entity.SysRole();
+                    staffRole.setRole("content_admin");
+                    user.setSysRoles(List.of(communityRole, staffRole));
+                    mvc.perform(get("/ai/customer-service").header("Authorization", token)).andExpect(status().isForbidden());
+                    mvc.perform(put("/user/info").header("Authorization", token)).andExpect(status().isForbidden());
+                    user.setSysPermissions(List.of(new com.zcx.chenstack.domain.entity.SysPermission()
+                            .setPermission("framework:admin")));
+                    mvc.perform(get("/article/admin/probe").header("Authorization", token)).andExpect(status().isOk());
+                    mvc.perform(get("/article/get/7").header("Authorization", token)).andExpect(status().isOk());
                     user.setStatus(StatusEnum.DISABLE.getStatus());
                     mvc.perform(get("/ai/customer-service").header("Authorization", token)).andExpect(status().isUnauthorized());
                     when(users.selectById(7)).thenReturn(null);
@@ -147,6 +159,6 @@ class FrameworkCompatibilityTest {
         @PutMapping("/user/info") String update() { return "ok"; }
         @GetMapping("/ai/customer-service") Integer chat() { return SecurityUtils.getUserId(); }
         @PreAuthorize("hasAuthority('framework:admin')")
-        @GetMapping("/framework/admin") String admin() { return "ok"; }
+        @GetMapping({"/framework/admin", "/article/admin/probe"}) String admin() { return "ok"; }
     }
 }

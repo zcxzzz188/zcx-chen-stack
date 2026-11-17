@@ -620,8 +620,7 @@ public class MessageServiceImpl extends ServiceImpl<MessageMapper, Message> impl
         Integer currentUserId = SecurityUtils.getUserId();
 
         Page<Message> page = new Page<>(pageNum, pageSize);
-        LambdaQueryWrapper<Message> queryWrapper = new LambdaQueryWrapper<Message>()
-                .eq(Message::getReceiverId, currentUserId)
+        LambdaQueryWrapper<Message> queryWrapper = communityNotifications(currentUserId)
                 .orderByDesc(Message::getCreateTime);
 
         // 如果指定了类型，按类型筛选
@@ -644,52 +643,52 @@ public class MessageServiceImpl extends ServiceImpl<MessageMapper, Message> impl
 
         // 系统通知
         Long systemCount = messageMapper.selectCount(
-                new LambdaQueryWrapper<Message>()
-                        .eq(Message::getReceiverId, currentUserId)
+                communityNotifications(currentUserId)
                         .eq(Message::getIsRead, 0)
                         .eq(Message::getType, MessageTypeEnum.SYSTEM.getCode()));
         countMap.put("system", systemCount.intValue());
 
         // 评论通知
         Long commentCount = messageMapper.selectCount(
-                new LambdaQueryWrapper<Message>()
-                        .eq(Message::getReceiverId, currentUserId)
+                communityNotifications(currentUserId)
                         .eq(Message::getIsRead, 0)
                         .eq(Message::getType, MessageTypeEnum.COMMENT.getCode()));
         countMap.put("comment", commentCount.intValue());
 
         // 点赞通知
         Long likeCount = messageMapper.selectCount(
-                new LambdaQueryWrapper<Message>()
-                        .eq(Message::getReceiverId, currentUserId)
+                communityNotifications(currentUserId)
                         .eq(Message::getIsRead, 0)
                         .eq(Message::getType, MessageTypeEnum.LIKE.getCode()));
         countMap.put("like", likeCount.intValue());
 
         // 收藏通知
         Long collectCount = messageMapper.selectCount(
-                new LambdaQueryWrapper<Message>()
-                        .eq(Message::getReceiverId, currentUserId)
+                communityNotifications(currentUserId)
                         .eq(Message::getIsRead, 0)
                         .eq(Message::getType, MessageTypeEnum.COLLECT.getCode()));
         countMap.put("collect", collectCount.intValue());
 
         // 关注通知
         Long followCount = messageMapper.selectCount(
-                new LambdaQueryWrapper<Message>()
-                        .eq(Message::getReceiverId, currentUserId)
+                communityNotifications(currentUserId)
                         .eq(Message::getIsRead, 0)
                         .eq(Message::getType, MessageTypeEnum.FOLLOW.getCode()));
         countMap.put("follow", followCount.intValue());
 
         // 总未读数
         Long totalCount = messageMapper.selectCount(
-                new LambdaQueryWrapper<Message>()
-                        .eq(Message::getReceiverId, currentUserId)
+                communityNotifications(currentUserId)
                         .eq(Message::getIsRead, 0));
         countMap.put("total", totalCount.intValue());
 
         return countMap;
+    }
+
+    private LambdaQueryWrapper<Message> communityNotifications(Integer receiverId) {
+        return new LambdaQueryWrapper<Message>().eq(Message::getReceiverId, receiverId)
+                .and(visible -> visible.eq(Message::getType, MessageTypeEnum.SYSTEM.getCode())
+                        .or().inSql(Message::getSenderId, SysUserMapper.COMMUNITY_USER_IDS));
     }
 
     // 标记通知为已读
@@ -705,7 +704,9 @@ public class MessageServiceImpl extends ServiceImpl<MessageMapper, Message> impl
         LambdaUpdateWrapper<Message> updateWrapper = new LambdaUpdateWrapper<Message>()
                 .set(Message::getIsRead, 1)
                 .eq(Message::getReceiverId, currentUserId)
-                .in(Message::getId, messageIds);
+                .in(Message::getId, messageIds)
+                .and(visible -> visible.eq(Message::getType, MessageTypeEnum.SYSTEM.getCode())
+                        .or().inSql(Message::getSenderId, SysUserMapper.COMMUNITY_USER_IDS));
 
         int updated = messageMapper.update(null, updateWrapper);
         if (updated <= 0) {
@@ -723,8 +724,7 @@ public class MessageServiceImpl extends ServiceImpl<MessageMapper, Message> impl
         Integer currentUserId = SecurityUtils.getUserId();
 
         // 只能删除自己的消息（逻辑删除）
-        LambdaQueryWrapper<Message> queryWrapper = new LambdaQueryWrapper<Message>()
-                .eq(Message::getReceiverId, currentUserId)
+        LambdaQueryWrapper<Message> queryWrapper = communityNotifications(currentUserId)
                 .in(Message::getId, messageIds);
 
         int deleted = messageMapper.delete(queryWrapper);

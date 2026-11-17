@@ -48,6 +48,7 @@ public class ConversationServiceImpl extends ServiceImpl<ConversationMapper, Con
     public List<ConversationVo> getConversationList(Integer userId) {
         LambdaQueryWrapper<Conversation> qw = new LambdaQueryWrapper<Conversation>()
                 .eq(Conversation::getUserId, userId)
+                .inSql(Conversation::getTargetUserId, SysUserMapper.COMMUNITY_USER_IDS)
                 .orderByDesc(Conversation::getUpdateTime);
 
         List<Conversation> conversations = conversationMapper.selectList(qw);
@@ -73,7 +74,8 @@ public class ConversationServiceImpl extends ServiceImpl<ConversationMapper, Con
                 .collect(Collectors.toList());
 
         // 批量查询用户信息（避免 N+1 查询）
-        List<SysUser> targetUsers = sysUserMapper.selectBatchIds(targetUserIds);
+        List<SysUser> targetUsers = sysUserMapper.selectList(SysUserMapper.communityUsers()
+                .in(SysUser::getId, targetUserIds));
         Map<Integer, SysUser> userMap = targetUsers.stream()
                 .collect(Collectors.toMap(SysUser::getId, user -> user));
 
@@ -81,7 +83,7 @@ public class ConversationServiceImpl extends ServiceImpl<ConversationMapper, Con
         Map<Integer, Boolean> onlineStatusMap = redisComponent.batchGetUserOnlineStatus(targetUserIds);
 
         // 转换为 VO 并填充数据
-        return conversations.stream().map(conv -> {
+        return conversations.stream().filter(conv -> userMap.containsKey(conv.getTargetUserId())).map(conv -> {
             ConversationVo vo = BeanUtil.copyProperties(conv, ConversationVo.class);
             vo.setUnreadCount(unreadBySender.getOrDefault(conv.getTargetUserId(), 0));
 
@@ -139,6 +141,7 @@ public class ConversationServiceImpl extends ServiceImpl<ConversationMapper, Con
 
     @Override
     public void clearUnreadCount(Integer userId, Integer targetUserId) {
+        sysUserMapper.requireCommunityUser(targetUserId);
         privateMessageMapper.update(null, new LambdaUpdateWrapper<PrivateMessage>()
                 .eq(PrivateMessage::getFromUserId, targetUserId).eq(PrivateMessage::getToUserId, userId)
                 .eq(PrivateMessage::getIsRead, 0).eq(PrivateMessage::getIsRevoked, 0)
@@ -155,6 +158,7 @@ public class ConversationServiceImpl extends ServiceImpl<ConversationMapper, Con
 
     @Override
     public void deleteConversation(Integer userId, Integer targetUserId) {
+        sysUserMapper.requireCommunityUser(targetUserId);
         LambdaQueryWrapper<Conversation> qw = new LambdaQueryWrapper<Conversation>()
                 .eq(Conversation::getUserId, userId)
                 .eq(Conversation::getTargetUserId, targetUserId);
@@ -181,6 +185,7 @@ public class ConversationServiceImpl extends ServiceImpl<ConversationMapper, Con
     public List<Integer> getConversationUserIds(Integer userId) {
         LambdaQueryWrapper<Conversation> qw = new LambdaQueryWrapper<Conversation>()
                 .eq(Conversation::getUserId, userId)
+                .inSql(Conversation::getTargetUserId, SysUserMapper.COMMUNITY_USER_IDS)
                 .select(Conversation::getTargetUserId);
 
         List<Conversation> conversations = conversationMapper.selectList(qw);

@@ -1,7 +1,9 @@
 package com.zcx.chenstack.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
+import com.baomidou.mybatisplus.core.toolkit.support.SFunction;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.spring.service.impl.ServiceImpl;
 import com.zcx.chenstack.domain.constants.BlogConstants;
@@ -14,7 +16,6 @@ import com.zcx.chenstack.mapper.FollowMapper;
 import com.zcx.chenstack.mapper.SysUserMapper;
 import com.zcx.chenstack.service.FollowService;
 import com.zcx.chenstack.service.MessageService;
-import com.zcx.chenstack.service.SysUserService;
 import com.zcx.chenstack.utils.SecurityUtils;
 import com.zcx.chenstack.redis.NotificationThreadPool;
 import com.zcx.chenstack.utils.CountUpdateUtils;
@@ -26,6 +27,8 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Map;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 
 /**
@@ -39,9 +42,6 @@ import java.util.stream.Collectors;
 @Service
 @Slf4j
 public class FollowServiceImpl extends ServiceImpl<FollowMapper, Follow> implements FollowService {
-
-    @Resource
-    private SysUserService sysUserService;
 
     @Resource
     private SysUserMapper sysUserMapper;
@@ -71,10 +71,8 @@ public class FollowServiceImpl extends ServiceImpl<FollowMapper, Follow> impleme
             throw new BlogException(BlogConstants.CannotFollowSelf);
         }
 
-        // 检查被关注用户是否存在
-        if (!sysUserService.lambdaQuery().eq(com.zcx.chenstack.domain.entity.SysUser::getId, followedId).exists()) {
-            throw new BlogException(BlogConstants.NotFoundUser);
-        }
+        sysUserMapper.requireCommunityUser(followerId);
+        sysUserMapper.requireCommunityUser(followedId);
 
         // 检查是否已关注
         LambdaQueryWrapper<Follow> queryWrapper = new LambdaQueryWrapper<>();
@@ -152,107 +150,50 @@ public class FollowServiceImpl extends ServiceImpl<FollowMapper, Follow> impleme
 
         LambdaQueryWrapper<Follow> queryWrapper = new LambdaQueryWrapper<>();
         queryWrapper.eq(Follow::getFollowerId, followerId)
-                .eq(Follow::getFollowedId, followedId);
+                .eq(Follow::getFollowedId, followedId)
+                .inSql(Follow::getFollowerId, SysUserMapper.COMMUNITY_USER_IDS)
+                .inSql(Follow::getFollowedId, SysUserMapper.COMMUNITY_USER_IDS);
 
         return this.exists(queryWrapper);
     }
 
     @Override
     public PageVo<List<SysUserVo>> getFollowList(Integer userId, Integer pageNum, Integer pageSize) {
-        // 参数校验
-        if (userId == null) {
-            throw new BlogException(BlogConstants.UserIdRequired);
-        }
-
-        // 检查用户是否存在
-        if (!sysUserService.lambdaQuery().eq(SysUser::getId, userId).exists()) {
-            throw new BlogException(BlogConstants.NotFoundUser);
-        }
-
-        // 分页查询关注关系
-        Page<Follow> page = new Page<>(pageNum, pageSize);
-        LambdaQueryWrapper<Follow> queryWrapper = new LambdaQueryWrapper<>();
-        queryWrapper.eq(Follow::getFollowerId, userId)
-                .orderByDesc(Follow::getCreateTime);
-
-        Page<Follow> followPage = this.page(page, queryWrapper);
-        List<Follow> followList = followPage.getRecords();
-
-        // 获取被关注用户ID列表
-        List<Integer> followedUserIds = followList.stream()
-                .map(Follow::getFollowedId)
-                .collect(Collectors.toList());
-
-        List<SysUserVo> userVoList;
-        if (followedUserIds.isEmpty()) {
-            userVoList = List.of();
-        } else {
-            // 查询被关注用户信息
-            List<SysUser> users = sysUserService.lambdaQuery()
-                    .in(SysUser::getId, followedUserIds)
-                    .eq(SysUser::getStatus, 0) // 只查询正常状态的用户
-                    .list();
-
-            // 转换为VO对象
-            userVoList = users.stream()
-                    .map(user -> {
-                        SysUserVo userVo = new SysUserVo();
-                        BeanUtils.copyProperties(user, userVo);
-                        return userVo;
-                    })
-                    .collect(Collectors.toList());
-        }
-
-        return new PageVo<>(userVoList, followPage.getTotal());
+        return getCommunityRelations(userId, pageNum, pageSize, Follow::getFollowerId, Follow::getFollowedId);
     }
 
     @Override
     public PageVo<List<SysUserVo>> getFansList(Integer userId, Integer pageNum, Integer pageSize) {
-        // 参数校验
-        if (userId == null) {
-            throw new BlogException(BlogConstants.UserIdRequired);
+        return getCommunityRelations(userId, pageNum, pageSize, Follow::getFollowedId, Follow::getFollowerId);
+    }
+
+    private PageVo<List<SysUserVo>> getCommunityRelations(Integer userId, Integer pageNum, Integer pageSize,
+            SFunction<Follow, Integer> owner, SFunction<Follow, Integer> peer) {
+        sysUserMapper.requireCommunityUser(userId);
+        Page<Follow> page = this.page(new Page<>(pageNum, pageSize), new LambdaQueryWrapper<Follow>()
+                .eq(owner, userId)
+                .inSql(peer, SysUserMapper.COMMUNITY_USER_IDS)
+                .orderByDesc(Follow::getCreateTime, Follow::getId));
+        List<Integer> peerIds = page.getRecords().stream().map(peer).toList();
+        if (peerIds.isEmpty()) {
+            return new PageVo<>(List.of(), page.getTotal());
         }
 
-        // 检查用户是否存在
-        if (!sysUserService.lambdaQuery().eq(SysUser::getId, userId).exists()) {
-            throw new BlogException(BlogConstants.NotFoundUser);
-        }
-
-        // 分页查询粉丝关系
-        Page<Follow> page = new Page<>(pageNum, pageSize);
-        LambdaQueryWrapper<Follow> queryWrapper = new LambdaQueryWrapper<>();
-        queryWrapper.eq(Follow::getFollowedId, userId)
-                .orderByDesc(Follow::getCreateTime);
-
-        Page<Follow> followPage = this.page(page, queryWrapper);
-        List<Follow> followList = followPage.getRecords();
-
-        // 获取关注者用户ID列表
-        List<Integer> followerUserIds = followList.stream()
-                .map(Follow::getFollowerId)
-                .collect(Collectors.toList());
-
-        List<SysUserVo> userVoList;
-        if (followerUserIds.isEmpty()) {
-            userVoList = List.of();
-        } else {
-            // 查询粉丝用户信息
-            List<SysUser> users = sysUserService.lambdaQuery()
-                    .in(SysUser::getId, followerUserIds)
-                    .eq(SysUser::getStatus, 0) // 只查询正常状态的用户
-                    .list();
-
-            // 转换为VO对象
-            userVoList = users.stream()
-                    .map(user -> {
-                        SysUserVo userVo = new SysUserVo();
-                        BeanUtils.copyProperties(user, userVo);
-                        return userVo;
-                    })
-                    .collect(Collectors.toList());
-        }
-
-        return new PageVo<>(userVoList, followPage.getTotal());
+        Map<Integer, SysUser> users = sysUserMapper.selectList(new QueryWrapper<SysUser>()
+                        .select("id", "nickname", "avatar", "introduction", "sex", "username",
+                                "(SELECT COUNT(*) FROM follow f WHERE f.followed_id = sys_user.id"
+                                        + " AND f.follower_id IN (" + SysUserMapper.COMMUNITY_USER_IDS + ")) AS fans_count",
+                                "(SELECT COUNT(*) FROM follow f WHERE f.follower_id = sys_user.id"
+                                        + " AND f.followed_id IN (" + SysUserMapper.COMMUNITY_USER_IDS + ")) AS follow_count")
+                        .in("id", peerIds)
+                        .inSql("id", SysUserMapper.COMMUNITY_USER_IDS))
+                .stream().collect(Collectors.toMap(SysUser::getId, Function.identity()));
+        List<SysUserVo> profiles = peerIds.stream().filter(users::containsKey).map(id -> {
+            SysUserVo profile = new SysUserVo();
+            BeanUtils.copyProperties(users.get(id), profile);
+            return profile;
+        }).toList();
+        return new PageVo<>(profiles, page.getTotal());
     }
 
     /**

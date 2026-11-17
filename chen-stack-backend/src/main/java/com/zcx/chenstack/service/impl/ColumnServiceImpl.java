@@ -203,7 +203,8 @@ public class ColumnServiceImpl extends ServiceImpl<ColumnMapper, Column> impleme
             queryWrapper.eq(Column::getUserId, userId)
                     .in(Column::getExamineStatus, ExamineStatusEnum.PASS.getCode(), ExamineStatusEnum.WAIT.getCode());
         } else {
-            queryWrapper.eq(Column::getExamineStatus, ExamineStatusEnum.PASS.getCode())
+            queryWrapper.inSql(Column::getUserId, SysUserMapper.COMMUNITY_USER_IDS)
+                    .eq(Column::getExamineStatus, ExamineStatusEnum.PASS.getCode())
                     .eq(Column::getShowStatus, ShowStatusEnum.PUBLIC.getCode());
         }
 
@@ -217,6 +218,9 @@ public class ColumnServiceImpl extends ServiceImpl<ColumnMapper, Column> impleme
 
     @Override
     public PageVo<List<ColumnVo>> getColumnListByUserId(Integer userId, Integer pageNum, Integer pageSize) {
+        if (!sysUserMapper.isCommunityUser(userId)) {
+            return new PageVo<>(List.of(), 0L);
+        }
         Page<Column> page = new Page<>(pageNum, pageSize);
         Integer currentUserId = SecurityUtils.getUserId();
         boolean canViewOwnPendingColumns = userId != null
@@ -246,7 +250,8 @@ public class ColumnServiceImpl extends ServiceImpl<ColumnMapper, Column> impleme
     public ColumnDetailVo getColumnDetail(Integer columnId) {
         // 1. 获取专栏基本信息
         Column column = columnMapper.selectById(columnId);
-        if (column == null || !Objects.equals(column.getIsDeleted(), 0)) {
+        if (column == null || !Objects.equals(column.getIsDeleted(), 0)
+                || !sysUserMapper.isCommunityUser(column.getUserId())) {
             throw new BlogException(BlogConstants.NotFoundColumn);
         }
 
@@ -332,6 +337,7 @@ public class ColumnServiceImpl extends ServiceImpl<ColumnMapper, Column> impleme
     public PageVo<List<ColumnVo>> searchColumnList(Integer pageNum, Integer pageSize, String keyword) {
         Page<Column> page = new Page<>(pageNum, pageSize);
         LambdaQueryWrapper<Column> qw = new LambdaQueryWrapper<Column>()
+                .inSql(Column::getUserId, SysUserMapper.COMMUNITY_USER_IDS)
                 .eq(Column::getExamineStatus, ExamineStatusEnum.PASS.getCode()) // 只返回审核通过的专栏
                 .eq(Column::getShowStatus, 0) // 只返回公开的专栏
                 .orderByDesc(Column::getCreateTime); // 按创建时间倒序排列

@@ -2,8 +2,6 @@ package com.zcx.chenstack.websocket;
 
 import cn.hutool.jwt.JWT;
 import cn.hutool.jwt.signers.JWTSignerUtil;
-import com.zcx.chenstack.domain.entity.SysUser;
-import com.zcx.chenstack.domain.enums.StatusEnum;
 import com.zcx.chenstack.mapper.SysUserMapper;
 import com.zcx.chenstack.utils.JwtUtils;
 import org.junit.jupiter.api.BeforeEach;
@@ -38,23 +36,28 @@ class WebSocketHandshakeInterceptorTest {
 
     @Test
     void acceptsNormalUserAndUsesVerifiedIdentity() {
-        when(users.selectById(7)).thenReturn(user(StatusEnum.NORMAL));
+        when(users.isCommunityUser(7)).thenReturn(true);
         assertTrue(handshake("?token=" + jwt.createToken(7) + "&userId=99"));
         assertEquals(7, attributes.get("userId"));
-        verify(users).selectById(7);
+        verify(users).isCommunityUser(7);
     }
 
     @Test
     void rejectsDisabledUserWithOtherwiseValidToken() {
-        when(users.selectById(7)).thenReturn(user(StatusEnum.DISABLE));
+        when(users.isCommunityUser(7)).thenReturn(false);
         assertFalse(handshake("?token=" + jwt.createToken(7)));
         assertTrue(attributes.isEmpty());
     }
 
     @Test
     void rejectsMissingOrLogicallyDeletedUser() {
-        // SysUser 的 @TableLogic 使已删除账号与不存在账号均不被 selectById 返回。
-        when(users.selectById(7)).thenReturn(null);
+        assertFalse(handshake("?token=" + jwt.createToken(7)));
+        assertTrue(attributes.isEmpty());
+    }
+
+    @Test
+    void rejectsNonCommunityAccountWithOtherwiseValidToken() {
+        when(users.isCommunityUser(7)).thenReturn(false);
         assertFalse(handshake("?token=" + jwt.createToken(7)));
         assertTrue(attributes.isEmpty());
     }
@@ -98,7 +101,7 @@ class WebSocketHandshakeInterceptorTest {
 
     @Test
     void rejectsDatabaseFailureWithoutAcceptingIdentity() {
-        when(users.selectById(7)).thenThrow(new IllegalStateException("test database unavailable"));
+        when(users.isCommunityUser(7)).thenThrow(new IllegalStateException("test database unavailable"));
         assertFalse(handshake("?token=" + jwt.createToken(7)));
         assertTrue(attributes.isEmpty());
     }
@@ -109,11 +112,4 @@ class WebSocketHandshakeInterceptorTest {
         return interceptor.beforeHandshake(request, null, null, attributes);
     }
 
-    private static SysUser user(StatusEnum status) {
-        SysUser user = new SysUser();
-        user.setId(7);
-        user.setStatus(status.getStatus());
-        user.setIsDeleted(0);
-        return user;
-    }
 }

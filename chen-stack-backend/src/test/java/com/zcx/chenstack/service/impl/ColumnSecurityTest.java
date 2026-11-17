@@ -54,6 +54,7 @@ class ColumnSecurityTest {
         ReflectionTestUtils.setField(columnService, "columnMapper", columns);
         ReflectionTestUtils.setField(columnService, "articleColumnMapper", links);
         ReflectionTestUtils.setField(columnService, "sysUserMapper", users);
+        when(users.isCommunityUser(anyInt())).thenReturn(true);
         ReflectionTestUtils.setField(columnService, "chenStackConfig", new ChenStackConfig());
     }
     @AfterEach void clear() { SecurityContextHolder.clearContext(); }

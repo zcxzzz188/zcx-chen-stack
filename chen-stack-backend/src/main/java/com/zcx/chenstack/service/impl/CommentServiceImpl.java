@@ -354,9 +354,11 @@ public class CommentServiceImpl extends ServiceImpl<CommentMapper, Comment> impl
         long offset = (Math.max(1L, pageNum) - 1) * pageSize;
         Integer currentUserId = getCurrentUserIdOrNull();
         requireReadableArticle(parentComment.getArticleId(), currentUserId);
-        if (!Objects.equals(parentComment.getExamineStatus(), ExamineStatusEnum.PASS.getCode())
-                && !(Objects.equals(parentComment.getExamineStatus(), ExamineStatusEnum.WAIT.getCode())
-                && currentUserId != null && Objects.equals(parentComment.getUserId(), currentUserId))) {
+        boolean pendingOwnComment = Objects.equals(parentComment.getExamineStatus(), ExamineStatusEnum.WAIT.getCode())
+                && currentUserId != null && Objects.equals(parentComment.getUserId(), currentUserId);
+        if (!sysUserMapper.isCommunityUser(parentComment.getUserId())
+                || (!Objects.equals(parentComment.getExamineStatus(), ExamineStatusEnum.PASS.getCode())
+                && !pendingOwnComment)) {
             throw new BlogException(BlogConstants.NotFoundParentComment);
         }
         Long total = count(buildVisibleCommentWrapper(parentComment.getArticleId(), commentId, currentUserId));
@@ -422,8 +424,9 @@ public class CommentServiceImpl extends ServiceImpl<CommentMapper, Comment> impl
     }
 
     private void requireReadableArticle(Integer articleId, Integer currentUserId) {
-        if (articleId == null || articleId <= 0
-                || !articleAccessService.canReadArticle(articleMapper.selectById(articleId), currentUserId)) {
+        Article article = articleId == null || articleId <= 0 ? null : articleMapper.selectById(articleId);
+        if (article == null || !articleAccessService.canReadArticle(article, currentUserId)
+                || !sysUserMapper.isCommunityUser(article.getUserId())) {
             throw new BlogException(BlogConstants.NotFoundArticle);
         }
     }
@@ -439,6 +442,7 @@ public class CommentServiceImpl extends ServiceImpl<CommentMapper, Comment> impl
     }
 
     private void appendVisibleCommentCondition(LambdaQueryWrapper<Comment> wrapper, Integer currentUserId) {
+        wrapper.inSql(Comment::getUserId, SysUserMapper.COMMUNITY_USER_IDS);
         if (currentUserId == null) {
             wrapper.eq(Comment::getExamineStatus, ExamineStatusEnum.PASS.getCode());
             return;
@@ -491,7 +495,7 @@ public class CommentServiceImpl extends ServiceImpl<CommentMapper, Comment> impl
         // 批量查询用户信息
         final Map<Integer, SysUser> userMap;
         if (!allUserIds.isEmpty()) {
-            LambdaQueryWrapper<SysUser> userWrapper = new LambdaQueryWrapper<SysUser>()
+            LambdaQueryWrapper<SysUser> userWrapper = SysUserMapper.communityUsers()
                     .in(SysUser::getId, allUserIds)
                     .select(SysUser::getId, SysUser::getNickname, SysUser::getAvatar);
 

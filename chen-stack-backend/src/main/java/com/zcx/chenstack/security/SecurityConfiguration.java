@@ -2,7 +2,9 @@ package com.zcx.chenstack.security;
 
 import com.zcx.chenstack.config.ChenStackConfig;
 import com.zcx.chenstack.domain.constants.SecurityConstants;
+import com.zcx.chenstack.utils.SecurityUtils;
 import jakarta.annotation.Resource;
+import org.springframework.security.authorization.AuthorizationDecision;
 import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -41,9 +43,16 @@ public class SecurityConfiguration {
     public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
         // 设置认证管理器
         http.authorizeHttpRequests(auth -> auth
-                .requestMatchers(HttpMethod.PUT, "/user/info").authenticated()
-                .requestMatchers(SecurityConstants.Optional_Auth_Urls).permitAll() // 可选认证接口允许访问
-                .requestMatchers("/actuator/**").permitAll() // actuator 端点无需认证
+                .requestMatchers(HttpMethod.PUT, "/user/info").access((authentication, context) ->
+                        new AuthorizationDecision(SysUserDetailsService.isCommunityAccount(SecurityUtils.getUser())))
+                .requestMatchers(SecurityConstants.Optional_Auth_Urls).permitAll()
+                .requestMatchers("/article/admin/**", "/column/admin/**", "/comment/admin/**",
+                        "/photo/admin/**", "/message/admin/**").authenticated()
+                .requestMatchers("/article/**", "/column/**", "/comment/**", "/photo/**", "/message/**",
+                        "/follow/**", "/conversation/**", "/favorite/**", "/like/**", "/history/**",
+                        "/user/settings/**", "/user/verifyResetEmail", "/user/resetEmail", "/ai/**")
+                .access((authentication, context) ->
+                        new AuthorizationDecision(SysUserDetailsService.isCommunityAccount(SecurityUtils.getUser())))
                 .anyRequest().authenticated());
         http.csrf(AbstractHttpConfigurer::disable);
         // 配置跨域

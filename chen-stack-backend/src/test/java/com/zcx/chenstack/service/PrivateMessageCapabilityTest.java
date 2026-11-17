@@ -17,6 +17,7 @@ class PrivateMessageCapabilityTest {
         PrivateMessageMapper mapper = mock(PrivateMessageMapper.class);
         PrivateMessageServiceImpl service = new PrivateMessageServiceImpl();
         ReflectionTestUtils.setField(service, "privateMessageMapper", mapper);
+        ReflectionTestUtils.setField(service, "sysUserMapper", mock(com.zcx.chenstack.mapper.SysUserMapper.class));
         PrivateMessage message = new PrivateMessage();
         message.setId(42); message.setFromUserId(7); message.setToUserId(8); message.setIsRevoked(0);
         message.setCreateTime(new Date(System.currentTimeMillis() - 10_000));

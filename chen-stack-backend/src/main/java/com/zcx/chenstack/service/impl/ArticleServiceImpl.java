@@ -130,11 +130,7 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
     @Override
     public PageVo<List<ArticleVo>> getAllArticleList(Integer pageNum, Integer pageSize) {
         Page<Article> page = PageUtils.buildPage(pageNum, pageSize);
-        LambdaQueryWrapper<Article> qw = new LambdaQueryWrapper<Article>()
-                .eq(Article::getExamineStatus, ExamineStatusEnum.PASS.getCode())
-                .eq(Article::getEditStatus, EditStatusEnum.PUBLISHED.getCode())
-                .eq(Article::getVisibleRange, VisibleRangeEnum.ALL.getCode())
-                .orderByDesc(Article::getUpdateTime);
+        LambdaQueryWrapper<Article> qw = publicArticleSearch().orderByDesc(Article::getUpdateTime);
 
         List<Article> articleList = articleMapper.selectPage(page, qw).getRecords();
         List<ArticleVo> articleVoList = articleList.stream().map(article -> {
@@ -170,6 +166,7 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
             targetUserId = currentUserId;
         }
 
+        sysUserMapper.requireCommunityUser(targetUserId);
         Page<Article> page = PageUtils.buildPage(pageNum, pageSize);
         LambdaQueryWrapper<Article> qw = new LambdaQueryWrapper<Article>()
                 .eq(Article::getUserId, targetUserId);
@@ -225,6 +222,7 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
         Integer targetUserId = ObjectUtil.isNotEmpty(articleStatusDto.getUserId()) ? articleStatusDto.getUserId()
                 : currentUserId; // 目标用户ID
 
+        sysUserMapper.requireCommunityUser(targetUserId);
         Page<Article> page = PageUtils.buildPage(pageNum, pageSize);
         LambdaQueryWrapper<Article> qw = new LambdaQueryWrapper<Article>()
                 .eq(targetUserId != 0, Article::getUserId, targetUserId);
@@ -336,13 +334,14 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
 
     @Override
     public ArticleStatisticsVo getUserArticleStatisticsById(Integer userId) {
-        // 只查询已发布且审核通过的文章的阅读量字段
+        sysUserMapper.requireCommunityUser(userId);
         List<Article> articles = articleMapper.selectList(
                 new LambdaQueryWrapper<Article>()
                         .select(Article::getReadCount)
                         .eq(Article::getUserId, userId)
                         .eq(Article::getEditStatus, EditStatusEnum.PUBLISHED.getCode())
-                        .eq(Article::getExamineStatus, ExamineStatusEnum.PASS.getCode()));
+                        .eq(Article::getExamineStatus, ExamineStatusEnum.PASS.getCode())
+                        .eq(Article::getVisibleRange, VisibleRangeEnum.ALL.getCode()));
 
         // 计算总阅读量
         Long totalReadCount = articles.stream()
@@ -359,13 +358,7 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
     @Override
     public ArticleVo getArticle(Integer articleId) {
         Article article = articleMapper.selectById(articleId);
-        if (article == null) {
-            throw new BlogException(BlogConstants.NotFoundArticle);
-        }
-        if (article == null) {
-            throw new BlogException(BlogConstants.NotFoundArticle);
-        }
-        if (ObjectUtil.isEmpty(article)) {
+        if (article == null || !sysUserMapper.isCommunityUser(article.getUserId())) {
             throw new BlogException(BlogConstants.NotFoundArticle);
         }
         Integer currentUserId = SecurityUtils.getUserId();
@@ -599,6 +592,7 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
 
     private LambdaQueryWrapper<Article> publicArticleSearch() {
         return new LambdaQueryWrapper<Article>()
+                .inSql(Article::getUserId, SysUserMapper.COMMUNITY_USER_IDS)
                 .eq(Article::getExamineStatus, ExamineStatusEnum.PASS.getCode())
                 .eq(Article::getEditStatus, EditStatusEnum.PUBLISHED.getCode())
                 .eq(Article::getVisibleRange, VisibleRangeEnum.ALL.getCode());
@@ -642,42 +636,14 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
 
     @Override
     public PageVo<List<ArticleVo>> searchArticleByAuthor(String author, Integer pageNum, Integer pageSize) {
-        // 1. 先根据作者昵称或用户名查询用户 ID
-        LambdaQueryWrapper<SysUser> userQuery = new LambdaQueryWrapper<SysUser>()
-                .select(SysUser::getId)
-                .and(q -> q.like(SysUser::getNickname, author).or().like(SysUser::getUsername, author))
-                .eq(SysUser::getIsDeleted, 0);
-        List<SysUser> users = sysUserMapper.selectList(userQuery);
-
-        if (users.isEmpty()) {
-            // 没有找到该用户，返回空结果
-            return new PageVo<>(new ArrayList<>(), 0L);
+        List<Integer> userIds = sysUserMapper.selectList(SysUserMapper.communityUsers()
+                        .select(SysUser::getId)
+                        .and(q -> q.like(SysUser::getNickname, author).or().like(SysUser::getUsername, author)))
+                .stream().map(SysUser::getId).toList();
+        if (userIds.isEmpty()) {
+            return new PageVo<>(List.of(), 0L);
         }
-
-        // 2. 获取用户 ID 列表
-        List<Integer> userIds = users.stream().map(SysUser::getId).collect(Collectors.toList());
-
-        // 3. 查询这些用户发布的文章
-        Page<Article> page = PageUtils.buildPage(pageNum, pageSize);
-        LambdaQueryWrapper<Article> articleQuery = new LambdaQueryWrapper<Article>()
-                .select(Article.class, info -> !info.getColumn().equals("content")) // 排除 content 字段
-                .in(Article::getUserId, userIds)
-                .eq(Article::getExamineStatus, ExamineStatusEnum.PASS.getCode())
-                .eq(Article::getEditStatus, EditStatusEnum.PUBLISHED.getCode())
-                .eq(Article::getVisibleRange, VisibleRangeEnum.ALL.getCode())
-                .orderByDesc(Article::getUpdateTime);
-
-        List<Article> articles = articleMapper.selectPage(page, articleQuery).getRecords();
-
-        // 4. 转换为 ArticleVo 并填充用户信息
-        List<ArticleVo> articleVos = articles.stream()
-                .map(article -> BeanUtil.copyProperties(article, ArticleVo.class))
-                .collect(Collectors.toList());
-
-        // 填充作者昵称和头像信息
-        fillArticleUserInfo(articleVos);
-
-        return PageUtils.<ArticleVo>buildPageVo(page, articleVos);
+        return searchArticlePage(publicArticleSearch().in(Article::getUserId, userIds), pageNum, pageSize);
     }
 
     @Override
@@ -1935,19 +1901,9 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
 
             // 4. 根据文章ID列表查询热门文章核心信息
             List<Article> articles = articleMapper.selectList(
-                    new LambdaQueryWrapper<Article>()
-                            // 只查询需要的字段
+                    publicArticleSearch()
                             .select(Article::getId, Article::getUserId, Article::getTitle, Article::getReadCount)
-                            // 根据ID列表查询
-                            .in(Article::getId, currentPageIds)
-                            // 审核状态为通过
-                            .eq(Article::getExamineStatus, ExamineStatusEnum.PASS.getCode())
-                            // 编辑状态为已发布
-                            .eq(Article::getEditStatus, 0)
-                            // 可见范围为公开
-                            .eq(Article::getVisibleRange, 0)
-                            // 未删除
-                            .eq(Article::getIsDeleted, 0));
+                            .in(Article::getId, currentPageIds));
 
             // 如果查询结果为空，返回空结果
             if (ObjectUtil.isEmpty(articles)) {

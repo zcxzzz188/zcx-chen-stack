@@ -33,6 +33,10 @@ public class SecurityConstants {
             "/article/incrReadCount/{articleId:\\d+}",
             "/article/hot",
             "/article/search",
+            "/article/search/author",
+            "/article/search/tag",
+            "/article/search/suggestions/title",
+            "/article/search/suggestions/tag",
 
             // 评论相关
             "/comment/list",

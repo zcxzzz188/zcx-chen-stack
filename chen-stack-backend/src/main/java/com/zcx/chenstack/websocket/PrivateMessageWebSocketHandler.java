@@ -14,6 +14,7 @@ import com.zcx.chenstack.service.ConversationService;
 import com.zcx.chenstack.service.PrivateMessageService;
 import com.zcx.chenstack.utils.TextAuditUtils;
 import com.zcx.chenstack.utils.XssUtils;
+import com.zcx.chenstack.mapper.SysUserMapper;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
@@ -32,6 +33,9 @@ import java.util.List;
 @Component
 @Slf4j
 public class PrivateMessageWebSocketHandler extends TextWebSocketHandler {
+
+    @Resource
+    private SysUserMapper sysUserMapper;
 
     @Resource
     private WebSocketSessionManager sessionManager;
@@ -85,6 +89,10 @@ public class PrivateMessageWebSocketHandler extends TextWebSocketHandler {
             Integer fromUserId = (Integer) session.getAttributes().get("userId");
             if (fromUserId == null) {
                 log.warn("WebSocket 消息处理时 userId 为 null");
+                return;
+            }
+            if (!sysUserMapper.isCommunityUser(fromUserId)) {
+                session.close(CloseStatus.POLICY_VIOLATION);
                 return;
             }
             String payload = message.getPayload();
@@ -162,6 +170,11 @@ public class PrivateMessageWebSocketHandler extends TextWebSocketHandler {
         if (toUserId == null || toUserId <= 0
                 || (Integer.valueOf(2).equals(messageType) && (imageUrl == null || imageUrl.isBlank()))) {
             sendMessage(session, WebSocketMessage.error("私信接收者或图片参数无效"));
+            return;
+        }
+
+        if (!sysUserMapper.isCommunityUser(toUserId)) {
+            sendMessage(session, WebSocketMessage.error("私信接收者不可用"));
             return;
         }
 
@@ -314,6 +327,10 @@ public class PrivateMessageWebSocketHandler extends TextWebSocketHandler {
      */
     private void handleTyping(Integer fromUserId, WebSocketMessage wsMessage) {
         Integer toUserId = wsMessage.getToUserId();
+
+        if (!sysUserMapper.isCommunityUser(toUserId)) {
+            return;
+        }
 
         // 推送输入状态给接收者（如果在线）
         WebSocketSession toSession = sessionManager.getSession(toUserId);

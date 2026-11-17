@@ -14,6 +14,7 @@ import com.zcx.chenstack.mapper.SysUserMapper;
 import com.zcx.chenstack.utils.DeviceUtils;
 import com.zcx.chenstack.utils.IpUtils;
 import com.zcx.chenstack.utils.JwtUtils;
+import com.zcx.chenstack.utils.SecurityUtils;
 import com.zcx.chenstack.utils.WebUtils;
 import jakarta.annotation.Resource;
 import jakarta.servlet.DispatcherType;
@@ -95,7 +96,8 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
         // 检查是否是可选认证接口（有token就认证，没有就跳过）
         boolean isOptionalAuth = false;
-        boolean isProfileUpdate = PathPatternRequestMatcher.withDefaults().matcher(org.springframework.http.HttpMethod.PUT, "/user/info").matches(request);
+        boolean isProfileUpdate = PathPatternRequestMatcher.withDefaults()
+                .matcher(org.springframework.http.HttpMethod.PUT, "/user/info").matches(request);
         for (String url : SecurityConstants.Optional_Auth_Urls) {
             var matcher = PathPatternRequestMatcher.withDefaults().matcher(url);
             if (matcher.matches(request) && !isProfileUpdate) {
@@ -110,6 +112,11 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             if (ObjectUtil.isNotEmpty(jwt)) {
                 try {
                     authenticateUser(request, response);
+                    String path = request.getRequestURI().substring(request.getContextPath().length());
+                    if (!path.startsWith("/wiki/") && !SysUserDetailsService.isCommunityAccount(
+                            SecurityUtils.getUser())) {
+                        SecurityContextHolder.clearContext();
+                    }
                 } catch (Exception e) {
                     // 可选认证失败，忽略错误继续放行
                     

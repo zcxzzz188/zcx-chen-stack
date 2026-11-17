@@ -51,6 +51,7 @@ class PrivateMessageRealtimeTest {
     void setUp() {
         ReflectionTestUtils.setField(service, "privateMessageMapper", mapper);
         ReflectionTestUtils.setField(service, "sysUserMapper", users);
+        when(users.isCommunityUser(anyInt())).thenReturn(true);
         ReflectionTestUtils.setField(service, "conversationService", conversations);
         ReflectionTestUtils.setField(service, "sessionManager", sessions);
         ReflectionTestUtils.setField(service, "userSettingsService", settings);
